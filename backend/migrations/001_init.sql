@@ -1,5 +1,15 @@
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'webiz_app') THEN
+        CREATE ROLE webiz_app LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE;
+    END IF;
+END
+$$;
+
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
 
+-- No RLS on companies: api-key lookup must happen before company_id is known.
+-- Tenant isolation for this table is enforced entirely in application code.
 CREATE TABLE companies (
     id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     name            TEXT NOT NULL,
@@ -60,11 +70,13 @@ CREATE TABLE devices (
 );
 
 ALTER TABLE device_checkins ENABLE ROW LEVEL SECURITY;
+-- FORCE ensures even the table owner (admin/migration role) respects tenant isolation, not just webiz_app
 ALTER TABLE device_checkins FORCE ROW LEVEL SECURITY;
 CREATE POLICY tenant_isolation_checkins ON device_checkins
     USING (company_id = current_setting('app.company_id')::uuid);
 
 ALTER TABLE devices ENABLE ROW LEVEL SECURITY;
+-- FORCE ensures even the table owner (admin/migration role) respects tenant isolation, not just webiz_app
 ALTER TABLE devices FORCE ROW LEVEL SECURITY;
 CREATE POLICY tenant_isolation_devices ON devices
     USING (company_id = current_setting('app.company_id')::uuid);
@@ -75,5 +87,5 @@ CREATE INDEX idx_checkins_company_project  ON device_checkins (company_id, proje
 CREATE INDEX idx_checkins_company_platform ON device_checkins (company_id, platform);
 CREATE INDEX idx_checkins_company_received ON device_checkins (company_id, received_at DESC);
 
-GRANT SELECT, INSERT, UPDATE ON companies, device_checkins, devices TO webiz_app;
+GRANT SELECT, INSERT, UPDATE, TRUNCATE ON companies, device_checkins, devices TO webiz_app;
 GRANT USAGE, SELECT ON SEQUENCE device_checkins_id_seq TO webiz_app;
