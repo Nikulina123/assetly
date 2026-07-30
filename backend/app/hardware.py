@@ -16,7 +16,7 @@ def normalize_os(os_string: str) -> tuple[str, str]:
     else:
         platform_name = "unknown"
 
-    match = re.search(r"(\d[\w.\-]*)$", os_string)
-    version = match.group(1) if match else os_string
+    matches = re.findall(r"\d[\w.\-]*", os_string)
+    version = matches[-1] if matches else ""
 
     return platform_name, version
