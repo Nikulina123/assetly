@@ -287,6 +287,16 @@ def _post_to_sheets(payload: dict) -> bool:
         if e.code == 409:
             log.info("Server reports this checkin_id already recorded — treating as success.")
             return True
+        if e.code in (401, 403):
+            log.error(f"Authentication failed ({e.code}) — check company_api_key in config.json. Not queuing as offline.")
+            send_email(
+                "[Webiz Inventory] Authentication failed — check API key",
+                f"The check-in agent's API key was rejected (HTTP {e.code}).\n"
+                f"This is NOT a connectivity issue — the device reached the server but was refused.\n"
+                f"Update company_api_key in config.json.\n\n"
+                f"Error: {e}",
+            )
+            return False
         log.warning(f"HTTP submit failed: {e}")
         return False
     except Exception as e:

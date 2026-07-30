@@ -87,5 +87,5 @@ CREATE INDEX idx_checkins_company_project  ON device_checkins (company_id, proje
 CREATE INDEX idx_checkins_company_platform ON device_checkins (company_id, platform);
 CREATE INDEX idx_checkins_company_received ON device_checkins (company_id, received_at DESC);
 
-GRANT SELECT, INSERT, UPDATE, TRUNCATE ON companies, device_checkins, devices TO webiz_app;
+GRANT SELECT, INSERT, UPDATE ON companies, device_checkins, devices TO webiz_app;
 GRANT USAGE, SELECT ON SEQUENCE device_checkins_id_seq TO webiz_app;

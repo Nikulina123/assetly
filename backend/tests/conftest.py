@@ -7,12 +7,22 @@ TEST_DATABASE_URL = os.environ.get(
     "postgresql://webiz_app@localhost:5432/webiz_checkin_test",
 )
 
+ADMIN_TEST_DATABASE_URL = os.environ.get(
+    "ADMIN_TEST_DATABASE_URL",
+    "postgresql://admin@localhost:5432/webiz_checkin_test",
+)
+
 
 @pytest_asyncio.fixture
 async def db_pool():
+    # Truncate via a separate admin connection: webiz_app intentionally has no
+    # TRUNCATE grant in production (TRUNCATE bypasses RLS entirely), so test
+    # cleanup can't go through the same role the app itself uses.
+    admin_conn = await asyncpg.connect(ADMIN_TEST_DATABASE_URL)
+    await admin_conn.execute("TRUNCATE device_checkins, devices, companies CASCADE;")
+    await admin_conn.close()
+
     pool = await asyncpg.create_pool(TEST_DATABASE_URL)
-    async with pool.acquire() as conn:
-        await conn.execute("TRUNCATE device_checkins, devices, companies CASCADE;")
     yield pool
     await pool.close()
 
