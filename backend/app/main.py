@@ -7,7 +7,7 @@ from fastapi.responses import JSONResponse
 from app.auth import resolve_company_id
 from app.db import get_pool
 from app.hardware import normalize_os
-from app.models import CheckinRequest
+from app.models import CheckinRequest, CheckinResponse
 
 app = FastAPI(title="Webiz Inventory Check-in API")
 
@@ -25,7 +25,7 @@ async def get_current_company_id(
     return company_id
 
 
-@app.post("/api/v1/inventory/checkin")
+@app.post("/api/v1/inventory/checkin", response_model=CheckinResponse)
 async def checkin(
     payload: CheckinRequest,
     company_id: str = Depends(get_current_company_id),
@@ -63,6 +63,9 @@ async def checkin(
                     payload.agent_version, payload.submission_type,
                 )
             except asyncpg.UniqueViolationError:
+                # Returning here still exits `async with conn.transaction()` normally, which
+                # issues COMMIT — but since the INSERT already aborted the transaction server-side,
+                # Postgres silently downgrades that COMMIT to a no-op/rollback. No partial state persists.
                 return JSONResponse(status_code=409, content={"status": "duplicate"})
 
             await conn.execute(
