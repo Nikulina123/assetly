@@ -47,7 +47,8 @@ if CONFIG_FILE.exists():
     except Exception:
         pass
 
-APPS_SCRIPT_URL  = _cfg.get("apps_script_url", "https://script.google.com/macros/s/PLACEHOLDER/exec")
+CHECKIN_API_URL  = _cfg.get("checkin_api_url", "https://api.example.com/api/v1/inventory/checkin")
+COMPANY_API_KEY  = _cfg.get("company_api_key", "")
 GITHUB_RAW_URL   = _cfg.get("github_raw_url", "")
 
 SMTP_SERVER      = _cfg.get("smtp_server", "smtp.gmail.com")
@@ -271,9 +272,10 @@ def _post_to_sheets(payload: dict) -> bool:
     try:
         data = json.dumps(payload).encode()
         req  = urllib.request.Request(
-            APPS_SCRIPT_URL, data=data,
+            CHECKIN_API_URL, data=data,
             headers={
                 "Content-Type": "application/json",
+                "Authorization": f"Bearer {COMPANY_API_KEY}",
                 "User-Agent": "Mozilla/5.0",
             },
             method="POST",
@@ -281,13 +283,26 @@ def _post_to_sheets(payload: dict) -> bool:
         resp   = urllib.request.urlopen(req, timeout=15)
         result = json.loads(resp.read().decode())
         return result.get("status") == "ok"
+    except urllib.error.HTTPError as e:
+        if e.code == 409:
+            log.info("Server reports this checkin_id already recorded — treating as success.")
+            return True
+        log.warning(f"HTTP submit failed: {e}")
+        return False
     except Exception as e:
         log.warning(f"HTTP submit failed: {e}")
         return False
 
 def submit_to_sheets(user_data: dict, hw: dict) -> bool:
     """Returns True if submitted immediately, False if queued offline."""
-    payload = {**user_data, **hw}
+    import uuid
+    payload = {
+        **user_data, **hw,
+        "checkin_id":      str(uuid.uuid4()),
+        "agent_version":   "2.0",
+        "submission_type": "online",
+        "platform":        {"Darwin": "macos", "Linux": "linux", "Windows": "windows"}.get(_sys, "unknown"),
+    }
     if _post_to_sheets(payload):
         return True
     log.warning("No internet — saving to offline queue.")
