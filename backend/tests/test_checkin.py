@@ -1,0 +1,125 @@
+import uuid
+
+import pytest
+import pytest_asyncio
+from httpx import ASGITransport, AsyncClient
+
+import app.db as db_module
+from app.main import app
+
+pytestmark = pytest.mark.asyncio
+
+
+@pytest_asyncio.fixture(autouse=True)
+async def _reset_app_pool():
+    # app.db caches a module-level asyncpg pool bound to whichever event loop
+    # created it. pytest-asyncio gives each test its own event loop, so a pool
+    # left over from a previous test breaks (or hangs) on reuse. Close it after
+    # every test so the next one lazily creates a fresh pool on its own loop.
+    yield
+    await db_module.close_pool()
+
+
+def _payload(**overrides):
+    base = {
+        "checkin_id": str(uuid.uuid4()),
+        "timestamp": "2026-07-30T10:00:00",
+        "first_name": "Nino",
+        "last_name": "Nikoladze",
+        "email": "nino@example.com",
+        "project": "Webiz ERP",
+        "serial_number": "SN-001",
+        "hostname": "nino-macbook",
+        "brand": "Apple",
+        "model": "MacBook Pro",
+        "cpu": "Apple M3",
+        "ram": "16 GB",
+        "storage": "512 GB",
+        "ip_address": "10.0.0.5",
+        "os": "macOS 14.4.1",
+        "agent_version": "2.0",
+    }
+    base.update(overrides)
+    return base
+
+
+async def _client():
+    transport = ASGITransport(app=app)
+    return AsyncClient(transport=transport, base_url="http://test")
+
+
+async def test_checkin_without_auth_header_is_rejected():
+    async with await _client() as client:
+        resp = await client.post("/api/v1/inventory/checkin", json=_payload())
+    assert resp.status_code == 401
+
+
+async def test_checkin_with_unknown_key_is_rejected():
+    async with await _client() as client:
+        resp = await client.post(
+            "/api/v1/inventory/checkin",
+            json=_payload(),
+            headers={"Authorization": "Bearer wz_live_unknown"},
+        )
+    assert resp.status_code == 401
+
+
+async def test_checkin_with_valid_key_persists_row(db_pool, company):
+    company_id, api_key = company
+    checkin_id = str(uuid.uuid4())
+    async with await _client() as client:
+        resp = await client.post(
+            "/api/v1/inventory/checkin",
+            json=_payload(checkin_id=checkin_id),
+            headers={"Authorization": f"Bearer {api_key}"},
+        )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["status"] == "ok"
+    assert body["id"] == checkin_id
+
+    async with db_pool.acquire() as conn:
+        # RLS on device_checkins requires app.company_id to be set on the
+        # connection: current_setting() raises "unrecognized configuration
+        # parameter" on a virgin connection instead of denying rows, so a
+        # plain SELECT would fail even before RLS gets a chance to filter.
+        await conn.execute("SELECT set_config('app.company_id', $1, false)", company_id)
+        row = await conn.fetchrow(
+            "SELECT * FROM device_checkins WHERE checkin_id = $1", checkin_id
+        )
+    assert row is not None
+    assert str(row["company_id"]) == company_id
+    assert row["platform"] == "macos"
+    assert row["os_version"] == "14.4.1"
+
+
+async def test_checkin_duplicate_checkin_id_returns_409(db_pool, company):
+    _, api_key = company
+    checkin_id = str(uuid.uuid4())
+    async with await _client() as client:
+        first = await client.post(
+            "/api/v1/inventory/checkin",
+            json=_payload(checkin_id=checkin_id),
+            headers={"Authorization": f"Bearer {api_key}"},
+        )
+        second = await client.post(
+            "/api/v1/inventory/checkin",
+            json=_payload(checkin_id=checkin_id),
+            headers={"Authorization": f"Bearer {api_key}"},
+        )
+    assert first.status_code == 200
+    assert second.status_code == 409
+    assert second.json()["status"] == "duplicate"
+
+
+async def test_checkin_missing_required_field_returns_422(company):
+    _, api_key = company
+    payload = _payload()
+    del payload["serial_number"]
+    async with await _client() as client:
+        resp = await client.post(
+            "/api/v1/inventory/checkin",
+            json=payload,
+            headers={"Authorization": f"Bearer {api_key}"},
+        )
+    assert resp.status_code == 422
