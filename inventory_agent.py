@@ -315,10 +315,27 @@ DEFAULT_FIELD_CONFIG = {
 }
 
 
+def _is_valid_field_config(config) -> bool:
+    """Guards against a malformed-but-200-OK response reaching InventoryForm,
+    where a missing/wrong-typed key would raise inside Tkinter's constructor
+    with no surrounding try/except in main()."""
+    if not isinstance(config, dict):
+        return False
+    user_fields = config.get("user_fields")
+    hardware_fields = config.get("hardware_fields")
+    if not isinstance(user_fields, list) or not isinstance(hardware_fields, list):
+        return False
+    required_keys = {"key", "label", "required", "locked"}
+    return all(
+        isinstance(f, dict) and required_keys.issubset(f) and isinstance(f["key"], str)
+        for f in user_fields
+    ) and all(isinstance(key, str) for key in hardware_fields)
+
+
 def fetch_field_config() -> dict:
     """Fetches this company's field config; falls back to DEFAULT_FIELD_CONFIG
-    on any failure (network/auth/parse) so a config-fetch problem never blocks
-    check-in entirely."""
+    on any failure (network/auth/parse/malformed-shape) so a config-fetch
+    problem never blocks check-in entirely."""
     try:
         req = urllib.request.Request(
             CONFIG_API_URL,
@@ -329,7 +346,10 @@ def fetch_field_config() -> dict:
             method="GET",
         )
         resp = urllib.request.urlopen(req, timeout=10)
-        return json.loads(resp.read().decode())
+        config = json.loads(resp.read().decode())
+        if not _is_valid_field_config(config):
+            raise ValueError(f"Malformed field config response: {config!r}")
+        return config
     except Exception as e:
         log.warning(f"Failed to fetch field config, using defaults: {e}")
         return DEFAULT_FIELD_CONFIG
