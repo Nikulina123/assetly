@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>{{ company['name'] }}</h2>
+<p>API key prefix: <tt>{{ company['api_key_prefix'] }}...</tt></p>
+<p>Status: {% if company['revoked_at'] %}Revoked{% else %}Active{% endif %}</p>
+
+{% if new_api_key %}
+<div style="border:2px solid green; padding:10px; margin-bottom:16px;">
+  <strong>New API key — save it now, it won't be shown again:</strong><br>
+  <code>{{ new_api_key }}</code>
+</div>
+{% endif %}
+
+<form method="post" action="/admin/companies/{{ company['id'] }}/rotate-key">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  <button type="submit">Rotate API Key</button>
+</form>
+
+{% if not company['revoked_at'] %}
+<form method="post" action="/admin/companies/{{ company['id'] }}/revoke">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  <button type="submit">Revoke Company</button>
+</form>
+{% endif %}
+
+<h3>Check-in fields</h3>
+<p><em>Coming soon</em></p>
+<h3>Download agent</h3>
+<p><em>Coming soon</em></p>
+{% endblock %}

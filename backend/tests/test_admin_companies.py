@@ -73,3 +73,52 @@ async def test_create_company_without_csrf_token_is_rejected(admin):
     finally:
         await client.aclose()
     assert resp.status_code == 422  # FastAPI rejects the missing required Form field
+
+
+async def test_company_detail_shows_company_info(admin, company):
+    _, email, password = admin
+    company_id, _ = company
+    client = await _logged_in_client(email, password)
+    try:
+        resp = await client.get(f"/admin/companies/{company_id}")
+    finally:
+        await client.aclose()
+    assert resp.status_code == 200
+    assert b"Test Co" in resp.content
+
+
+async def test_company_detail_404_for_unknown_id(admin):
+    _, email, password = admin
+    client = await _logged_in_client(email, password)
+    try:
+        resp = await client.get("/admin/companies/00000000-0000-0000-0000-000000000000")
+    finally:
+        await client.aclose()
+    assert resp.status_code == 404
+
+
+async def test_rotate_key_invalidates_old_key_and_activates_new(admin, company, db_pool):
+    from app.auth import resolve_company_id
+
+    _, email, password = admin
+    company_id, old_api_key = company
+    client = await _logged_in_client(email, password)
+    try:
+        get_resp = await client.get(f"/admin/companies/{company_id}")
+        csrf_token = get_resp.text.split('name="csrf_token" value="')[1].split('"')[0]
+
+        resp = await client.post(
+            f"/admin/companies/{company_id}/rotate-key",
+            data={"csrf_token": csrf_token},
+        )
+    finally:
+        await client.aclose()
+    assert resp.status_code == 200
+    assert b"wz_live_" in resp.content
+
+    old_resolved = await resolve_company_id(db_pool, old_api_key)
+    assert old_resolved is None
+
+    new_api_key = resp.text.split("<code>")[1].split("</code>")[0]
+    new_resolved = await resolve_company_id(db_pool, new_api_key)
+    assert new_resolved == company_id

@@ -102,3 +102,65 @@ async def companies_create(
             "new_api_key": api_key,
         },
     )
+
+
+async def _get_company_or_404(pool, company_id: uuid.UUID):
+    async with pool.acquire() as conn:
+        company = await conn.fetchrow(
+            "SELECT id, name, api_key_prefix, revoked_at FROM companies WHERE id = $1",
+            company_id,
+        )
+    if company is None:
+        raise HTTPException(status_code=404, detail="Company not found")
+    return company
+
+
+@router.get("/companies/{company_id}")
+async def company_detail(
+    request: Request, company_id: uuid.UUID, admin_id: str = Depends(require_admin)
+):
+    pool = await get_pool()
+    company = await _get_company_or_404(pool, company_id)
+    companies = await _all_companies(pool)
+    return templates.TemplateResponse(
+        "company_detail.html",
+        {
+            "request": request,
+            "companies": companies,
+            "company": company,
+            "csrf_token": _new_csrf_token(request),
+        },
+    )
+
+
+@router.post("/companies/{company_id}/rotate-key")
+async def rotate_key(
+    request: Request,
+    company_id: uuid.UUID,
+    csrf_token: str = Form(...),
+    admin_id: str = Depends(require_admin),
+):
+    _check_csrf(request, csrf_token)
+    pool = await get_pool()
+    await _get_company_or_404(pool, company_id)
+
+    api_key = generate_api_key()
+    key_hash = hash_api_key(api_key)
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE companies SET api_key_hash = $1, api_key_prefix = $2 WHERE id = $3",
+            key_hash, api_key[:8], company_id,
+        )
+
+    company = await _get_company_or_404(pool, company_id)
+    companies = await _all_companies(pool)
+    return templates.TemplateResponse(
+        "company_detail.html",
+        {
+            "request": request,
+            "companies": companies,
+            "company": company,
+            "csrf_token": _new_csrf_token(request),
+            "new_api_key": api_key,
+        },
+    )
