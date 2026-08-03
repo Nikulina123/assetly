@@ -96,6 +96,13 @@ _RESERVED_FIELD_KEYS = {"project"} | set(HARDWARE_FIELD_KEYS)
 
 async def add_custom_field(pool: asyncpg.Pool, company_id: str, label: str, required: bool) -> str:
     field_key = slugify(label)
+    if not field_key:
+        # slugify only keeps [a-z0-9] — punctuation-only or non-Latin-script
+        # labels (e.g. Georgian) collapse to "". Without this check the first
+        # such label would silently insert field_key="", and a second would
+        # hit the DB's UNIQUE constraint as an unhandled 500 instead of a
+        # clean validation error.
+        raise ValueError(f"{label!r} does not contain any usable characters for a field name")
     if field_key in _RESERVED_FIELD_KEYS:
         raise ValueError(
             f"{label!r} is a reserved field name (conflicts with a built-in or hardware field key)"

@@ -152,3 +152,17 @@ async def test_resolve_field_settings_for_admin_shape(db_pool, company):
     assert settings["custom_fields"] == [
         {"key": "department", "label": "Department", "required": True}
     ]
+
+
+def test_slugify_punctuation_only_label_produces_empty_string():
+    assert slugify("???") == ""
+    assert slugify("   ") == ""
+    assert slugify("ąćę") == ""  # non a-z0-9 script collapses to nothing
+
+
+async def test_add_custom_field_rejects_unusable_label(db_pool, company):
+    company_id, _ = company
+    with pytest.raises(ValueError, match="usable characters"):
+        await add_custom_field(db_pool, company_id, "???", required=False)
+    with pytest.raises(ValueError, match="usable characters"):
+        await add_custom_field(db_pool, company_id, "ąćę", required=False)
