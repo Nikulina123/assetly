@@ -163,3 +163,14 @@ async def test_checkin_without_custom_fields_defaults_to_empty(db_pool, company)
         )
     import json as json_module
     assert json_module.loads(row["custom_fields"]) == {}
+
+
+async def test_checkin_rejects_non_string_custom_field_value(company):
+    _, api_key = company
+    async with await _client() as client:
+        resp = await client.post(
+            "/api/v1/inventory/checkin",
+            json=_payload(custom_fields={"department": 123}),
+            headers={"Authorization": f"Bearer {api_key}"},
+        )
+    assert resp.status_code == 422
