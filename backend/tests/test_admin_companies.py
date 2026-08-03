@@ -122,3 +122,46 @@ async def test_rotate_key_invalidates_old_key_and_activates_new(admin, company, 
     new_api_key = resp.text.split("<code>")[1].split("</code>")[0]
     new_resolved = await resolve_company_id(db_pool, new_api_key)
     assert new_resolved == company_id
+
+
+async def test_revoke_company_stops_key_from_resolving(admin, company, db_pool):
+    from app.auth import resolve_company_id
+
+    _, email, password = admin
+    company_id, api_key = company
+    client = await _logged_in_client(email, password)
+    try:
+        get_resp = await client.get(f"/admin/companies/{company_id}")
+        csrf_token = get_resp.text.split('name="csrf_token" value="')[1].split('"')[0]
+
+        resp = await client.post(
+            f"/admin/companies/{company_id}/revoke",
+            data={"csrf_token": csrf_token},
+        )
+    finally:
+        await client.aclose()
+    assert resp.status_code == 200
+    assert b"Revoked" in resp.content
+
+    resolved = await resolve_company_id(db_pool, api_key)
+    assert resolved is None
+
+
+async def test_revoke_is_idempotent(admin, company):
+    _, email, password = admin
+    company_id, _ = company
+    client = await _logged_in_client(email, password)
+    try:
+        get_resp = await client.get(f"/admin/companies/{company_id}")
+        csrf_token = get_resp.text.split('name="csrf_token" value="')[1].split('"')[0]
+
+        first = await client.post(
+            f"/admin/companies/{company_id}/revoke", data={"csrf_token": csrf_token}
+        )
+        second = await client.post(
+            f"/admin/companies/{company_id}/revoke", data={"csrf_token": csrf_token}
+        )
+    finally:
+        await client.aclose()
+    assert first.status_code == 200
+    assert second.status_code == 200

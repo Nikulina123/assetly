@@ -167,3 +167,37 @@ async def rotate_key(
             "new_api_key": api_key,
         },
     )
+
+
+@router.post("/companies/{company_id}/revoke")
+async def revoke_company(
+    request: Request,
+    company_id: uuid.UUID,
+    csrf_token: str = Form(...),
+    admin_id: str = Depends(require_admin),
+):
+    _check_csrf(request, csrf_token)
+    pool = await get_pool()
+
+    async with pool.acquire() as conn:
+        company = await conn.fetchrow(
+            """
+            UPDATE companies SET revoked_at = NOW() WHERE id = $1 AND revoked_at IS NULL
+            RETURNING id, name, api_key_prefix, revoked_at
+            """,
+            company_id,
+        )
+
+    if company is None:
+        company = await _get_company_or_404(pool, company_id)
+
+    companies = await _all_companies(pool)
+    return templates.TemplateResponse(
+        "company_detail.html",
+        {
+            "request": request,
+            "companies": companies,
+            "company": company,
+            "csrf_token": _new_csrf_token(request),
+        },
+    )
