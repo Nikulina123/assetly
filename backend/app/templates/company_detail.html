@@ -34,6 +34,9 @@
   <button type="submit">Save Check-in Fields</button>
 </form>
 
+{% if field_error %}
+<p style="color:red;">{{ field_error }}</p>
+{% endif %}
 <h4>Custom fields</h4>
 <ul>
 {% for cf in field_settings['custom_fields'] %}

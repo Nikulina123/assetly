@@ -262,8 +262,23 @@ async def add_custom_field_route(
 ):
     _check_csrf(request, csrf_token)
     pool = await get_pool()
-    await _get_company_or_404(pool, company_id)
-    await add_custom_field(pool, str(company_id), label, required is not None)
+    company = await _get_company_or_404(pool, company_id)
+    try:
+        await add_custom_field(pool, str(company_id), label, required is not None)
+    except ValueError as e:
+        field_settings = await resolve_field_settings_for_admin(pool, str(company_id))
+        companies = await _all_companies(pool)
+        return templates.TemplateResponse(
+            "company_detail.html",
+            {
+                "request": request,
+                "companies": companies,
+                "company": company,
+                "csrf_token": _new_csrf_token(request),
+                "field_settings": field_settings,
+                "field_error": str(e),
+            },
+        )
     return RedirectResponse(f"/admin/companies/{company_id}", status_code=303)
 
 

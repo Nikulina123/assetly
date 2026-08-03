@@ -97,3 +97,21 @@ async def test_add_and_remove_custom_field_via_admin(admin, company, db_pool):
 
     config = await resolve_field_config(db_pool, company_id)
     assert "department" not in [f["key"] for f in config["user_fields"]]
+
+
+async def test_add_custom_field_with_reserved_label_shows_error(admin, company):
+    _, email, password = admin
+    company_id, _ = company
+    client = await _logged_in_client(email, password)
+    try:
+        get_resp = await client.get(f"/admin/companies/{company_id}")
+        csrf_token = get_resp.text.split('name="csrf_token" value="')[1].split('"')[0]
+
+        resp = await client.post(
+            f"/admin/companies/{company_id}/fields/custom",
+            data={"csrf_token": csrf_token, "label": "CPU"},
+        )
+    finally:
+        await client.aclose()
+    assert resp.status_code == 200
+    assert b"reserved" in resp.content
