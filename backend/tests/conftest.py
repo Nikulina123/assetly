@@ -19,7 +19,7 @@ async def db_pool():
     # TRUNCATE grant in production (TRUNCATE bypasses RLS entirely), so test
     # cleanup can't go through the same role the app itself uses.
     admin_conn = await asyncpg.connect(ADMIN_TEST_DATABASE_URL)
-    await admin_conn.execute("TRUNCATE device_checkins, devices, companies CASCADE;")
+    await admin_conn.execute("TRUNCATE device_checkins, devices, companies, admins CASCADE;")
     await admin_conn.close()
 
     pool = await asyncpg.create_pool(TEST_DATABASE_URL)
