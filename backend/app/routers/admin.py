@@ -189,6 +189,10 @@ async def revoke_company(
         )
 
     if company is None:
+        # UPDATE's WHERE clause excludes already-revoked rows, so None here means
+        # either "already revoked" or "doesn't exist" — disambiguate with a plain
+        # lookup: 404s if truly missing, otherwise returns the existing (already-
+        # revoked) row so this stays idempotent instead of erroring on a re-click.
         company = await _get_company_or_404(pool, company_id)
 
     companies = await _all_companies(pool)
