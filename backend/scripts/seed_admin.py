@@ -15,6 +15,7 @@ creation is an operator action, not something the running app does itself.
 """
 import argparse
 import asyncio
+import sys
 
 import asyncpg
 
@@ -28,6 +29,9 @@ async def create_admin(database_url: str, email: str, password: str) -> None:
             "INSERT INTO admins (email, password_hash) VALUES ($1, $2)",
             email, hash_password(password),
         )
+    except asyncpg.UniqueViolationError:
+        print(f"An admin with email {email!r} already exists.", file=sys.stderr)
+        sys.exit(1)
     finally:
         await conn.close()
     print(f"Created admin account: {email}")
