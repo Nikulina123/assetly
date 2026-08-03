@@ -123,3 +123,43 @@ async def test_checkin_missing_required_field_returns_422(company):
             headers={"Authorization": f"Bearer {api_key}"},
         )
     assert resp.status_code == 422
+
+
+async def test_checkin_stores_custom_fields(db_pool, company):
+    company_id, api_key = company
+    checkin_id = str(uuid.uuid4())
+    async with await _client() as client:
+        resp = await client.post(
+            "/api/v1/inventory/checkin",
+            json=_payload(checkin_id=checkin_id, custom_fields={"department": "Engineering"}),
+            headers={"Authorization": f"Bearer {api_key}"},
+        )
+    assert resp.status_code == 200
+
+    async with db_pool.acquire() as conn:
+        await conn.execute("SELECT set_config('app.company_id', $1, false)", company_id)
+        row = await conn.fetchrow(
+            "SELECT custom_fields FROM device_checkins WHERE checkin_id = $1", checkin_id
+        )
+    import json as json_module
+    assert json_module.loads(row["custom_fields"]) == {"department": "Engineering"}
+
+
+async def test_checkin_without_custom_fields_defaults_to_empty(db_pool, company):
+    company_id, api_key = company
+    checkin_id = str(uuid.uuid4())
+    async with await _client() as client:
+        resp = await client.post(
+            "/api/v1/inventory/checkin",
+            json=_payload(checkin_id=checkin_id),
+            headers={"Authorization": f"Bearer {api_key}"},
+        )
+    assert resp.status_code == 200
+
+    async with db_pool.acquire() as conn:
+        await conn.execute("SELECT set_config('app.company_id', $1, false)", company_id)
+        row = await conn.fetchrow(
+            "SELECT custom_fields FROM device_checkins WHERE checkin_id = $1", checkin_id
+        )
+    import json as json_module
+    assert json_module.loads(row["custom_fields"]) == {}

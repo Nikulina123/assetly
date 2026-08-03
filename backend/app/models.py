@@ -26,6 +26,7 @@ class CheckinRequest(BaseModel):
     os: str
     agent_version: str | None = None
     submission_type: str = "online"
+    custom_fields: dict[str, str] = {}
 
 
 class CheckinResponse(BaseModel):

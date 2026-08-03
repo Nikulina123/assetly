@@ -1,3 +1,4 @@
+import json
 import uuid
 
 import asyncpg
@@ -52,14 +53,14 @@ async def checkin(
                         serial_number, hostname, brand, model,
                         cpu, ram, storage, ip_address,
                         os, os_version, platform,
-                        agent_version, submission_type
+                        agent_version, submission_type, custom_fields
                     ) VALUES (
                         $1, $2, $3,
                         $4, $5, $6, $7,
                         $8, $9, $10, $11,
                         $12, $13, $14, $15,
                         $16, $17, $18,
-                        $19, $20
+                        $19, $20, $21::jsonb
                     )
                     """,
                     uuid.UUID(company_id), payload.checkin_id, payload.timestamp,
@@ -67,7 +68,7 @@ async def checkin(
                     payload.serial_number, payload.hostname, payload.brand, payload.model,
                     payload.cpu, payload.ram, payload.storage, payload.ip_address,
                     payload.os, os_version, platform_name,
-                    payload.agent_version, payload.submission_type,
+                    payload.agent_version, payload.submission_type, json.dumps(payload.custom_fields),
                 )
             except asyncpg.UniqueViolationError:
                 # Returning here still exits `async with conn.transaction()` normally, which
