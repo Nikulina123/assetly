@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>Companies</h2>
+
+{% if new_api_key %}
+<div style="border:2px solid green; padding:10px; margin-bottom:16px;">
+  <strong>Save this API key now — it won't be shown again:</strong><br>
+  <code>{{ new_api_key }}</code>
+</div>
+{% endif %}
+
+<form method="post" action="/admin/companies">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  <input type="text" name="name" placeholder="Company name" required>
+  <button type="submit">Create Company</button>
+</form>
+{% endblock %}
