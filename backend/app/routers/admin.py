@@ -142,17 +142,20 @@ async def rotate_key(
 ):
     _check_csrf(request, csrf_token)
     pool = await get_pool()
-    await _get_company_or_404(pool, company_id)
 
     api_key = generate_api_key()
     key_hash = hash_api_key(api_key)
     async with pool.acquire() as conn:
-        await conn.execute(
-            "UPDATE companies SET api_key_hash = $1, api_key_prefix = $2 WHERE id = $3",
+        company = await conn.fetchrow(
+            """
+            UPDATE companies SET api_key_hash = $1, api_key_prefix = $2 WHERE id = $3
+            RETURNING id, name, api_key_prefix, revoked_at
+            """,
             key_hash, api_key[:8], company_id,
         )
+    if company is None:
+        raise HTTPException(status_code=404, detail="Company not found")
 
-    company = await _get_company_or_404(pool, company_id)
     companies = await _all_companies(pool)
     return templates.TemplateResponse(
         "company_detail.html",
