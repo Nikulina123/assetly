@@ -6,6 +6,7 @@ from fastapi.responses import JSONResponse
 
 from app.auth import resolve_company_id
 from app.db import get_pool
+from app.field_config import resolve_field_config
 from app.hardware import normalize_os
 from app.models import CheckinRequest, CheckinResponse
 
@@ -23,6 +24,12 @@ async def get_current_company_id(
     if company_id is None:
         raise HTTPException(status_code=401, detail="Invalid or revoked API key")
     return company_id
+
+
+@router.get("/api/v1/inventory/config")
+async def get_config(company_id: str = Depends(get_current_company_id)):
+    pool = await get_pool()
+    return await resolve_field_config(pool, company_id)
 
 
 @router.post("/api/v1/inventory/checkin", response_model=CheckinResponse)
