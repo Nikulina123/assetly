@@ -20,6 +20,9 @@ async def resolve_field_config(pool: asyncpg.Pool, company_id: str) -> dict:
                 uuid.UUID(company_id),
             )
 
+    # Flat by field_key across all field_type values — relies on add_custom_field
+    # (below) rejecting any slug that collides with 'project' or a hardware key.
+    # Nothing in this function itself prevents that collision.
     overrides = {row["field_key"]: row for row in rows}
 
     user_fields = [
