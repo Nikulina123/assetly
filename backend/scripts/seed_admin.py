@@ -2,7 +2,12 @@
 
 Usage:
     cd backend && source venv/bin/activate
-    python3 scripts/seed_admin.py --email admin@webiz.com --password 'a-strong-password'
+    python3 -m scripts.seed_admin --email admin@webiz.com --password 'a-strong-password'
+
+(Must be run as `-m scripts.seed_admin`, not `scripts/seed_admin.py` directly —
+the latter puts scripts/ rather than backend/ on sys.path, so `from app...`
+fails with ModuleNotFoundError. `-m` runs from the current directory instead,
+which is backend/, where the `app` package actually lives.)
 
 Connects as the `admin` superuser role (not webiz_app — webiz_app only has
 SELECT on the admins table, per migrations/002_admin_auth.sql), since account
