@@ -624,8 +624,11 @@ def main():
         f"{'─'*44}\n"
         f"Name      : {full_name}\n"
         f"Email     : {app.user_data['email']}\n"
-        f"Project   : {app.user_data['project']}\n"
-        f"Screen    : {app.user_data.get('screen_size', 'N/A')} in.\n"
+        f"Project   : {app.user_data.get('project', 'N/A')}\n"
+        + "".join(
+            f"{key.replace('_', ' ').title():<10}: {value}\n"
+            for key, value in app.user_data.get("custom_fields", {}).items()
+        ) +
         f"{'─'*44}\n"
         f"Device    : {hw['brand']} {hw['model']}\n"
         f"Serial    : {hw.get('serial_number','N/A')}\n"
