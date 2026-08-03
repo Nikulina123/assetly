@@ -9,7 +9,7 @@ from app.db import get_pool
 from app.hardware import normalize_os
 from app.models import CheckinRequest, CheckinResponse
 
-router = APIRouter()
+router = APIRouter(tags=["checkin"])
 
 
 async def get_current_company_id(
