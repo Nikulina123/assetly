@@ -11,7 +11,7 @@ class CheckinRequest(BaseModel):
     first_name: str
     last_name: str
     email: str
-    project: str
+    project: str | None = None  # toggleable per company, see app/field_config.py
 
     serial_number: str
     hostname: str

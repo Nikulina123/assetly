@@ -174,3 +174,54 @@ async def test_checkin_rejects_non_string_custom_field_value(company):
             headers={"Authorization": f"Bearer {api_key}"},
         )
     assert resp.status_code == 422
+
+
+async def test_checkin_succeeds_without_project(db_pool, company):
+    """project is toggleable per company (app/field_config.py); a company with
+    it disabled must still be able to check in successfully."""
+    company_id, api_key = company
+    checkin_id = str(uuid.uuid4())
+    payload = _payload(checkin_id=checkin_id)
+    del payload["project"]
+    async with await _client() as client:
+        resp = await client.post(
+            "/api/v1/inventory/checkin",
+            json=payload,
+            headers={"Authorization": f"Bearer {api_key}"},
+        )
+    assert resp.status_code == 200
+
+    async with db_pool.acquire() as conn:
+        await conn.execute("SELECT set_config('app.company_id', $1, false)", company_id)
+        row = await conn.fetchrow(
+            "SELECT project FROM device_checkins WHERE checkin_id = $1", checkin_id
+        )
+    assert row["project"] is None
+
+
+async def test_checkin_succeeds_without_optional_hardware_fields(db_pool, company):
+    """A regression guard for the same shape of bug that once bit the
+    timestamp field: omitting a toggleable hardware field must not 422."""
+    company_id, api_key = company
+    checkin_id = str(uuid.uuid4())
+    payload = _payload(checkin_id=checkin_id)
+    for key in ("cpu", "ram", "storage", "ip_address"):
+        del payload[key]
+    async with await _client() as client:
+        resp = await client.post(
+            "/api/v1/inventory/checkin",
+            json=payload,
+            headers={"Authorization": f"Bearer {api_key}"},
+        )
+    assert resp.status_code == 200
+
+    async with db_pool.acquire() as conn:
+        await conn.execute("SELECT set_config('app.company_id', $1, false)", company_id)
+        row = await conn.fetchrow(
+            "SELECT cpu, ram, storage, ip_address FROM device_checkins WHERE checkin_id = $1",
+            checkin_id,
+        )
+    assert row["cpu"] is None
+    assert row["ram"] is None
+    assert row["storage"] is None
+    assert row["ip_address"] is None
