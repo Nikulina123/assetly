@@ -24,7 +24,34 @@
 {% endif %}
 
 <h3>Check-in fields</h3>
-<p><em>Coming soon</em></p>
+<form method="post" action="/admin/companies/{{ company['id'] }}/fields/hardware">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  {% for f in field_settings['hardware_field_options'] %}
+  <label><input type="checkbox" name="{{ f['key'] }}" {% if f['enabled'] %}checked{% endif %}> {{ f['label'] }}</label><br>
+  {% endfor %}
+  <label><input type="checkbox" name="project_enabled" {% if field_settings['project_enabled'] %}checked{% endif %}> Project field enabled</label><br>
+  <label><input type="checkbox" name="project_required" {% if field_settings['project_required'] %}checked{% endif %}> Project required</label><br>
+  <button type="submit">Save Check-in Fields</button>
+</form>
+
+<h4>Custom fields</h4>
+<ul>
+{% for cf in field_settings['custom_fields'] %}
+  <li>
+    {{ cf['label'] }} ({% if cf['required'] %}required{% else %}optional{% endif %})
+    <form method="post" action="/admin/companies/{{ company['id'] }}/fields/custom/{{ cf['key'] }}/remove" style="display:inline;">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <button type="submit">Remove</button>
+    </form>
+  </li>
+{% endfor %}
+</ul>
+<form method="post" action="/admin/companies/{{ company['id'] }}/fields/custom">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  <input type="text" name="label" placeholder="Field label" required>
+  <label><input type="checkbox" name="required"> Required</label>
+  <button type="submit">Add Custom Field</button>
+</form>
 <h3>Download agent</h3>
-<p><em>Coming soon</em></p>
+<p><em>Not yet available</em></p>
 {% endblock %}

@@ -8,6 +8,13 @@ from fastapi.templating import Jinja2Templates
 from app.admin_auth import resolve_admin
 from app.auth import generate_api_key, hash_api_key
 from app.db import get_pool
+from app.field_config import (
+    add_custom_field,
+    remove_custom_field,
+    resolve_field_settings_for_admin,
+    set_hardware_field_enabled,
+    set_project_config,
+)
 
 router = APIRouter(prefix="/admin")
 templates = Jinja2Templates(directory=str(Path(__file__).resolve().parent.parent / "templates"))
@@ -121,6 +128,7 @@ async def company_detail(
 ):
     pool = await get_pool()
     company = await _get_company_or_404(pool, company_id)
+    field_settings = await resolve_field_settings_for_admin(pool, str(company_id))
     companies = await _all_companies(pool)
     return templates.TemplateResponse(
         "company_detail.html",
@@ -129,6 +137,7 @@ async def company_detail(
             "companies": companies,
             "company": company,
             "csrf_token": _new_csrf_token(request),
+            "field_settings": field_settings,
         },
     )
 
@@ -156,6 +165,7 @@ async def rotate_key(
     if company is None:
         raise HTTPException(status_code=404, detail="Company not found")
 
+    field_settings = await resolve_field_settings_for_admin(pool, str(company_id))
     companies = await _all_companies(pool)
     return templates.TemplateResponse(
         "company_detail.html",
@@ -165,6 +175,7 @@ async def rotate_key(
             "company": company,
             "csrf_token": _new_csrf_token(request),
             "new_api_key": api_key,
+            "field_settings": field_settings,
         },
     )
 
@@ -195,6 +206,7 @@ async def revoke_company(
         # revoked) row so this stays idempotent instead of erroring on a re-click.
         company = await _get_company_or_404(pool, company_id)
 
+    field_settings = await resolve_field_settings_for_admin(pool, str(company_id))
     companies = await _all_companies(pool)
     return templates.TemplateResponse(
         "company_detail.html",
@@ -203,5 +215,68 @@ async def revoke_company(
             "companies": companies,
             "company": company,
             "csrf_token": _new_csrf_token(request),
+            "field_settings": field_settings,
         },
     )
+
+
+@router.post("/companies/{company_id}/fields/hardware")
+async def update_hardware_fields(
+    request: Request,
+    company_id: uuid.UUID,
+    csrf_token: str = Form(...),
+    cpu: str | None = Form(None),
+    ram: str | None = Form(None),
+    storage: str | None = Form(None),
+    ip_address: str | None = Form(None),
+    project_enabled: str | None = Form(None),
+    project_required: str | None = Form(None),
+    admin_id: str = Depends(require_admin),
+):
+    _check_csrf(request, csrf_token)
+    pool = await get_pool()
+    await _get_company_or_404(pool, company_id)
+
+    company_id_str = str(company_id)
+    for field_key, submitted_value in [
+        ("cpu", cpu), ("ram", ram), ("storage", storage), ("ip_address", ip_address),
+    ]:
+        await set_hardware_field_enabled(pool, company_id_str, field_key, submitted_value is not None)
+    await set_project_config(
+        pool, company_id_str,
+        enabled=project_enabled is not None,
+        required=project_required is not None,
+    )
+
+    return RedirectResponse(f"/admin/companies/{company_id}", status_code=303)
+
+
+@router.post("/companies/{company_id}/fields/custom")
+async def add_custom_field_route(
+    request: Request,
+    company_id: uuid.UUID,
+    label: str = Form(...),
+    required: str | None = Form(None),
+    csrf_token: str = Form(...),
+    admin_id: str = Depends(require_admin),
+):
+    _check_csrf(request, csrf_token)
+    pool = await get_pool()
+    await _get_company_or_404(pool, company_id)
+    await add_custom_field(pool, str(company_id), label, required is not None)
+    return RedirectResponse(f"/admin/companies/{company_id}", status_code=303)
+
+
+@router.post("/companies/{company_id}/fields/custom/{field_key}/remove")
+async def remove_custom_field_route(
+    request: Request,
+    company_id: uuid.UUID,
+    field_key: str,
+    csrf_token: str = Form(...),
+    admin_id: str = Depends(require_admin),
+):
+    _check_csrf(request, csrf_token)
+    pool = await get_pool()
+    await _get_company_or_404(pool, company_id)
+    await remove_custom_field(pool, str(company_id), field_key)
+    return RedirectResponse(f"/admin/companies/{company_id}", status_code=303)
