@@ -48,6 +48,7 @@ if CONFIG_FILE.exists():
         pass
 
 CHECKIN_API_URL  = _cfg.get("checkin_api_url", "https://api.example.com/api/v1/inventory/checkin")
+CONFIG_API_URL   = CHECKIN_API_URL.rsplit("/checkin", 1)[0] + "/config"
 COMPANY_API_KEY  = _cfg.get("company_api_key", "")
 GITHUB_RAW_URL   = _cfg.get("github_raw_url", "")
 
@@ -303,11 +304,47 @@ def _post_to_sheets(payload: dict) -> bool:
         log.warning(f"HTTP submit failed: {e}")
         return False
 
-def submit_to_sheets(user_data: dict, hw: dict) -> bool:
+DEFAULT_FIELD_CONFIG = {
+    "user_fields": [
+        {"key": "first_name", "label": "First Name", "required": True, "locked": True},
+        {"key": "last_name", "label": "Last Name", "required": True, "locked": True},
+        {"key": "email", "label": "Email", "required": True, "locked": True},
+        {"key": "project", "label": "Project", "required": True, "locked": False},
+    ],
+    "hardware_fields": ["cpu", "ram", "storage", "ip_address"],
+}
+
+
+def fetch_field_config() -> dict:
+    """Fetches this company's field config; falls back to DEFAULT_FIELD_CONFIG
+    on any failure (network/auth/parse) so a config-fetch problem never blocks
+    check-in entirely."""
+    try:
+        req = urllib.request.Request(
+            CONFIG_API_URL,
+            headers={
+                "Authorization": f"Bearer {COMPANY_API_KEY}",
+                "User-Agent": "Mozilla/5.0",
+            },
+            method="GET",
+        )
+        resp = urllib.request.urlopen(req, timeout=10)
+        return json.loads(resp.read().decode())
+    except Exception as e:
+        log.warning(f"Failed to fetch field config, using defaults: {e}")
+        return DEFAULT_FIELD_CONFIG
+
+
+def submit_to_sheets(user_data: dict, hw: dict, enabled_hardware_fields: list) -> bool:
     """Returns True if submitted immediately, False if queued offline."""
     import uuid
+    always_sent_hw_keys = {"serial_number", "hostname", "brand", "model", "os", "timestamp"}
+    filtered_hw = {
+        key: value for key, value in hw.items()
+        if key in always_sent_hw_keys or key in enabled_hardware_fields
+    }
     payload = {
-        **user_data, **hw,
+        **user_data, **filtered_hw,
         "checkin_id":      str(uuid.uuid4()),
         "agent_version":   "2.0",
         "submission_type": "online",
@@ -327,11 +364,13 @@ def submit_to_sheets(user_data: dict, hw: dict) -> bool:
 
 # ─── GUI ──────────────────────────────────────────────────────────────────────
 class InventoryForm(tk.Tk):
-    def __init__(self, hw: dict):
+    def __init__(self, hw: dict, field_config: dict):
         super().__init__()
-        self.hw        = hw
-        self.submitted = False
+        self.hw           = hw
+        self.field_config = field_config
+        self.submitted    = False
         self.user_data: dict = {}
+        self._field_widgets: dict = {}   # non-project field key -> tk.Entry
 
         self.title("Webiz Inventory Agent")
         self.configure(bg=BG_COLOR)
@@ -407,19 +446,22 @@ class InventoryForm(tk.Tk):
         form.pack(fill="both", expand=True, padx=26, pady=4)
         form.columnconfigure(1, weight=1)
 
-        self._e_first   = self._field(form, "First Name *",  0)
-        self._e_last    = self._field(form, "Last Name *",   1)
-        self._e_email   = self._field(form, "Email *",        2)
-
-        tk.Label(form, text="Project *", font=("Helvetica", 11, "bold"),
-                 bg=BG_COLOR, anchor="w").grid(row=3, column=0, sticky="w", pady=(10, 2))
-        self._v_project = tk.StringVar(value=PROJECTS[0])
-        ttk.Combobox(
-            form, textvariable=self._v_project, values=PROJECTS,
-            state="readonly", font=("Helvetica", 11), width=36,
-        ).grid(row=3, column=1, sticky="ew", padx=(8, 0), pady=(10, 2))
-
-        self._e_screen  = self._field(form, 'Screen Size (in.) *', 4)
+        self._v_project = None
+        row = 0
+        for f in self.field_config["user_fields"]:
+            suffix = " *" if f["required"] else ""
+            if f["key"] == "project":
+                tk.Label(form, text=f["label"] + suffix, font=("Helvetica", 11, "bold"),
+                         bg=BG_COLOR, anchor="w").grid(row=row, column=0, sticky="w", pady=(10, 2))
+                self._v_project = tk.StringVar(value=PROJECTS[0])
+                ttk.Combobox(
+                    form, textvariable=self._v_project, values=PROJECTS,
+                    state="readonly", font=("Helvetica", 11), width=36,
+                ).grid(row=row, column=1, sticky="ew", padx=(8, 0), pady=(10, 2))
+            else:
+                widget = self._field(form, f["label"] + suffix, row)
+                self._field_widgets[f["key"]] = widget
+            row += 1
 
         # ── Device info preview ───────────────────────────────────────────────
         tk.Frame(self, bg="#D0D5DD", height=1).pack(fill="x", padx=26, pady=(12, 6))
@@ -459,29 +501,36 @@ class InventoryForm(tk.Tk):
 
     # ── Validation ────────────────────────────────────────────────────────────
     def _validate(self) -> bool:
-        if not self._e_first.get().strip():
-            messagebox.showwarning("Missing field", "Please enter your First Name.", parent=self)
-            return False
-        if not self._e_last.get().strip():
-            messagebox.showwarning("Missing field", "Please enter your Last Name.", parent=self)
-            return False
-        if not re.match(r"[^@]+@[^@]+\.[^@]+", self._e_email.get().strip()):
-            messagebox.showwarning("Invalid email", "Please enter a valid email address.", parent=self)
-            return False
-        if not self._e_screen.get().strip():
-            messagebox.showwarning("Missing field", "Please enter the screen size (inches).", parent=self)
-            return False
+        for f in self.field_config["user_fields"]:
+            if f["key"] == "project" or not f["required"]:
+                continue
+            widget = self._field_widgets.get(f["key"])
+            if widget is None:
+                continue
+            value = widget.get().strip()
+            if not value:
+                messagebox.showwarning("Missing field", f"Please enter your {f['label']}.", parent=self)
+                return False
+            if f["key"] == "email" and not re.match(r"[^@]+@[^@]+\.[^@]+", value):
+                messagebox.showwarning("Invalid email", "Please enter a valid email address.", parent=self)
+                return False
         return True
 
     def _on_submit(self):
         if not self._validate():
             return
+        built_in_keys = {"first_name", "last_name", "email"}
         self.user_data = {
-            "first_name":  self._e_first.get().strip(),
-            "last_name":   self._e_last.get().strip(),
-            "email":       self._e_email.get().strip(),
-            "project":     self._v_project.get(),
-            "screen_size": self._e_screen.get().strip(),
+            key: widget.get().strip()
+            for key, widget in self._field_widgets.items()
+            if key in built_in_keys
+        }
+        if self._v_project is not None:
+            self.user_data["project"] = self._v_project.get()
+        self.user_data["custom_fields"] = {
+            key: widget.get().strip()
+            for key, widget in self._field_widgets.items()
+            if key not in built_in_keys
         }
         self.submitted = True
         self.destroy()
@@ -529,8 +578,11 @@ def main():
     hw = collect_hardware()
     log.info(json.dumps(hw, indent=2))
 
+    # 4b. Fetch per-company field config (falls back to defaults on failure)
+    field_config = fetch_field_config()
+
     # 5. Show GUI
-    app = InventoryForm(hw)
+    app = InventoryForm(hw, field_config)
     app.mainloop()
 
     # ── Cancelled ─────────────────────────────────────────────────────────────
@@ -553,7 +605,7 @@ def main():
 
     # ── Submitted ─────────────────────────────────────────────────────────────
     log.info("Submitting data to Google Sheets…")
-    immediate = submit_to_sheets(app.user_data, hw)
+    immediate = submit_to_sheets(app.user_data, hw, field_config["hardware_fields"])
 
     state["last_run"] = datetime.datetime.now().isoformat()
     state.pop("cancelled_at", None)
