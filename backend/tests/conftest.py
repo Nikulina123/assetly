@@ -41,3 +41,27 @@ async def company(db_pool):
             "Test Co", key_hash, api_key[:8],
         )
     return str(row["id"]), api_key
+
+
+@pytest_asyncio.fixture
+async def admin(db_pool):
+    """Inserts one admin with a known plaintext password, returns (admin_id, email, password).
+
+    Inserted via a separate admin-role connection (like the db_pool truncate
+    step above): webiz_app intentionally only has SELECT on admins (see
+    migrations/002_admin_auth.sql) since admin accounts are seeded via
+    scripts/seed_admin.py run as the `admin` superuser, not through the app.
+    """
+    from app.admin_auth import hash_password
+
+    email = "admin@example.com"
+    password = "correct-horse-battery-staple"
+    admin_conn = await asyncpg.connect(ADMIN_TEST_DATABASE_URL)
+    try:
+        row = await admin_conn.fetchrow(
+            "INSERT INTO admins (email, password_hash) VALUES ($1, $2) RETURNING id",
+            email, hash_password(password),
+        )
+    finally:
+        await admin_conn.close()
+    return str(row["id"]), email, password
