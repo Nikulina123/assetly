@@ -225,3 +225,56 @@ async def test_checkin_succeeds_without_optional_hardware_fields(db_pool, compan
     assert row["ram"] is None
     assert row["storage"] is None
     assert row["ip_address"] is None
+
+
+async def test_checkin_success_triggers_notification(db_pool, company, monkeypatch):
+    import app.routers.checkin as checkin_module
+
+    calls = []
+
+    def fake_notify(*args):
+        calls.append(args)
+
+    company_id, api_key = company
+    async with db_pool.acquire() as conn:
+        await conn.execute("SELECT set_config('app.company_id', $1, false)", company_id)
+        await conn.execute(
+            "UPDATE companies SET notification_email = $1 WHERE id = $2",
+            "owner@example.com", company_id,
+        )
+
+    # Patch AFTER the client is created but before the request -- the
+    # autouse conftest fixture already patched this once; this test
+    # overrides it again with a recording stub for this test only.
+    monkeypatch.setattr(checkin_module, "notify_checkin_success", fake_notify)
+    async with await _client() as client:
+        resp = await client.post(
+            "/api/v1/inventory/checkin",
+            json=_payload(checkin_id=str(uuid.uuid4())),
+            headers={"Authorization": f"Bearer {api_key}"},
+        )
+    assert resp.status_code == 200
+    assert len(calls) == 1
+    to_email, hostname, full_name, project, custom_fields = calls[0]
+    assert to_email == "owner@example.com"
+    assert hostname == "nino-macbook"
+
+
+async def test_checkin_auth_failure_triggers_notification(monkeypatch):
+    import app.routers.checkin as checkin_module
+
+    calls = []
+
+    def fake_notify(key_prefix):
+        calls.append(key_prefix)
+
+    monkeypatch.setattr(checkin_module, "notify_auth_failure", fake_notify)
+    async with await _client() as client:
+        resp = await client.post(
+            "/api/v1/inventory/checkin",
+            json=_payload(),
+            headers={"Authorization": "Bearer wz_live_doesnotexist"},
+        )
+    assert resp.status_code == 401
+    assert len(calls) == 1
+    assert calls[0].startswith("wz_live_")

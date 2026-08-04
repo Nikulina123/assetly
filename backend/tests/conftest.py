@@ -1,5 +1,7 @@
 import os
+
 import asyncpg
+import pytest
 import pytest_asyncio
 
 TEST_DATABASE_URL = os.environ.get(
@@ -11,6 +13,27 @@ ADMIN_TEST_DATABASE_URL = os.environ.get(
     "ADMIN_TEST_DATABASE_URL",
     "postgresql://admin@localhost:5432/webiz_checkin_test",
 )
+
+
+@pytest.fixture(autouse=True)
+def _stub_checkin_notifications(monkeypatch):
+    """Prevents every test in the suite from triggering a real Sendly send
+    via the checkin endpoint's background-task notifications, once Task 3
+    wires them in. Patches app.routers.checkin's OWN imported names (not
+    app.notifications' originals) -- checkin.py does `from app.notifications
+    import notify_checkin_success, notify_auth_failure`, which binds a
+    separate reference in checkin.py's namespace at import time, so that's
+    the reference that must be patched for checkin.py's call sites to see
+    the stub. This is the exact same pattern already used for WINDOWS_EXE_PATH
+    in test_admin_downloads.py (patching the consumer module's copy of an
+    imported name, not the defining module's).
+
+    Individual tests that want to verify notification behavior re-patch
+    these same two names with their own recording stub via monkeypatch,
+    which simply overrides this default for that one test."""
+    import app.routers.checkin as checkin_module
+    monkeypatch.setattr(checkin_module, "notify_checkin_success", lambda *a, **kw: None)
+    monkeypatch.setattr(checkin_module, "notify_auth_failure", lambda *a, **kw: None)
 
 
 @pytest_asyncio.fixture
