@@ -406,6 +406,10 @@ async def download_windows(
     admin_id: str = Depends(require_admin),
 ):
     _check_csrf(request, csrf_token)
+    # Checked before any DB work / key rotation below -- same validate-before-
+    # rotate ordering as _load_installer_template for macos/linux, so a
+    # missing build artifact can't leave a company's key rotated with
+    # nothing to download.
     if not WINDOWS_EXE_PATH.exists():
         raise HTTPException(
             status_code=503,
