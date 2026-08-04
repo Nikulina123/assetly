@@ -97,14 +97,16 @@ async def test_download_linux_contains_a_fresh_key(admin, company):
 async def test_download_blocked_for_revoked_company(admin, company, db_pool):
     _, email, password = admin
     company_id, _ = company
-    async with db_pool.acquire() as conn:
-        await conn.execute("UPDATE companies SET revoked_at = NOW() WHERE id = $1", company_id)
     client = await _logged_in_client(email, password)
     try:
+        # Fetch the CSRF token BEFORE revoking, so this test isolates "is the
+        # download blocked for a revoked company" from any side effect of
+        # revocation on CSRF/detail-page rendering.
         csrf_token = await _get_csrf_token(client, company_id)
-    finally:
-        pass
-    try:
+
+        async with db_pool.acquire() as conn:
+            await conn.execute("UPDATE companies SET revoked_at = NOW() WHERE id = $1", company_id)
+
         resp = await client.post(
             f"/admin/companies/{company_id}/download/macos",
             data={"csrf_token": csrf_token},
