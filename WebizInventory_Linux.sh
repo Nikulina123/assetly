@@ -9,7 +9,8 @@
 # ════════════════════════════════════════════════════════════════════════════════
 
 # ─── CONFIGURATION — edit these two lines before distributing ────────────────
-APPS_SCRIPT_URL="https://script.google.com/macros/s/AKfycbzZ8wVq2DrZCzxe-nHQnq4x-mlvzvFvqZtgqHnBFAbGD_SDS0o--Ftvemow3MCsarqHZA/exec"          # ← FILL IN
+CHECKIN_API_URL="https://api.example.com/api/v1/inventory/checkin"   # ← FILL IN (replaced automatically when downloaded from the admin portal)
+COMPANY_API_KEY=""                                                    # ← FILL IN (replaced automatically when downloaded from the admin portal)
 GITHUB_RAW_URL="https://raw.githubusercontent.com/Nikulina123/Check-in_Agent/main/inventory_agent.py"
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -155,7 +156,8 @@ echo ""
 echo "[4/6] Writing configuration…"
 cat > "$CONFIG_FILE" <<JSON
 {
-  "apps_script_url": "$APPS_SCRIPT_URL",
+  "checkin_api_url": "$CHECKIN_API_URL",
+  "company_api_key": "$COMPANY_API_KEY",
   "github_raw_url":  "$GITHUB_RAW_URL"
 }
 JSON
