@@ -74,7 +74,9 @@ async def test_download_macos_rotates_key_and_embeds_new_one(admin, company, db_
     assert new_resolved == company_id
 
 
-async def test_download_linux_contains_a_fresh_key(admin, company):
+async def test_download_linux_contains_a_fresh_key(admin, company, db_pool):
+    from app.auth import resolve_company_id
+
     _, email, password = admin
     company_id, old_api_key = company
     client = await _logged_in_client(email, password)
@@ -91,7 +93,13 @@ async def test_download_linux_contains_a_fresh_key(admin, company):
     assert "APPS_SCRIPT_URL" not in body
     match = re.search(r'COMPANY_API_KEY="(wz_live_[a-f0-9]+)"', body)
     assert match is not None
-    assert match.group(1) != old_api_key
+    new_api_key = match.group(1)
+    assert new_api_key != old_api_key
+
+    old_resolved = await resolve_company_id(db_pool, old_api_key)
+    assert old_resolved is None
+    new_resolved = await resolve_company_id(db_pool, new_api_key)
+    assert new_resolved == company_id
 
 
 async def test_download_blocked_for_revoked_company(admin, company, db_pool):
@@ -148,12 +156,13 @@ async def test_download_windows_without_exe_returns_clear_error(admin, company, 
     assert resp.status_code == 503
 
 
-async def test_download_windows_zips_placeholder_exe_and_config(admin, company, tmp_path, monkeypatch):
+async def test_download_windows_zips_placeholder_exe_and_config(admin, company, db_pool, tmp_path, monkeypatch):
     import io
     import json
     import zipfile
 
     import app.routers.admin as admin_module
+    from app.auth import resolve_company_id
 
     placeholder = tmp_path / "WebizInventory_Windows.exe"
     placeholder.write_bytes(b"PLACEHOLDER-EXE-BYTES-NOT-A-REAL-BINARY")
@@ -180,9 +189,15 @@ async def test_download_windows_zips_placeholder_exe_and_config(admin, company, 
     assert zf.read("WebizInventory_Windows.exe") == b"PLACEHOLDER-EXE-BYTES-NOT-A-REAL-BINARY"
 
     config = json.loads(zf.read("config.json"))
-    assert config["company_api_key"].startswith("wz_live_")
-    assert config["company_api_key"] != old_api_key
+    new_api_key = config["company_api_key"]
+    assert new_api_key.startswith("wz_live_")
+    assert new_api_key != old_api_key
     assert config["checkin_api_url"] == "https://api.example.com/api/v1/inventory/checkin"
+
+    old_resolved = await resolve_company_id(db_pool, old_api_key)
+    assert old_resolved is None
+    new_resolved = await resolve_company_id(db_pool, new_api_key)
+    assert new_resolved == company_id
 
 
 async def test_download_windows_does_not_rotate_key_when_exe_missing(admin, company, db_pool, monkeypatch):

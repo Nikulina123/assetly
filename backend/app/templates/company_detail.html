@@ -56,6 +56,9 @@
   <button type="submit">Add Custom Field</button>
 </form>
 <h3>Download agent</h3>
+{% if company['revoked_at'] %}
+<p><em>Company is revoked — downloads are disabled.</em></p>
+{% else %}
 <p style="color:#92400e;">
   ⚠ Downloading generates a new API key and invalidates the current one immediately.
   Any devices already running this company's installer will need to be updated with
@@ -73,4 +76,5 @@
   <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
   <button type="submit">Download for Windows</button>
 </form>
+{% endif %}
 {% endblock %}
