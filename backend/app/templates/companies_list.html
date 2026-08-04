@@ -12,6 +12,7 @@
 <form method="post" action="/admin/companies">
   <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
   <input type="text" name="name" placeholder="Company name" required>
+  <input type="email" name="notification_email" placeholder="Notification email" required>
   <button type="submit">Create Company</button>
 </form>
 {% endblock %}

@@ -90,6 +90,7 @@ async def companies_list(request: Request, admin_id: str = Depends(require_admin
 async def companies_create(
     request: Request,
     name: str = Form(...),
+    notification_email: str = Form(...),
     csrf_token: str = Form(...),
     admin_id: str = Depends(require_admin),
 ):
@@ -100,8 +101,9 @@ async def companies_create(
     pool = await get_pool()
     async with pool.acquire() as conn:
         await conn.execute(
-            "INSERT INTO companies (name, api_key_hash, api_key_prefix) VALUES ($1, $2, $3)",
-            name, key_hash, api_key[:8],
+            "INSERT INTO companies (name, api_key_hash, api_key_prefix, notification_email) "
+            "VALUES ($1, $2, $3, $4)",
+            name, key_hash, api_key[:8], notification_email,
         )
 
     companies = await _all_companies(pool)
@@ -119,7 +121,7 @@ async def companies_create(
 async def _get_company_or_404(pool, company_id: uuid.UUID):
     async with pool.acquire() as conn:
         company = await conn.fetchrow(
-            "SELECT id, name, api_key_prefix, revoked_at FROM companies WHERE id = $1",
+            "SELECT id, name, api_key_prefix, revoked_at, notification_email FROM companies WHERE id = $1",
             company_id,
         )
     if company is None:
@@ -163,7 +165,7 @@ async def rotate_key(
         company = await conn.fetchrow(
             """
             UPDATE companies SET api_key_hash = $1, api_key_prefix = $2 WHERE id = $3
-            RETURNING id, name, api_key_prefix, revoked_at
+            RETURNING id, name, api_key_prefix, revoked_at, notification_email
             """,
             key_hash, api_key[:8], company_id,
         )
@@ -199,7 +201,7 @@ async def revoke_company(
         company = await conn.fetchrow(
             """
             UPDATE companies SET revoked_at = NOW() WHERE id = $1 AND revoked_at IS NULL
-            RETURNING id, name, api_key_prefix, revoked_at
+            RETURNING id, name, api_key_prefix, revoked_at, notification_email
             """,
             company_id,
         )
@@ -223,6 +225,25 @@ async def revoke_company(
             "field_settings": field_settings,
         },
     )
+
+
+@router.post("/companies/{company_id}/notification-email")
+async def update_notification_email(
+    request: Request,
+    company_id: uuid.UUID,
+    notification_email: str = Form(...),
+    csrf_token: str = Form(...),
+    admin_id: str = Depends(require_admin),
+):
+    _check_csrf(request, csrf_token)
+    pool = await get_pool()
+    await _get_company_or_404(pool, company_id)
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE companies SET notification_email = $1 WHERE id = $2",
+            notification_email, company_id,
+        )
+    return RedirectResponse(f"/admin/companies/{company_id}", status_code=303)
 
 
 @router.post("/companies/{company_id}/fields/hardware")

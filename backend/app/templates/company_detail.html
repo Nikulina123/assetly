@@ -3,6 +3,12 @@
 <h2>{{ company['name'] }}</h2>
 <p>API key prefix: <tt>{{ company['api_key_prefix'] }}...</tt></p>
 <p>Status: {% if company['revoked_at'] %}Revoked{% else %}Active{% endif %}</p>
+<p>Notification email: {{ company['notification_email'] or '(not set)' }}</p>
+<form method="post" action="/admin/companies/{{ company['id'] }}/notification-email">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  <input type="email" name="notification_email" value="{{ company['notification_email'] or '' }}" placeholder="Notification email" required>
+  <button type="submit">Update Notification Email</button>
+</form>
 
 {% if new_api_key %}
 <div style="border:2px solid green; padding:10px; margin-bottom:16px;">

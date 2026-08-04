@@ -52,7 +52,11 @@ async def test_create_company_shows_new_api_key_once(admin, db_pool):
 
         resp = await client.post(
             "/admin/companies",
-            data={"name": "New Co", "csrf_token": csrf_token},
+            data={
+                "name": "New Co",
+                "notification_email": "owner@newco.example",
+                "csrf_token": csrf_token,
+            },
         )
     finally:
         await client.aclose()
@@ -165,3 +169,68 @@ async def test_revoke_is_idempotent(admin, company):
         await client.aclose()
     assert first.status_code == 200
     assert second.status_code == 200
+
+
+async def test_create_company_requires_notification_email(admin):
+    _, email, password = admin
+    client = await _logged_in_client(email, password)
+    try:
+        get_resp = await client.get("/admin/companies")
+        csrf_token = get_resp.text.split('name="csrf_token" value="')[1].split('"')[0]
+
+        resp = await client.post(
+            "/admin/companies",
+            data={"csrf_token": csrf_token, "name": "No Email Co"},
+        )
+    finally:
+        await client.aclose()
+    assert resp.status_code == 422  # FastAPI's own Form(...) validation
+
+
+async def test_create_company_stores_notification_email(admin, db_pool):
+    _, email, password = admin
+    client = await _logged_in_client(email, password)
+    try:
+        get_resp = await client.get("/admin/companies")
+        csrf_token = get_resp.text.split('name="csrf_token" value="')[1].split('"')[0]
+
+        resp = await client.post(
+            "/admin/companies",
+            data={
+                "csrf_token": csrf_token,
+                "name": "Notify Co",
+                "notification_email": "owner@notifyco.example",
+            },
+        )
+    finally:
+        await client.aclose()
+    assert resp.status_code == 200
+
+    async with db_pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT notification_email FROM companies WHERE name = 'Notify Co'"
+        )
+    assert row["notification_email"] == "owner@notifyco.example"
+
+
+async def test_update_notification_email(admin, company, db_pool):
+    _, email, password = admin
+    company_id, _ = company
+    client = await _logged_in_client(email, password)
+    try:
+        get_resp = await client.get(f"/admin/companies/{company_id}")
+        csrf_token = get_resp.text.split('name="csrf_token" value="')[1].split('"')[0]
+
+        resp = await client.post(
+            f"/admin/companies/{company_id}/notification-email",
+            data={"csrf_token": csrf_token, "notification_email": "new-owner@example.com"},
+        )
+    finally:
+        await client.aclose()
+    assert resp.status_code == 303
+
+    async with db_pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT notification_email FROM companies WHERE id = $1", company_id
+        )
+    assert row["notification_email"] == "new-owner@example.com"
