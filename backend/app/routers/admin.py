@@ -324,16 +324,31 @@ async def _rotate_key_for_download(pool, company_id: uuid.UUID) -> str:
     return api_key
 
 
-def _render_installer_script(filename: str, checkin_api_url: str, company_api_key: str) -> str:
-    script_path = REPO_ROOT / filename
-    text = script_path.read_text()
+_CHECKIN_API_URL_PATTERN = r'^CHECKIN_API_URL=".*?"(\s*#.*)?$'
+_COMPANY_API_KEY_PATTERN = r'^COMPANY_API_KEY=".*?"(\s*#.*)?$'
+
+
+def _load_installer_template(filename: str) -> str:
+    """Reads the installer script and confirms both substitution markers are
+    present, BEFORE any key rotation happens -- so a missing file or a marker
+    that's drifted out of sync (e.g. the script's formatting changed) can't
+    leave a company's key rotated with no valid installer to show for it."""
+    text = (REPO_ROOT / filename).read_text()
+    if not re.search(_CHECKIN_API_URL_PATTERN, text, flags=re.MULTILINE):
+        raise RuntimeError(f"{filename}: CHECKIN_API_URL substitution marker not found")
+    if not re.search(_COMPANY_API_KEY_PATTERN, text, flags=re.MULTILINE):
+        raise RuntimeError(f"{filename}: COMPANY_API_KEY substitution marker not found")
+    return text
+
+
+def _render_installer_script(template_text: str, checkin_api_url: str, company_api_key: str) -> str:
     text = re.sub(
-        r'^CHECKIN_API_URL=".*?"(\s*#.*)?$',
+        _CHECKIN_API_URL_PATTERN,
         f'CHECKIN_API_URL="{checkin_api_url}"',
-        text, count=1, flags=re.MULTILINE,
+        template_text, count=1, flags=re.MULTILINE,
     )
     text = re.sub(
-        r'^COMPANY_API_KEY=".*?"(\s*#.*)?$',
+        _COMPANY_API_KEY_PATTERN,
         f'COMPANY_API_KEY="{company_api_key}"',
         text, count=1, flags=re.MULTILINE,
     )
@@ -350,10 +365,9 @@ async def download_macos(
     _check_csrf(request, csrf_token)
     pool = await get_pool()
     await _get_active_company_or_404(pool, company_id)
+    template_text = _load_installer_template("WebizInventory_macOS.sh")
     api_key = await _rotate_key_for_download(pool, company_id)
-    script_text = _render_installer_script(
-        "WebizInventory_macOS.sh", CHECKIN_API_URL_FOR_DOWNLOAD, api_key
-    )
+    script_text = _render_installer_script(template_text, CHECKIN_API_URL_FOR_DOWNLOAD, api_key)
     return Response(
         content=script_text,
         media_type="text/x-shellscript",
@@ -371,10 +385,9 @@ async def download_linux(
     _check_csrf(request, csrf_token)
     pool = await get_pool()
     await _get_active_company_or_404(pool, company_id)
+    template_text = _load_installer_template("WebizInventory_Linux.sh")
     api_key = await _rotate_key_for_download(pool, company_id)
-    script_text = _render_installer_script(
-        "WebizInventory_Linux.sh", CHECKIN_API_URL_FOR_DOWNLOAD, api_key
-    )
+    script_text = _render_installer_script(template_text, CHECKIN_API_URL_FOR_DOWNLOAD, api_key)
     return Response(
         content=script_text,
         media_type="text/x-shellscript",
