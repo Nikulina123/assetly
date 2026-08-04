@@ -56,5 +56,21 @@
   <button type="submit">Add Custom Field</button>
 </form>
 <h3>Download agent</h3>
-<p><em>Not yet available</em></p>
+<p style="color:#92400e;">
+  ⚠ Downloading generates a new API key and invalidates the current one immediately.
+  Any devices already running this company's installer will need to be updated with
+  the new one.
+</p>
+<form method="post" action="/admin/companies/{{ company['id'] }}/download/macos" style="display:inline;">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  <button type="submit">Download for macOS</button>
+</form>
+<form method="post" action="/admin/companies/{{ company['id'] }}/download/linux" style="display:inline;">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  <button type="submit">Download for Linux</button>
+</form>
+<form method="post" action="/admin/companies/{{ company['id'] }}/download/windows" style="display:inline;">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  <button type="submit">Download for Windows</button>
+</form>
 {% endblock %}

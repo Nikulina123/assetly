@@ -210,3 +210,19 @@ async def test_download_windows_does_not_rotate_key_when_exe_missing(admin, comp
 
     resolved = await resolve_company_id(db_pool, old_api_key)
     assert resolved == company_id
+
+
+async def test_company_detail_shows_download_buttons(admin, company):
+    _, email, password = admin
+    company_id, _ = company
+    client = await _logged_in_client(email, password)
+    try:
+        resp = await client.get(f"/admin/companies/{company_id}")
+    finally:
+        await client.aclose()
+    assert resp.status_code == 200
+    assert b"Download for macOS" in resp.content
+    assert b"Download for Linux" in resp.content
+    assert b"Download for Windows" in resp.content
+    assert b"Not yet available" not in resp.content
+    assert b"generates a new API key" in resp.content.lower() or b"invalidat" in resp.content.lower()
