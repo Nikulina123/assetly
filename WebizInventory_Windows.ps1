@@ -8,11 +8,11 @@
 #>
 
 # ════════════════════════════════════════════════════════════════════════════════
-#  CONFIGURATION — edit these two lines before distributing
+#  CONFIGURATION — checkin_api_url/company_api_key load from config.json placed
+#  next to this script/exe (written by the admin portal's download button).
+#  GitHubRawUrl stays hardcoded here since self-update isn't part of this change.
 # ════════════════════════════════════════════════════════════════════════════════
-$AppsScriptUrl = "https://script.google.com/macros/s/AKfycbzZ8wVq2DrZCzxe-nHQnq4x-mlvzvFvqZtgqHnBFAbGD_SDS0o--Ftvemow3MCsarqHZA/exec"   # ← FILL IN
-$GitHubRawUrl  = "https://raw.githubusercontent.com/Nikulina123/Check-in_agent/refs/heads/main/WebizInventory_Windows.ps1"  # ← FILL IN
-# ════════════════════════════════════════════════════════════════════════════════
+$GitHubRawUrl  = "https://raw.githubusercontent.com/Nikulina123/Check-in_agent/refs/heads/main/WebizInventory_Windows.ps1"
 
 $SmtpServer       = "smtp.gmail.com"
 $SmtpPort         = 587
@@ -38,6 +38,21 @@ $IsExe      = $ScriptPath -like "*.exe" -and $ScriptPath -notlike "*powershell*"
 $ScriptDest = if ($IsExe) { "$StateDir\WebizInventory_Windows.exe" } `
                           else { "$StateDir\WebizInventory_Windows.ps1" }
 $CredVaultResource = "WebizInventoryAgent"   # key name in Windows Credential Manager
+
+# ── Load checkin_api_url / company_api_key from config.json next to this script/exe ──
+$OwnDir = Split-Path -Path $ScriptPath -Parent
+$ConfigFile = "$OwnDir\config.json"
+$CheckinApiUrl = "https://api.example.com/api/v1/inventory/checkin"
+$CompanyApiKey = ""
+if (Test-Path $ConfigFile) {
+    try {
+        $cfg = Get-Content $ConfigFile -Raw | ConvertFrom-Json
+        if ($cfg.checkin_api_url) { $CheckinApiUrl = $cfg.checkin_api_url }
+        if ($cfg.company_api_key) { $CompanyApiKey = $cfg.company_api_key }
+    } catch {
+        Write-Log "Failed to parse config.json next to script — using placeholder values: $_" "WARN"
+    }
+}
 
 # ── Ensure state dir ─────────────────────────────────────────────────────────
 if (-not (Test-Path $StateDir)) { New-Item -ItemType Directory -Path $StateDir -Force | Out-Null }
@@ -224,7 +239,7 @@ function Submit-ToSheets {
     param([hashtable]$Payload)
     try {
         $body = $Payload | ConvertTo-Json -Compress
-        $resp = Invoke-RestMethod -Uri $AppsScriptUrl -Method POST -Body $body `
+        $resp = Invoke-RestMethod -Uri $CheckinApiUrl -Method POST -Body $body `
                     -ContentType "application/json" -TimeoutSec 15
         return ($resp.status -eq "ok")
     } catch {
