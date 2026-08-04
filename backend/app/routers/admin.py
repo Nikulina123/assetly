@@ -1,12 +1,14 @@
+import re
 import uuid
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
-from fastapi.responses import RedirectResponse
+from fastapi.responses import RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
 
 from app.admin_auth import resolve_admin
 from app.auth import generate_api_key, hash_api_key
+from app.config import CHECKIN_API_URL_FOR_DOWNLOAD, REPO_ROOT
 from app.db import get_pool
 from app.field_config import (
     add_custom_field,
@@ -295,3 +297,86 @@ async def remove_custom_field_route(
     await _get_company_or_404(pool, company_id)
     await remove_custom_field(pool, str(company_id), field_key)
     return RedirectResponse(f"/admin/companies/{company_id}", status_code=303)
+
+
+async def _get_active_company_or_404(pool, company_id: uuid.UUID):
+    """Like _get_company_or_404, but also blocks revoked companies -- a
+    downloadable installer whose key immediately 401s is worse than no
+    download button."""
+    company = await _get_company_or_404(pool, company_id)
+    if company["revoked_at"] is not None:
+        raise HTTPException(status_code=404, detail="Company not found")
+    return company
+
+
+async def _rotate_key_for_download(pool, company_id: uuid.UUID) -> str:
+    """Every download embeds a freshly-rotated key, since plaintext keys are
+    never stored/readable after creation (see rotate_key). This invalidates
+    the company's current key -- callers must have already confirmed the
+    company is active (_get_active_company_or_404) before calling this."""
+    api_key = generate_api_key()
+    key_hash = hash_api_key(api_key)
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE companies SET api_key_hash = $1, api_key_prefix = $2 WHERE id = $3",
+            key_hash, api_key[:8], company_id,
+        )
+    return api_key
+
+
+def _render_installer_script(filename: str, checkin_api_url: str, company_api_key: str) -> str:
+    script_path = REPO_ROOT / filename
+    text = script_path.read_text()
+    text = re.sub(
+        r'^CHECKIN_API_URL=".*?"(\s*#.*)?$',
+        f'CHECKIN_API_URL="{checkin_api_url}"',
+        text, count=1, flags=re.MULTILINE,
+    )
+    text = re.sub(
+        r'^COMPANY_API_KEY=".*?"(\s*#.*)?$',
+        f'COMPANY_API_KEY="{company_api_key}"',
+        text, count=1, flags=re.MULTILINE,
+    )
+    return text
+
+
+@router.post("/companies/{company_id}/download/macos")
+async def download_macos(
+    request: Request,
+    company_id: uuid.UUID,
+    csrf_token: str = Form(...),
+    admin_id: str = Depends(require_admin),
+):
+    _check_csrf(request, csrf_token)
+    pool = await get_pool()
+    await _get_active_company_or_404(pool, company_id)
+    api_key = await _rotate_key_for_download(pool, company_id)
+    script_text = _render_installer_script(
+        "WebizInventory_macOS.sh", CHECKIN_API_URL_FOR_DOWNLOAD, api_key
+    )
+    return Response(
+        content=script_text,
+        media_type="text/x-shellscript",
+        headers={"Content-Disposition": 'attachment; filename="WebizInventory_macOS.sh"'},
+    )
+
+
+@router.post("/companies/{company_id}/download/linux")
+async def download_linux(
+    request: Request,
+    company_id: uuid.UUID,
+    csrf_token: str = Form(...),
+    admin_id: str = Depends(require_admin),
+):
+    _check_csrf(request, csrf_token)
+    pool = await get_pool()
+    await _get_active_company_or_404(pool, company_id)
+    api_key = await _rotate_key_for_download(pool, company_id)
+    script_text = _render_installer_script(
+        "WebizInventory_Linux.sh", CHECKIN_API_URL_FOR_DOWNLOAD, api_key
+    )
+    return Response(
+        content=script_text,
+        media_type="text/x-shellscript",
+        headers={"Content-Disposition": 'attachment; filename="WebizInventory_Linux.sh"'},
+    )
