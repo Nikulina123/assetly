@@ -39,21 +39,6 @@ $ScriptDest = if ($IsExe) { "$StateDir\WebizInventory_Windows.exe" } `
                           else { "$StateDir\WebizInventory_Windows.ps1" }
 $CredVaultResource = "WebizInventoryAgent"   # key name in Windows Credential Manager
 
-# ── Load checkin_api_url / company_api_key from config.json next to this script/exe ──
-$OwnDir = Split-Path -Path $ScriptPath -Parent
-$ConfigFile = "$OwnDir\config.json"
-$CheckinApiUrl = "https://api.example.com/api/v1/inventory/checkin"
-$CompanyApiKey = ""
-if (Test-Path $ConfigFile) {
-    try {
-        $cfg = Get-Content $ConfigFile -Raw | ConvertFrom-Json
-        if ($cfg.checkin_api_url) { $CheckinApiUrl = $cfg.checkin_api_url }
-        if ($cfg.company_api_key) { $CompanyApiKey = $cfg.company_api_key }
-    } catch {
-        Write-Log "Failed to parse config.json next to script — using placeholder values: $_" "WARN"
-    }
-}
-
 # ── Ensure state dir ─────────────────────────────────────────────────────────
 if (-not (Test-Path $StateDir)) { New-Item -ItemType Directory -Path $StateDir -Force | Out-Null }
 
@@ -64,6 +49,31 @@ function Write-Log {
     Add-Content -Path $LogFile -Value $line -Encoding UTF8
     # Write-Host intentionally omitted — ps2exe -NoConsole turns every Write-Host into a popup dialog
 }
+
+# ── Load checkin_api_url / company_api_key from config.json next to this script/exe ──
+function Get-CheckinConfig {
+    $ownDir = Split-Path -Path $ScriptPath -Parent
+    $configFile = "$ownDir\config.json"
+    $result = @{ CheckinApiUrl = "https://api.example.com/api/v1/inventory/checkin"; CompanyApiKey = "" }
+    if (-not (Test-Path $configFile)) {
+        Write-Log "No config.json found next to script/exe at $configFile — using placeholder checkin URL, all submissions will fail auth." "WARN"
+        return $result
+    }
+    try {
+        $cfg = Get-Content $configFile -Raw | ConvertFrom-Json
+        if ($cfg.checkin_api_url) { $result.CheckinApiUrl = $cfg.checkin_api_url }
+        if ($cfg.company_api_key) { $result.CompanyApiKey = $cfg.company_api_key }
+        if (-not $cfg.checkin_api_url -or -not $cfg.company_api_key) {
+            Write-Log "config.json at $configFile is missing checkin_api_url or company_api_key — running with a partial/placeholder value." "WARN"
+        }
+    } catch {
+        Write-Log "Failed to parse config.json at $configFile — using placeholder values: $_" "WARN"
+    }
+    return $result
+}
+$CheckinConfig = Get-CheckinConfig
+$CheckinApiUrl = $CheckinConfig.CheckinApiUrl
+$CompanyApiKey = $CheckinConfig.CompanyApiKey
 
 # ════════════════════════════════════════════════════════════════════════════════
 #  SMTP CREDENTIAL MANAGEMENT  (Windows Credential Manager — same as macOS Keychain)
