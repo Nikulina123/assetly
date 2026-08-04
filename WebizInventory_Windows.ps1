@@ -14,11 +14,6 @@
 # ════════════════════════════════════════════════════════════════════════════════
 $GitHubRawUrl  = "https://raw.githubusercontent.com/Nikulina123/Check-in_agent/refs/heads/main/WebizInventory_Windows.ps1"
 
-$SmtpServer       = "smtp.gmail.com"
-$SmtpPort         = 587
-$SmtpUser         = "monitoring@webiz.com"
-$SmtpPass         = "hogpycseljffcgwy"   # stored in Credential Manager on first run; never written to disk
-$AdminEmail       = "nika@webiz.com"
 $IntervalMonths   = 6
 $CancelRetryHours = (2/60)   # TEST: 2 minutes — change back to 24 for production
 $TaskName         = "WebizInventoryAgent"
@@ -37,7 +32,6 @@ $ScriptPath = if ($MyInvocation.MyCommand.Path) { $MyInvocation.MyCommand.Path }
 $IsExe      = $ScriptPath -like "*.exe" -and $ScriptPath -notlike "*powershell*" -and $ScriptPath -notlike "*pwsh*"
 $ScriptDest = if ($IsExe) { "$StateDir\WebizInventory_Windows.exe" } `
                           else { "$StateDir\WebizInventory_Windows.ps1" }
-$CredVaultResource = "WebizInventoryAgent"   # key name in Windows Credential Manager
 
 # ── Ensure state dir ─────────────────────────────────────────────────────────
 if (-not (Test-Path $StateDir)) { New-Item -ItemType Directory -Path $StateDir -Force | Out-Null }
@@ -74,37 +68,6 @@ function Get-CheckinConfig {
 $CheckinConfig = Get-CheckinConfig
 $CheckinApiUrl = $CheckinConfig.CheckinApiUrl
 $CompanyApiKey = $CheckinConfig.CompanyApiKey
-
-# ════════════════════════════════════════════════════════════════════════════════
-#  SMTP CREDENTIAL MANAGEMENT  (Windows Credential Manager — same as macOS Keychain)
-# ════════════════════════════════════════════════════════════════════════════════
-function Load-PasswordVault {
-    [void][Windows.Security.Credentials.PasswordVault,Windows.Security.Credentials,ContentType=WindowsRuntime]
-}
-
-function Get-SmtpPassword {
-    try {
-        Load-PasswordVault
-        $vault = New-Object Windows.Security.Credentials.PasswordVault
-        $cred  = $vault.Retrieve($CredVaultResource, $SmtpUser)
-        $cred.RetrievePassword()
-        return $cred.Password
-    } catch {
-        Write-Log "SMTP password not found in Credential Manager." "WARN"
-        return $null
-    }
-}
-
-function Set-SmtpPassword {
-    param([string]$Password)
-    Load-PasswordVault
-    $vault = New-Object Windows.Security.Credentials.PasswordVault
-    # Remove existing entry if present
-    try { $vault.Remove($vault.Retrieve($CredVaultResource, $SmtpUser)) } catch {}
-    $vault.Add((New-Object Windows.Security.Credentials.PasswordCredential(
-        $CredVaultResource, $SmtpUser, $Password)))
-    Write-Log "SMTP password stored in Windows Credential Manager."
-}
 
 # ════════════════════════════════════════════════════════════════════════════════
 #  SELF-UPDATE
@@ -177,32 +140,6 @@ function Test-ShouldRun {
         }
     }
     return $true
-}
-
-# ════════════════════════════════════════════════════════════════════════════════
-#  EMAIL
-# ════════════════════════════════════════════════════════════════════════════════
-function Send-InventoryEmail {
-    param([string]$Subject, [string]$Body, [string]$ExtraTo = "")
-    $smtpPass = Get-SmtpPassword
-    if (-not $smtpPass) { Write-Log "Email skipped — SMTP credential not configured." "WARN"; return }
-    $recipients = @($AdminEmail)
-    if ($ExtraTo -and $ExtraTo -ne $AdminEmail) { $recipients += $ExtraTo }
-    try {
-        $msg = New-Object System.Net.Mail.MailMessage
-        $msg.From = $SmtpUser
-        foreach ($r in $recipients) { $msg.To.Add($r) }
-        $msg.Subject = $Subject
-        $msg.Body    = $Body
-
-        $smtp = New-Object System.Net.Mail.SmtpClient($SmtpServer, $SmtpPort)
-        $smtp.EnableSsl   = $true
-        $smtp.Credentials = New-Object System.Net.NetworkCredential($SmtpUser, $smtpPass)
-        $smtp.Send($msg)
-        Write-Log "Email sent → $($recipients -join ', ')"
-    } catch {
-        Write-Log "Email failed: $_" "ERROR"
-    }
 }
 
 # ════════════════════════════════════════════════════════════════════════════════
@@ -537,7 +474,7 @@ function Show-InventoryForm {
 
     $btnCancel.Add_Click({
         $ans = [System.Windows.Forms.MessageBox]::Show(
-            "Are you sure you want to skip?`n`n• IT will be notified`n• You'll be reminded again in 24 hours",
+            "Are you sure you want to skip?`n`n• You'll be reminded again in 24 hours",
             "Cancel check-in",
             [System.Windows.Forms.MessageBoxButtons]::YesNo,
             [System.Windows.Forms.MessageBoxIcon]::Warning
@@ -551,7 +488,7 @@ function Show-InventoryForm {
         if ($result.submitted -or $result.closing) { return }
         # X button — treat same as Cancel
         $ans = [System.Windows.Forms.MessageBox]::Show(
-            "Are you sure you want to skip?`n`n• IT will be notified`n• You'll be reminded again in 24 hours",
+            "Are you sure you want to skip?`n`n• You'll be reminded again in 24 hours",
             "Cancel check-in",
             [System.Windows.Forms.MessageBoxButtons]::YesNo,
             [System.Windows.Forms.MessageBoxIcon]::Warning
@@ -632,18 +569,6 @@ $task = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
 if (-not $task) {
     Write-Log "First run — registering startup task…"
     Register-StartupTask
-    # Store SMTP password in Credential Manager (same as macOS stores in Keychain)
-    Set-SmtpPassword $SmtpPass
-    # PS1 only: scrub the plaintext password from the installed copy (EXE binary is not human-readable)
-    if (-not $IsExe) {
-        try {
-            $scrubbed = (Get-Content $ScriptDest -Raw) -replace '(?m)^\$SmtpPass\s+=\s+"[^"]*"', '$SmtpPass         = ""'
-            [System.IO.File]::WriteAllText($ScriptDest, $scrubbed, (New-Object System.Text.UTF8Encoding $true))
-            Write-Log "Plaintext password scrubbed from installed copy."
-        } catch {
-            Write-Log "Could not scrub password from installed copy: $_" "WARN"
-        }
-    }
 }
 
 # Self-update check
@@ -669,18 +594,6 @@ if (-not $res.submitted) {
     $state | Add-Member -NotePropertyName cancelled_at -NotePropertyValue (Get-Date -Format "o") -Force
     Save-State $state
 
-    $body = "The inventory form was CANCELLED by the user.`n`n" +
-            "Device    : $($hw.brand) $($hw.model)`n" +
-            "Serial    : $($hw.serial_number)`n" +
-            "Hostname  : $($hw.hostname)`n" +
-            "IP        : $($hw.ip_address)`n" +
-            "OS        : $($hw.os)`n" +
-            "Time      : $(Get-Date -Format 'o')`n`n" +
-            "The agent will prompt again in $CancelRetryHours hours."
-
-    Send-InventoryEmail `
-        -Subject "[Webiz Inventory] CANCELLED – SN: $($hw.serial_number) / $($hw.hostname)" `
-        -Body $body
     Write-Log "Form cancelled. Will retry in $CancelRetryHours h."
     exit 0
 }
@@ -709,9 +622,6 @@ Write-Log "Submitting to Google Sheets…"
 $immediate = Submit-ToSheets -Payload $payload
 if (-not $immediate) {
     Add-ToQueue $payload
-    Send-InventoryEmail `
-        -Subject "[Webiz Inventory] Queued (offline) – $($hw.hostname)" `
-        -Body    "Device was offline. Data saved locally and will sync on next login.`n`n$(($payload | ConvertTo-Json))"
 }
 
 # Update state
@@ -719,34 +629,6 @@ $state = Get-State
 $state | Add-Member -NotePropertyName last_run     -NotePropertyValue (Get-Date -Format "o") -Force
 $state | Add-Member -NotePropertyName cancelled_at -NotePropertyValue $null                  -Force
 Save-State $state
-
-# Confirmation email
-$fullName  = "$($ud.first_name) $($ud.last_name)"
-$statusLine = if ($immediate) { "✔  Data submitted to the inventory sheet." } `
-              else             { "⚠  Device was offline — data will sync on next login." }
-$body = "Hi $($ud.first_name),`n`n" +
-        "Your device has been successfully registered in the Webiz Inventory.`n`n" +
-        "$('─'*44)`n" +
-        "Name      : $fullName`n" +
-        "Email     : $($ud.email)`n" +
-        "Project   : $($ud.project)`n" +
-        "Screen    : $($ud.screen_size) in.`n" +
-        "$('─'*44)`n" +
-        "Device    : $($hw.brand) $($hw.model)`n" +
-        "Serial    : $($hw.serial_number)`n" +
-        "CPU       : $($hw.cpu)`n" +
-        "RAM       : $($hw.ram)`n" +
-        "Storage   : $($hw.storage)`n" +
-        "OS        : $($hw.os)`n" +
-        "Hostname  : $($hw.hostname)`n" +
-        "IP        : $($hw.ip_address)`n" +
-        "Timestamp : $($hw.timestamp)`n`n" +
-        "$statusLine"
-
-Send-InventoryEmail `
-    -Subject "[Webiz Inventory] ✔ Check-in complete – $fullName / $($hw.hostname)" `
-    -Body    $body `
-    -ExtraTo $ud.email
 
 # Success dialog
 $dialogMsg = "Thank you, $($ud.first_name)!`n`nYour device has been registered."

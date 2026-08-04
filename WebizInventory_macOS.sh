@@ -10,11 +10,6 @@
 CHECKIN_API_URL="https://api.example.com/api/v1/inventory/checkin"   # ← FILL IN (replaced automatically when downloaded from the admin portal)
 COMPANY_API_KEY=""                                                    # ← FILL IN (replaced automatically when downloaded from the admin portal)
 GITHUB_RAW_URL="https://raw.githubusercontent.com/Nikulina123/Check-in_Agent/main/inventory_agent.py"
-SMTP_USER="monitoring@webiz.com"           # ← Gmail address used for sending
-SMTP_PASS="hogpycseljffcgwy" # ← Gmail App Password (stored in Keychain; never written to disk)
-SMTP_SERVER="smtp.gmail.com"
-SMTP_PORT="587"
-ADMIN_EMAIL="nika@webiz.com"               # ← IT admin recipient
 # ─────────────────────────────────────────────────────────────────────────────
 
 set -uo pipefail   # note: -e removed so we can show real errors before exiting
@@ -179,27 +174,15 @@ fi
 chmod +x "$AGENT_FILE"
 echo "      ✔  Agent saved to: $AGENT_FILE"
 
-# ── Step 3: Write config & store credentials securely ────────────────────────
+# ── Step 3: Write config ──────────────────────────────────────────────────────
 echo ""
-echo "[3/5] Writing configuration and storing credentials…"
+echo "[3/5] Writing configuration…"
 
-# Store SMTP password in Keychain only — never written to disk
-security add-generic-password \
-    -s "WebizInventoryAgent" \
-    -a "$SMTP_USER" \
-    -w "$SMTP_PASS" \
-    -U 2>/dev/null || true
-
-# Write only non-secret metadata to config (no password)
 cat > "$CONFIG_FILE" <<JSON
 {
   "checkin_api_url": "$CHECKIN_API_URL",
   "company_api_key": "$COMPANY_API_KEY",
-  "github_raw_url":  "$GITHUB_RAW_URL",
-  "smtp_server":     "$SMTP_SERVER",
-  "smtp_port":       $SMTP_PORT,
-  "smtp_user":       "$SMTP_USER",
-  "admin_email":     "$ADMIN_EMAIL"
+  "github_raw_url":  "$GITHUB_RAW_URL"
 }
 JSON
 chmod 600 "$CONFIG_FILE"
