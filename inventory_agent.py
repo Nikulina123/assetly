@@ -5,12 +5,9 @@ Cross-platform (macOS + Linux) — zero pip dependencies.
 Config is loaded from  ~/.webiz_inventory/config.json  (written by the installer).
 """
 
-import os, sys, json, platform, subprocess, smtplib, datetime, hashlib, socket, re, time, argparse
+import os, sys, json, platform, subprocess, datetime, hashlib, socket, re, time, argparse
 import urllib.request, urllib.error
 from pathlib import Path
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
-from typing import Optional
 import tkinter as tk
 from tkinter import ttk, messagebox
 import logging
@@ -52,27 +49,8 @@ CONFIG_API_URL   = CHECKIN_API_URL.rsplit("/checkin", 1)[0] + "/config"
 COMPANY_API_KEY  = _cfg.get("company_api_key", "")
 GITHUB_RAW_URL   = _cfg.get("github_raw_url", "")
 
-SMTP_SERVER      = _cfg.get("smtp_server", "smtp.gmail.com")
-SMTP_PORT        = int(_cfg.get("smtp_port", 587))
-SMTP_USER        = _cfg.get("smtp_user", "")
-ADMIN_EMAIL      = _cfg.get("admin_email", "")
 INTERVAL_MONTHS  = 6
 CANCEL_RETRY_H   = (2/60)   # TEST: 2 minutes — change back to 24 for production
-
-def _get_smtp_pass() -> str:
-    """Read SMTP password from macOS Keychain. Never stored on disk or in source."""
-    try:
-        result = subprocess.run(
-            ["security", "find-generic-password", "-s", "WebizInventoryAgent", "-w"],
-            capture_output=True, text=True, timeout=10,
-        )
-        pw = result.stdout.strip()
-        if pw:
-            return pw
-        log.error("Keychain: WebizInventoryAgent password not found.")
-    except Exception as e:
-        log.error(f"Keychain lookup failed: {e}")
-    return ""
 
 PROJECTS = ["Webiz ERP", "Fundbox", "Playtika", "Artlist", "The5%ers", "Other"]
 
@@ -215,23 +193,6 @@ def collect_hardware() -> dict:
     hw["timestamp"] = datetime.datetime.now().isoformat(timespec="seconds")
     return hw
 
-# ─── Email ────────────────────────────────────────────────────────────────────
-def send_email(subject: str, body: str, extra_to: Optional[str] = None):
-    recipients = list({ADMIN_EMAIL} | ({extra_to} if extra_to else set()))
-    try:
-        msg = MIMEMultipart()
-        msg["From"]    = SMTP_USER
-        msg["To"]      = ", ".join(recipients)
-        msg["Subject"] = subject
-        msg.attach(MIMEText(body, "plain"))
-        with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as s:
-            s.starttls()
-            s.login(SMTP_USER, _get_smtp_pass())
-            s.sendmail(SMTP_USER, recipients, msg.as_string())
-        log.info(f"Email sent → {recipients}")
-    except Exception as e:
-        log.error(f"Email failed: {e}")
-
 # ─── Offline queue ────────────────────────────────────────────────────────────
 def _enqueue(payload: dict):
     items: list = []
@@ -290,13 +251,6 @@ def _post_to_sheets(payload: dict) -> bool:
             return True
         if e.code in (401, 403):
             log.error(f"Authentication failed ({e.code}) — check company_api_key in config.json. Not queuing as offline.")
-            send_email(
-                "[Webiz Inventory] Authentication failed — check API key",
-                f"The check-in agent's API key was rejected (HTTP {e.code}).\n"
-                f"This is NOT a connectivity issue — the device reached the server but was refused.\n"
-                f"Update company_api_key in config.json.\n\n"
-                f"Error: {e}",
-            )
             return False
         log.warning(f"HTTP submit failed: {e}")
         return False
@@ -374,12 +328,6 @@ def submit_to_sheets(user_data: dict, hw: dict, enabled_hardware_fields: list) -
         return True
     log.warning("No internet — saving to offline queue.")
     _enqueue(payload)
-    send_email(
-        f"[Webiz Inventory] Queued (offline) – {hw.get('hostname')}",
-        f"Device was offline during check-in.\n"
-        f"Data saved locally and will sync automatically on next startup.\n\n"
-        f"{json.dumps(payload, indent=2)}",
-    )
     return False
 
 # ─── GUI ──────────────────────────────────────────────────────────────────────
@@ -609,17 +557,6 @@ def main():
     if not app.submitted:
         state["cancelled_at"] = datetime.datetime.now().isoformat()
         save_state(state)
-        send_email(
-            f"[Webiz Inventory] CANCELLED – SN: {hw.get('serial_number','N/A')} / {hw['hostname']}",
-            f"The inventory form was CANCELLED by the user.\n\n"
-            f"Device    : {hw['brand']} {hw['model']}\n"
-            f"Serial    : {hw.get('serial_number','N/A')}\n"
-            f"Hostname  : {hw['hostname']}\n"
-            f"IP        : {hw['ip_address']}\n"
-            f"OS        : {hw['os']}\n"
-            f"Time      : {datetime.datetime.now().isoformat(timespec='seconds')}\n\n"
-            f"The agent will prompt again in {CANCEL_RETRY_H} hours.",
-        )
         log.warning(f"Form cancelled. Will retry in {CANCEL_RETRY_H}h.")
         sys.exit(0)
 
@@ -630,42 +567,6 @@ def main():
     state["last_run"] = datetime.datetime.now().isoformat()
     state.pop("cancelled_at", None)
     save_state(state)
-
-    # Confirmation email → admin + user
-    full_name = f"{app.user_data['first_name']} {app.user_data['last_name']}"
-    status_line = (
-        "✔  Data submitted to the inventory sheet."
-        if immediate else
-        "⚠  Device was offline — data saved locally and will sync on next startup."
-    )
-    body = (
-        f"Hi {app.user_data['first_name']},\n\n"
-        f"Your device has been successfully registered in the Webiz Inventory.\n\n"
-        f"{'─'*44}\n"
-        f"Name      : {full_name}\n"
-        f"Email     : {app.user_data['email']}\n"
-        f"Project   : {app.user_data.get('project', 'N/A')}\n"
-        + "".join(
-            f"{key.replace('_', ' ').title():<10}: {value}\n"
-            for key, value in app.user_data.get("custom_fields", {}).items()
-        ) +
-        f"{'─'*44}\n"
-        f"Device    : {hw['brand']} {hw['model']}\n"
-        f"Serial    : {hw.get('serial_number','N/A')}\n"
-        f"CPU       : {hw['cpu']}\n"
-        f"RAM       : {hw['ram']}\n"
-        f"Storage   : {hw['storage']}\n"
-        f"OS        : {hw['os']}\n"
-        f"Hostname  : {hw['hostname']}\n"
-        f"IP        : {hw['ip_address']}\n"
-        f"Timestamp : {hw['timestamp']}\n\n"
-        f"{status_line}\n"
-    )
-    send_email(
-        f"[Webiz Inventory] ✔ Check-in complete – {full_name} / {hw['hostname']}",
-        body,
-        extra_to=app.user_data["email"],
-    )
 
     # Success dialog
     dialog_msg = f"Thank you, {app.user_data['first_name']}!\n\nYour device has been registered."
