@@ -1,5 +1,8 @@
+import io
+import json
 import re
 import uuid
+import zipfile
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
@@ -8,7 +11,7 @@ from fastapi.templating import Jinja2Templates
 
 from app.admin_auth import resolve_admin
 from app.auth import generate_api_key, hash_api_key
-from app.config import CHECKIN_API_URL_FOR_DOWNLOAD, REPO_ROOT
+from app.config import CHECKIN_API_URL_FOR_DOWNLOAD, REPO_ROOT, WINDOWS_EXE_PATH
 from app.db import get_pool
 from app.field_config import (
     add_custom_field,
@@ -392,4 +395,38 @@ async def download_linux(
         content=script_text,
         media_type="text/x-shellscript",
         headers={"Content-Disposition": 'attachment; filename="WebizInventory_Linux.sh"'},
+    )
+
+
+@router.post("/companies/{company_id}/download/windows")
+async def download_windows(
+    request: Request,
+    company_id: uuid.UUID,
+    csrf_token: str = Form(...),
+    admin_id: str = Depends(require_admin),
+):
+    _check_csrf(request, csrf_token)
+    if not WINDOWS_EXE_PATH.exists():
+        raise HTTPException(
+            status_code=503,
+            detail="Windows agent build not yet available. Contact support.",
+        )
+    pool = await get_pool()
+    await _get_active_company_or_404(pool, company_id)
+    api_key = await _rotate_key_for_download(pool, company_id)
+
+    config_bytes = json.dumps({
+        "checkin_api_url": CHECKIN_API_URL_FOR_DOWNLOAD,
+        "company_api_key": api_key,
+    }).encode()
+
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.write(WINDOWS_EXE_PATH, arcname="WebizInventory_Windows.exe")
+        zf.writestr("config.json", config_bytes)
+
+    return Response(
+        content=buffer.getvalue(),
+        media_type="application/zip",
+        headers={"Content-Disposition": 'attachment; filename="WebizInventory_Windows.zip"'},
     )

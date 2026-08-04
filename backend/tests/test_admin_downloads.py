@@ -125,3 +125,88 @@ async def test_download_without_csrf_token_is_rejected(admin, company):
     finally:
         await client.aclose()
     assert resp.status_code == 422
+
+
+async def test_download_windows_without_exe_returns_clear_error(admin, company, monkeypatch):
+    from pathlib import Path
+
+    import app.routers.admin as admin_module
+
+    monkeypatch.setattr(admin_module, "WINDOWS_EXE_PATH", Path("/nonexistent/WebizInventory_Windows.exe"))
+
+    _, email, password = admin
+    company_id, _ = company
+    client = await _logged_in_client(email, password)
+    try:
+        csrf_token = await _get_csrf_token(client, company_id)
+        resp = await client.post(
+            f"/admin/companies/{company_id}/download/windows",
+            data={"csrf_token": csrf_token},
+        )
+    finally:
+        await client.aclose()
+    assert resp.status_code == 503
+
+
+async def test_download_windows_zips_placeholder_exe_and_config(admin, company, tmp_path, monkeypatch):
+    import io
+    import json
+    import zipfile
+
+    import app.routers.admin as admin_module
+
+    placeholder = tmp_path / "WebizInventory_Windows.exe"
+    placeholder.write_bytes(b"PLACEHOLDER-EXE-BYTES-NOT-A-REAL-BINARY")
+    monkeypatch.setattr(admin_module, "WINDOWS_EXE_PATH", placeholder)
+
+    _, email, password = admin
+    company_id, old_api_key = company
+    client = await _logged_in_client(email, password)
+    try:
+        csrf_token = await _get_csrf_token(client, company_id)
+        resp = await client.post(
+            f"/admin/companies/{company_id}/download/windows",
+            data={"csrf_token": csrf_token},
+        )
+    finally:
+        await client.aclose()
+    assert resp.status_code == 200
+    assert "attachment" in resp.headers.get("content-disposition", "")
+
+    zf = zipfile.ZipFile(io.BytesIO(resp.content))
+    names = zf.namelist()
+    assert "WebizInventory_Windows.exe" in names
+    assert "config.json" in names
+    assert zf.read("WebizInventory_Windows.exe") == b"PLACEHOLDER-EXE-BYTES-NOT-A-REAL-BINARY"
+
+    config = json.loads(zf.read("config.json"))
+    assert config["company_api_key"].startswith("wz_live_")
+    assert config["company_api_key"] != old_api_key
+    assert config["checkin_api_url"] == "https://api.example.com/api/v1/inventory/checkin"
+
+
+async def test_download_windows_does_not_rotate_key_when_exe_missing(admin, company, db_pool, monkeypatch):
+    """The exe-missing check must happen BEFORE key rotation -- verify the
+    old key still resolves after a 503, proving nothing was rotated."""
+    from pathlib import Path
+
+    import app.routers.admin as admin_module
+    from app.auth import resolve_company_id
+
+    monkeypatch.setattr(admin_module, "WINDOWS_EXE_PATH", Path("/nonexistent/WebizInventory_Windows.exe"))
+
+    _, email, password = admin
+    company_id, old_api_key = company
+    client = await _logged_in_client(email, password)
+    try:
+        csrf_token = await _get_csrf_token(client, company_id)
+        resp = await client.post(
+            f"/admin/companies/{company_id}/download/windows",
+            data={"csrf_token": csrf_token},
+        )
+    finally:
+        await client.aclose()
+    assert resp.status_code == 503
+
+    resolved = await resolve_company_id(db_pool, old_api_key)
+    assert resolved == company_id
