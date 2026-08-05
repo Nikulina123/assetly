@@ -85,14 +85,16 @@ def test_notify_checkin_success_sends_with_correct_content(monkeypatch):
     )
 
     notify_checkin_success(
-        "owner@example.com", "my-laptop", "Nino Test", "Webiz ERP", {"department": "Engineering"}
+        "owner@example.com", "my-laptop", "Nino Test", "Engineering", {"location": "Tbilisi HQ"}
     )
 
     assert captured["to"] == "owner@example.com"
     assert "my-laptop" in captured["subject"]
-    assert "Webiz ERP" in captured["html"]
-    assert "Department" in captured["html"]
-    assert "Engineering" in captured["html"]
+    # Assert the whole rendered line, not a bare substring: the label and the
+    # value must be paired. A bare "Department" check passes even if the label
+    # regresses, because custom_fields title-cases its keys independently.
+    assert "<p>Department: Engineering</p>" in captured["html"]
+    assert "<p>Location: Tbilisi HQ</p>" in captured["html"]
 
 
 def test_notify_checkin_success_escapes_html_in_user_input(monkeypatch):

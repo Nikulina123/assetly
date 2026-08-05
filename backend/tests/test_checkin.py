@@ -255,7 +255,7 @@ async def test_checkin_success_triggers_notification(db_pool, company, monkeypat
         )
     assert resp.status_code == 200
     assert len(calls) == 1
-    to_email, hostname, full_name, project, custom_fields = calls[0]
+    to_email, hostname, full_name, department, custom_fields = calls[0]
     assert to_email == "owner@example.com"
     assert hostname == "nino-macbook"
 
