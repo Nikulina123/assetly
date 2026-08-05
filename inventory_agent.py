@@ -52,7 +52,7 @@ GITHUB_RAW_URL   = _cfg.get("github_raw_url", "")
 INTERVAL_MONTHS  = 6
 CANCEL_RETRY_H   = (2/60)   # TEST: 2 minutes — change back to 24 for production
 
-PROJECTS = ["Webiz ERP", "Fundbox", "Playtika", "Artlist", "The5%ers", "Other"]
+DEPARTMENTS = ["Webiz ERP", "Fundbox", "Playtika", "Artlist", "The5%ers", "Other"]
 
 BRAND_COLOR  = "#1A2B5A"
 ACCENT_COLOR = "#E8303A"
@@ -263,7 +263,7 @@ DEFAULT_FIELD_CONFIG = {
         {"key": "first_name", "label": "First Name", "required": True, "locked": True},
         {"key": "last_name", "label": "Last Name", "required": True, "locked": True},
         {"key": "email", "label": "Email", "required": True, "locked": True},
-        {"key": "project", "label": "Project", "required": True, "locked": False},
+        {"key": "department", "label": "Department", "required": False, "locked": False},
     ],
     "hardware_fields": ["cpu", "ram", "storage", "ip_address"],
 }
@@ -338,7 +338,7 @@ class InventoryForm(tk.Tk):
         self.field_config = field_config
         self.submitted    = False
         self.user_data: dict = {}
-        self._field_widgets: dict = {}   # non-project field key -> tk.Entry
+        self._field_widgets: dict = {}   # non-department field key -> tk.Entry
 
         self.title("Webiz Inventory Agent")
         self.configure(bg=BG_COLOR)
@@ -414,16 +414,16 @@ class InventoryForm(tk.Tk):
         form.pack(fill="both", expand=True, padx=26, pady=4)
         form.columnconfigure(1, weight=1)
 
-        self._v_project = None
+        self._v_department = None
         row = 0
         for f in self.field_config["user_fields"]:
             suffix = " *" if f["required"] else ""
-            if f["key"] == "project":
+            if f["key"] == "department":
                 tk.Label(form, text=f["label"] + suffix, font=("Helvetica", 11, "bold"),
                          bg=BG_COLOR, anchor="w").grid(row=row, column=0, sticky="w", pady=(10, 2))
-                self._v_project = tk.StringVar(value=PROJECTS[0])
+                self._v_department = tk.StringVar(value=DEPARTMENTS[0])
                 ttk.Combobox(
-                    form, textvariable=self._v_project, values=PROJECTS,
+                    form, textvariable=self._v_department, values=DEPARTMENTS,
                     state="readonly", font=("Helvetica", 11), width=36,
                 ).grid(row=row, column=1, sticky="ew", padx=(8, 0), pady=(10, 2))
             else:
@@ -470,7 +470,7 @@ class InventoryForm(tk.Tk):
     # ── Validation ────────────────────────────────────────────────────────────
     def _validate(self) -> bool:
         for f in self.field_config["user_fields"]:
-            if f["key"] == "project" or not f["required"]:
+            if f["key"] == "department" or not f["required"]:
                 continue
             widget = self._field_widgets.get(f["key"])
             if widget is None:
@@ -493,8 +493,8 @@ class InventoryForm(tk.Tk):
             for key, widget in self._field_widgets.items()
             if key in built_in_keys
         }
-        if self._v_project is not None:
-            self.user_data["project"] = self._v_project.get()
+        if self._v_department is not None:
+            self.user_data["department"] = self._v_department.get()
         self.user_data["custom_fields"] = {
             key: widget.get().strip()
             for key, widget in self._field_widgets.items()

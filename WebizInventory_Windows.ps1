@@ -17,7 +17,7 @@ $GitHubRawUrl  = "https://raw.githubusercontent.com/Nikulina123/Check-in_agent/r
 $IntervalMonths   = 6
 $CancelRetryHours = (2/60)   # TEST: 2 minutes — change back to 24 for production
 $TaskName         = "WebizInventoryAgent"
-$Projects         = @("Webiz ERP","Fundbox","Playtika","Artlist","The5%ers","Other")
+$Departments      = @("Webiz ERP","Fundbox","Playtika","Artlist","The5%ers","Other")
 
 $StateDir   = "$env:LOCALAPPDATA\WebizInventory"
 $StateFile  = "$StateDir\state.json"
@@ -337,22 +337,22 @@ function Show-InventoryForm {
         $yPos += 44
     }
 
-    # Project dropdown
-    $lblProj          = New-Object System.Windows.Forms.Label
-    $lblProj.Text     = "Project *"
-    $lblProj.Location = New-Object System.Drawing.Point(26, ($yPos + 4))
-    $lblProj.Size     = New-Object System.Drawing.Size(120, 22)
-    $lblProj.Font     = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Bold)
-    $form.Controls.Add($lblProj)
+    # Department dropdown
+    $lblDept          = New-Object System.Windows.Forms.Label
+    $lblDept.Text     = "Department *"
+    $lblDept.Location = New-Object System.Drawing.Point(26, ($yPos + 4))
+    $lblDept.Size     = New-Object System.Drawing.Size(120, 22)
+    $lblDept.Font     = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Bold)
+    $form.Controls.Add($lblDept)
 
-    $cbProject             = New-Object System.Windows.Forms.ComboBox
-    $cbProject.Location    = New-Object System.Drawing.Point(152, $yPos)
-    $cbProject.Size        = New-Object System.Drawing.Size(342, 28)
-    $cbProject.Font        = New-Object System.Drawing.Font("Segoe UI", 10)
-    $cbProject.DropDownStyle = "DropDownList"
-    $Projects | ForEach-Object { $cbProject.Items.Add($_) | Out-Null }
-    $cbProject.SelectedIndex = 0
-    $form.Controls.Add($cbProject)
+    $cbDepartment             = New-Object System.Windows.Forms.ComboBox
+    $cbDepartment.Location    = New-Object System.Drawing.Point(152, $yPos)
+    $cbDepartment.Size        = New-Object System.Drawing.Size(342, 28)
+    $cbDepartment.Font        = New-Object System.Drawing.Font("Segoe UI", 10)
+    $cbDepartment.DropDownStyle = "DropDownList"
+    $Departments | ForEach-Object { $cbDepartment.Items.Add($_) | Out-Null }
+    $cbDepartment.SelectedIndex = 0
+    $form.Controls.Add($cbDepartment)
     $yPos += 44
 
     # Screen size field
@@ -466,7 +466,7 @@ function Show-InventoryForm {
             first_name  = $tbFirst.Text.Trim()
             last_name   = $tbLast.Text.Trim()
             email       = $tbEmail.Text.Trim()
-            project     = $cbProject.SelectedItem.ToString()
+            department  = $cbDepartment.SelectedItem.ToString()
             screen_size = $tbScreen.Text.Trim()
         }
         $form.Close()
@@ -605,7 +605,7 @@ $payload = @{
     first_name    = $ud.first_name
     last_name     = $ud.last_name
     email         = $ud.email
-    project       = $ud.project
+    department    = $ud.department
     screen_size   = $ud.screen_size
     hostname      = $hw.hostname
     ip_address    = $hw.ip_address
