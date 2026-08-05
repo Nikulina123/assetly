@@ -255,8 +255,8 @@ async def update_hardware_fields(
     ram: str | None = Form(None),
     storage: str | None = Form(None),
     ip_address: str | None = Form(None),
-    project_enabled: str | None = Form(None),
-    project_required: str | None = Form(None),
+    department_enabled: str | None = Form(None),
+    department_required: str | None = Form(None),
     admin_id: str = Depends(require_admin),
 ):
     _check_csrf(request, csrf_token)
@@ -270,8 +270,8 @@ async def update_hardware_fields(
         await set_hardware_field_enabled(pool, company_id_str, field_key, submitted_value is not None)
     await set_department_config(
         pool, company_id_str,
-        enabled=project_enabled is not None,
-        required=project_required is not None,
+        enabled=department_enabled is not None,
+        required=department_required is not None,
     )
 
     return RedirectResponse(f"/admin/companies/{company_id}", status_code=303)

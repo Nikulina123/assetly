@@ -35,8 +35,8 @@
   {% for f in field_settings['hardware_field_options'] %}
   <label><input type="checkbox" name="{{ f['key'] }}" {% if f['enabled'] %}checked{% endif %}> {{ f['label'] }}</label><br>
   {% endfor %}
-  <label><input type="checkbox" name="project_enabled" {% if field_settings['project_enabled'] %}checked{% endif %}> Project field enabled</label><br>
-  <label><input type="checkbox" name="project_required" {% if field_settings['project_required'] %}checked{% endif %}> Project required</label><br>
+  <label><input type="checkbox" name="department_enabled" {% if field_settings['department_enabled'] %}checked{% endif %}> Department field enabled</label><br>
+  <label><input type="checkbox" name="department_required" {% if field_settings['department_required'] %}checked{% endif %}> Department required</label><br>
   <button type="submit">Save Check-in Fields</button>
 </form>
 
