@@ -1,7 +1,7 @@
 import datetime
 import uuid
 
-from pydantic import BaseModel
+from pydantic import AliasChoices, BaseModel, Field
 
 
 class CheckinRequest(BaseModel):
@@ -11,7 +11,13 @@ class CheckinRequest(BaseModel):
     first_name: str
     last_name: str
     email: str
-    project: str | None = None  # toggleable per company, see app/field_config.py
+    # AliasChoices keeps the field settable by its own name AND by the legacy
+    # "project" key that agents deployed before the rename still send. Remove
+    # the "project" choice once no such agent remains in the field.
+    department: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("department", "project"),
+    )
 
     serial_number: str
     hostname: str
