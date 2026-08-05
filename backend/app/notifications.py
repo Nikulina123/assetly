@@ -64,8 +64,8 @@ def notify_auth_failure(key_prefix: str) -> None:
     OPS_ALERT_EMAIL isn't configured."""
     if not OPS_ALERT_EMAIL:
         return
-    html = f"<p>A check-in request was rejected: invalid or revoked API key (prefix: {key_prefix}).</p>"
+    html_body = f"<p>A check-in request was rejected: invalid or revoked API key (prefix: {html.escape(key_prefix)}).</p>"
     try:
-        send_email(OPS_ALERT_EMAIL, "[Webiz Inventory] Auth failure on checkin endpoint", html)
+        send_email(OPS_ALERT_EMAIL, "[Webiz Inventory] Auth failure on checkin endpoint", html_body)
     except Exception as e:
         log.warning(f"Failed to send auth-failure notification: {e}")
