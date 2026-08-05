@@ -68,7 +68,7 @@ async def checkin(
                     """
                     INSERT INTO device_checkins (
                         company_id, checkin_id, timestamp,
-                        first_name, last_name, email, project,
+                        first_name, last_name, email, department,
                         serial_number, hostname, brand, model,
                         cpu, ram, storage, ip_address,
                         os, os_version, platform,
@@ -83,7 +83,7 @@ async def checkin(
                     )
                     """,
                     uuid.UUID(company_id), payload.checkin_id, payload.timestamp,
-                    payload.first_name, payload.last_name, payload.email, payload.project,
+                    payload.first_name, payload.last_name, payload.email, payload.department,
                     payload.serial_number, payload.hostname, payload.brand, payload.model,
                     payload.cpu, payload.ram, payload.storage, payload.ip_address,
                     payload.os, os_version, platform_name,
@@ -99,7 +99,7 @@ async def checkin(
                 """
                 INSERT INTO devices (
                     company_id, serial_number, last_seen_at, hostname, brand, model,
-                    cpu, ram, storage, os, os_version, platform, owner_email, project
+                    cpu, ram, storage, os, os_version, platform, owner_email, department
                 ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
                 ON CONFLICT (company_id, serial_number) DO UPDATE SET
                     last_seen_at = EXCLUDED.last_seen_at,
@@ -113,13 +113,13 @@ async def checkin(
                     os_version = EXCLUDED.os_version,
                     platform = EXCLUDED.platform,
                     owner_email = EXCLUDED.owner_email,
-                    project = EXCLUDED.project
+                    department = EXCLUDED.department
                 """,
                 uuid.UUID(company_id), payload.serial_number, payload.timestamp,
                 payload.hostname, payload.brand, payload.model,
                 payload.cpu, payload.ram, payload.storage,
                 payload.os, os_version, platform_name,
-                payload.email, payload.project,
+                payload.email, payload.department,
             )
 
         notification_email = await conn.fetchval(
@@ -131,7 +131,7 @@ async def checkin(
         notification_email,
         payload.hostname,
         f"{payload.first_name} {payload.last_name}",
-        payload.project,
+        payload.department,
         payload.custom_fields,
     )
 

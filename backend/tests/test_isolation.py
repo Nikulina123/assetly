@@ -32,7 +32,7 @@ async def _checkin(client, api_key, serial_number):
         "first_name": "A",
         "last_name": "B",
         "email": "a@example.com",
-        "project": "Webiz ERP",
+        "department": "Engineering",
         "serial_number": serial_number,
         "hostname": "host-1",
         "brand": "Apple",

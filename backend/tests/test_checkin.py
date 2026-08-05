@@ -27,7 +27,7 @@ def _payload(**overrides):
         "first_name": "Nino",
         "last_name": "Nikoladze",
         "email": "nino@example.com",
-        "project": "Webiz ERP",
+        "department": "Engineering",
         "serial_number": "SN-001",
         "hostname": "nino-macbook",
         "brand": "Apple",
@@ -182,7 +182,7 @@ async def test_checkin_succeeds_without_project(db_pool, company):
     company_id, api_key = company
     checkin_id = str(uuid.uuid4())
     payload = _payload(checkin_id=checkin_id)
-    del payload["project"]
+    del payload["department"]
     async with await _client() as client:
         resp = await client.post(
             "/api/v1/inventory/checkin",
@@ -194,9 +194,9 @@ async def test_checkin_succeeds_without_project(db_pool, company):
     async with db_pool.acquire() as conn:
         await conn.execute("SELECT set_config('app.company_id', $1, false)", company_id)
         row = await conn.fetchrow(
-            "SELECT project FROM device_checkins WHERE checkin_id = $1", checkin_id
+            "SELECT department FROM device_checkins WHERE checkin_id = $1", checkin_id
         )
-    assert row["project"] is None
+    assert row["department"] is None
 
 
 async def test_checkin_succeeds_without_optional_hardware_fields(db_pool, company):

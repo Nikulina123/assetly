@@ -35,7 +35,7 @@ def notify_checkin_success(
     to_email: str | None,
     hostname: str,
     full_name: str,
-    project: str | None,
+    department: str | None,
     custom_fields: dict,
 ) -> None:
     """Never raises -- a notification failure must not affect the checkin
@@ -50,7 +50,7 @@ def notify_checkin_success(
     html_body = (
         f"<p>Hi {html.escape(full_name)},</p>"
         f"<p>Your device <strong>{html.escape(hostname)}</strong> has successfully checked in.</p>"
-        f"<p>Project: {html.escape(project) if project else 'N/A'}</p>"
+        f"<p>Department: {html.escape(department) if department else 'N/A'}</p>"
         f"{custom_lines}"
     )
     try:
