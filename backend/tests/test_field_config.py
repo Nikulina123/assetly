@@ -5,8 +5,8 @@ from app.field_config import (
     add_custom_field,
     remove_custom_field,
     resolve_field_settings_for_admin,
+    set_department_config,
     set_hardware_field_enabled,
-    set_project_config,
     slugify,
 )
 
@@ -18,10 +18,11 @@ async def test_fresh_company_gets_all_defaults(db_pool, company):
     config = await resolve_field_config(db_pool, company_id)
 
     keys = [f["key"] for f in config["user_fields"]]
-    assert keys == ["first_name", "last_name", "email", "project"]
-    assert all(f["required"] for f in config["user_fields"])
+    assert keys == ["first_name", "last_name", "email", "department"]
+    assert all(f["required"] for f in config["user_fields"][:3])
+    assert config["user_fields"][3]["required"] is False  # department defaults to optional
     assert config["user_fields"][0]["locked"] is True
-    assert config["user_fields"][3]["locked"] is False  # project is toggleable
+    assert config["user_fields"][3]["locked"] is False  # department is toggleable
 
     assert config["hardware_fields"] == ["cpu", "ram", "storage", "ip_address"]
 
@@ -41,19 +42,37 @@ async def test_disabled_hardware_field_is_excluded(db_pool, company):
     assert config["hardware_fields"] == ["ram", "storage", "ip_address"]
 
 
-async def test_project_disabled_is_excluded_from_user_fields(db_pool, company):
+async def test_department_disabled_is_excluded_from_user_fields(db_pool, company):
     company_id, _ = company
     async with db_pool.acquire() as conn:
         async with conn.transaction():
             await conn.execute("SELECT set_config('app.company_id', $1, true)", company_id)
             await conn.execute(
                 "INSERT INTO company_fields (company_id, field_key, field_type, label, enabled, required) "
-                "VALUES ($1, 'project', 'project', 'Project', false, false)",
+                "VALUES ($1, 'department', 'department', 'Department', false, false)",
                 company_id,
             )
     config = await resolve_field_config(db_pool, company_id)
     keys = [f["key"] for f in config["user_fields"]]
-    assert "project" not in keys
+    assert "department" not in keys
+
+
+async def test_department_defaults_to_optional(db_pool, company):
+    """With no company_fields override row, department is offered but not
+    required. This is a deliberate change from the old project default."""
+    company_id, _ = company
+    config = await resolve_field_config(db_pool, company_id)
+    department = next(f for f in config["user_fields"] if f["key"] == "department")
+    assert department["label"] == "Department"
+    assert department["required"] is False
+
+
+async def test_department_required_when_configured(db_pool, company):
+    company_id, _ = company
+    await set_department_config(db_pool, company_id, enabled=True, required=True)
+    config = await resolve_field_config(db_pool, company_id)
+    department = next(f for f in config["user_fields"] if f["key"] == "department")
+    assert department["required"] is True
 
 
 async def test_enabled_custom_field_is_included_in_order(db_pool, company):
@@ -63,7 +82,7 @@ async def test_enabled_custom_field_is_included_in_order(db_pool, company):
             await conn.execute("SELECT set_config('app.company_id', $1, true)", company_id)
             await conn.execute(
                 "INSERT INTO company_fields (company_id, field_key, field_type, label, enabled, required) "
-                "VALUES ($1, 'department', 'custom', 'Department', true, true)",
+                "VALUES ($1, 'cost_center', 'custom', 'Cost Center', true, true)",
                 company_id,
             )
             await conn.execute(
@@ -72,9 +91,9 @@ async def test_enabled_custom_field_is_included_in_order(db_pool, company):
                 company_id,
             )
     config = await resolve_field_config(db_pool, company_id)
-    custom = [f for f in config["user_fields"] if f["key"] in ("department", "asset_tag")]
+    custom = [f for f in config["user_fields"] if f["key"] in ("cost_center", "asset_tag")]
     assert custom == [
-        {"key": "department", "label": "Department", "required": True, "locked": False},
+        {"key": "cost_center", "label": "Cost Center", "required": True, "locked": False},
         {"key": "asset_tag", "label": "Asset Tag", "required": False, "locked": False},
     ]
 
@@ -96,38 +115,38 @@ async def test_set_hardware_field_enabled_persists(db_pool, company):
     assert "cpu" in config["hardware_fields"]
 
 
-async def test_set_project_config_persists(db_pool, company):
+async def test_set_department_config_persists(db_pool, company):
     company_id, _ = company
-    await set_project_config(db_pool, company_id, enabled=True, required=False)
+    await set_department_config(db_pool, company_id, enabled=True, required=False)
     config = await resolve_field_config(db_pool, company_id)
-    project = next(f for f in config["user_fields"] if f["key"] == "project")
-    assert project["required"] is False
+    department = next(f for f in config["user_fields"] if f["key"] == "department")
+    assert department["required"] is False
 
-    await set_project_config(db_pool, company_id, enabled=False, required=False)
+    await set_department_config(db_pool, company_id, enabled=False, required=False)
     config = await resolve_field_config(db_pool, company_id)
-    assert "project" not in [f["key"] for f in config["user_fields"]]
+    assert "department" not in [f["key"] for f in config["user_fields"]]
 
 
 async def test_add_and_remove_custom_field(db_pool, company):
     company_id, _ = company
-    field_key = await add_custom_field(db_pool, company_id, "Department", required=True)
-    assert field_key == "department"
+    field_key = await add_custom_field(db_pool, company_id, "Cost Center", required=True)
+    assert field_key == "cost_center"
 
     config = await resolve_field_config(db_pool, company_id)
-    assert "department" in [f["key"] for f in config["user_fields"]]
+    assert "cost_center" in [f["key"] for f in config["user_fields"]]
 
     await remove_custom_field(db_pool, company_id, field_key)
     config = await resolve_field_config(db_pool, company_id)
-    assert "department" not in [f["key"] for f in config["user_fields"]]
+    assert "cost_center" not in [f["key"] for f in config["user_fields"]]
 
 
 async def test_add_custom_field_duplicate_label_raises_unique_violation(db_pool, company):
     import asyncpg
 
     company_id, _ = company
-    await add_custom_field(db_pool, company_id, "Department", required=True)
+    await add_custom_field(db_pool, company_id, "Cost Center", required=True)
     with pytest.raises(asyncpg.UniqueViolationError):
-        await add_custom_field(db_pool, company_id, "Department", required=False)
+        await add_custom_field(db_pool, company_id, "Cost Center", required=False)
 
 
 async def test_add_custom_field_rejects_reserved_key(db_pool, company):
@@ -135,22 +154,22 @@ async def test_add_custom_field_rejects_reserved_key(db_pool, company):
     with pytest.raises(ValueError, match="reserved"):
         await add_custom_field(db_pool, company_id, "CPU", required=False)
     with pytest.raises(ValueError, match="reserved"):
-        await add_custom_field(db_pool, company_id, "Project", required=False)
+        await add_custom_field(db_pool, company_id, "Department", required=False)
 
 
 async def test_resolve_field_settings_for_admin_shape(db_pool, company):
     company_id, _ = company
     await set_hardware_field_enabled(db_pool, company_id, "cpu", False)
-    await add_custom_field(db_pool, company_id, "Department", required=True)
+    await add_custom_field(db_pool, company_id, "Cost Center", required=True)
 
     settings = await resolve_field_settings_for_admin(db_pool, company_id)
     hw_by_key = {f["key"]: f for f in settings["hardware_field_options"]}
     assert hw_by_key["cpu"]["enabled"] is False
     assert hw_by_key["ram"]["enabled"] is True
-    assert settings["project_enabled"] is True
-    assert settings["project_required"] is True
+    assert settings["department_enabled"] is True
+    assert settings["department_required"] is False
     assert settings["custom_fields"] == [
-        {"key": "department", "label": "Department", "required": True}
+        {"key": "cost_center", "label": "Cost Center", "required": True}
     ]
 
 

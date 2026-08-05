@@ -33,5 +33,5 @@ async def test_config_returns_defaults_for_fresh_company(company):
         )
     assert resp.status_code == 200
     body = resp.json()
-    assert [f["key"] for f in body["user_fields"]] == ["first_name", "last_name", "email", "project"]
+    assert [f["key"] for f in body["user_fields"]] == ["first_name", "last_name", "email", "department"]
     assert body["hardware_fields"] == ["cpu", "ram", "storage", "ip_address"]

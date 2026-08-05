@@ -9,8 +9,8 @@ HARDWARE_FIELD_KEYS = ["cpu", "ram", "storage", "ip_address"]
 async def resolve_field_config(pool: asyncpg.Pool, company_id: str) -> dict:
     """Resolves the effective, agent-facing field configuration for a company.
 
-    Absence of a company_fields row for a given key means "default enabled"
-    (and, for 'project', also "default required") — see design doc for why.
+    Absence of a company_fields row for a given key means "default enabled".
+    'department' additionally defaults to NOT required.
     """
     async with pool.acquire() as conn:
         async with conn.transaction():
@@ -22,7 +22,7 @@ async def resolve_field_config(pool: asyncpg.Pool, company_id: str) -> dict:
             )
 
     # Flat by field_key across all field_type values — relies on add_custom_field
-    # (below) rejecting any slug that collides with 'project' or a hardware key.
+    # (below) rejecting any slug that collides with 'department' or a hardware key.
     # Nothing in this function itself prevents that collision.
     overrides = {row["field_key"]: row for row in rows}
 
@@ -32,13 +32,15 @@ async def resolve_field_config(pool: asyncpg.Pool, company_id: str) -> dict:
         {"key": "email", "label": "Email", "required": True, "locked": True},
     ]
 
-    project_override = overrides.get("project")
-    project_enabled = project_override["enabled"] if project_override else True
-    if project_enabled:
+    department_override = overrides.get("department")
+    department_enabled = department_override["enabled"] if department_override else True
+    if department_enabled:
         user_fields.append({
-            "key": "project",
-            "label": "Project",
-            "required": project_override["required"] if project_override else True,
+            "key": "department",
+            "label": "Department",
+            # Defaults to optional. Absence of an override row used to mean
+            # "required" for the old project field; department is opt-in.
+            "required": department_override["required"] if department_override else False,
             "locked": False,
         })
 
@@ -77,21 +79,21 @@ async def set_hardware_field_enabled(pool: asyncpg.Pool, company_id: str, field_
             )
 
 
-async def set_project_config(pool: asyncpg.Pool, company_id: str, enabled: bool, required: bool) -> None:
+async def set_department_config(pool: asyncpg.Pool, company_id: str, enabled: bool, required: bool) -> None:
     async with pool.acquire() as conn:
         async with conn.transaction():
             await conn.execute("SELECT set_config('app.company_id', $1, true)", company_id)
             await conn.execute(
                 """
                 INSERT INTO company_fields (company_id, field_key, field_type, label, enabled, required)
-                VALUES ($1, 'project', 'project', 'Project', $2, $3)
+                VALUES ($1, 'department', 'department', 'Department', $2, $3)
                 ON CONFLICT (company_id, field_key) DO UPDATE SET enabled = EXCLUDED.enabled, required = EXCLUDED.required
                 """,
                 uuid.UUID(company_id), enabled, required,
             )
 
 
-_RESERVED_FIELD_KEYS = {"project"} | set(HARDWARE_FIELD_KEYS)
+_RESERVED_FIELD_KEYS = {"department"} | set(HARDWARE_FIELD_KEYS)
 
 
 async def add_custom_field(pool: asyncpg.Pool, company_id: str, label: str, required: bool) -> str:
@@ -132,7 +134,7 @@ async def remove_custom_field(pool: asyncpg.Pool, company_id: str, field_key: st
 
 async def resolve_field_settings_for_admin(pool: asyncpg.Pool, company_id: str) -> dict:
     """Admin-UI-friendly shape (distinct from the agent-facing resolve_field_config):
-    hardware fields as {key, label, enabled} options, project as separate
+    hardware fields as {key, label, enabled} options, department as separate
     enabled/required flags, custom fields as a plain list."""
     async with pool.acquire() as conn:
         async with conn.transaction():
@@ -154,9 +156,9 @@ async def resolve_field_settings_for_admin(pool: asyncpg.Pool, company_id: str) 
         for key in HARDWARE_FIELD_KEYS
     ]
 
-    project_override = overrides.get("project")
-    project_enabled = project_override["enabled"] if project_override else True
-    project_required = project_override["required"] if project_override else True
+    department_override = overrides.get("department")
+    department_enabled = department_override["enabled"] if department_override else True
+    department_required = department_override["required"] if department_override else False
 
     custom_fields = [
         {"key": row["field_key"], "label": row["label"], "required": row["required"]}
@@ -166,7 +168,7 @@ async def resolve_field_settings_for_admin(pool: asyncpg.Pool, company_id: str) 
 
     return {
         "hardware_field_options": hardware_field_options,
-        "project_enabled": project_enabled,
-        "project_required": project_required,
+        "department_enabled": department_enabled,
+        "department_required": department_required,
         "custom_fields": custom_fields,
     }

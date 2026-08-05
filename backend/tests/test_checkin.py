@@ -176,8 +176,8 @@ async def test_checkin_rejects_non_string_custom_field_value(company):
     assert resp.status_code == 422
 
 
-async def test_checkin_succeeds_without_project(db_pool, company):
-    """project is toggleable per company (app/field_config.py); a company with
+async def test_checkin_succeeds_without_department(db_pool, company):
+    """department is toggleable per company (app/field_config.py); a company with
     it disabled must still be able to check in successfully."""
     company_id, api_key = company
     checkin_id = str(uuid.uuid4())

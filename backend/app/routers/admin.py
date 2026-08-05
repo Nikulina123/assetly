@@ -17,8 +17,8 @@ from app.field_config import (
     add_custom_field,
     remove_custom_field,
     resolve_field_settings_for_admin,
+    set_department_config,
     set_hardware_field_enabled,
-    set_project_config,
 )
 
 router = APIRouter(prefix="/admin")
@@ -268,7 +268,7 @@ async def update_hardware_fields(
         ("cpu", cpu), ("ram", ram), ("storage", storage), ("ip_address", ip_address),
     ]:
         await set_hardware_field_enabled(pool, company_id_str, field_key, submitted_value is not None)
-    await set_project_config(
+    await set_department_config(
         pool, company_id_str,
         enabled=project_enabled is not None,
         required=project_required is not None,

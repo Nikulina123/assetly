@@ -49,7 +49,7 @@ async def test_update_hardware_fields_persists(admin, company, db_pool):
         csrf_token = get_resp.text.split('name="csrf_token" value="')[1].split('"')[0]
 
         # Submit with only "ram", "storage", "ip_address" checked (cpu unchecked)
-        # and project left unchecked -> disabled.
+        # and department left unchecked -> disabled.
         resp = await client.post(
             f"/admin/companies/{company_id}/fields/hardware",
             data={
@@ -65,7 +65,7 @@ async def test_update_hardware_fields_persists(admin, company, db_pool):
 
     config = await resolve_field_config(db_pool, company_id)
     assert config["hardware_fields"] == ["ram", "storage", "ip_address"]
-    assert "project" not in [f["key"] for f in config["user_fields"]]
+    assert "department" not in [f["key"] for f in config["user_fields"]]
 
 
 async def test_add_and_remove_custom_field_via_admin(admin, company, db_pool):
@@ -80,15 +80,15 @@ async def test_add_and_remove_custom_field_via_admin(admin, company, db_pool):
 
         add_resp = await client.post(
             f"/admin/companies/{company_id}/fields/custom",
-            data={"csrf_token": csrf_token, "label": "Department", "required": "on"},
+            data={"csrf_token": csrf_token, "label": "Cost Center", "required": "on"},
         )
         assert add_resp.status_code == 303
 
         config = await resolve_field_config(db_pool, company_id)
-        assert "department" in [f["key"] for f in config["user_fields"]]
+        assert "cost_center" in [f["key"] for f in config["user_fields"]]
 
         remove_resp = await client.post(
-            f"/admin/companies/{company_id}/fields/custom/department/remove",
+            f"/admin/companies/{company_id}/fields/custom/cost_center/remove",
             data={"csrf_token": csrf_token},
         )
         assert remove_resp.status_code == 303
@@ -96,7 +96,7 @@ async def test_add_and_remove_custom_field_via_admin(admin, company, db_pool):
         await client.aclose()
 
     config = await resolve_field_config(db_pool, company_id)
-    assert "department" not in [f["key"] for f in config["user_fields"]]
+    assert "cost_center" not in [f["key"] for f in config["user_fields"]]
 
 
 async def test_add_custom_field_with_reserved_label_shows_error(admin, company):
