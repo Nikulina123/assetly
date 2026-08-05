@@ -75,6 +75,34 @@ async def test_department_required_when_configured(db_pool, company):
     assert department["required"] is True
 
 
+async def test_legacy_custom_department_field_does_not_duplicate_builtin(db_pool, company):
+    """Before 'department' was reserved, add_custom_field would happily create
+    a *custom* field whose label slugged to 'department' (field_type='custom').
+    That row can no longer be created through add_custom_field (it's the whole
+    point of reserving the key), but existing rows from before this rename can
+    still be sitting in the table. resolve_field_config must not surface that
+    legacy row as a second 'department' entry alongside the built-in one, and
+    resolve_field_settings_for_admin must not list it under custom_fields."""
+    company_id, _ = company
+    async with db_pool.acquire() as conn:
+        async with conn.transaction():
+            await conn.execute("SELECT set_config('app.company_id', $1, true)", company_id)
+            await conn.execute(
+                "INSERT INTO company_fields (company_id, field_key, field_type, label, enabled, required) "
+                "VALUES ($1, 'department', 'custom', 'Legacy Dept', true, true)",
+                company_id,
+            )
+
+    config = await resolve_field_config(db_pool, company_id)
+    department_entries = [f for f in config["user_fields"] if f["key"] == "department"]
+    assert len(department_entries) == 1
+    assert department_entries[0]["label"] == "Department"
+    assert department_entries[0]["required"] is False
+
+    settings = await resolve_field_settings_for_admin(db_pool, company_id)
+    assert "department" not in [f["key"] for f in settings["custom_fields"]]
+
+
 async def test_enabled_custom_field_is_included_in_order(db_pool, company):
     company_id, _ = company
     async with db_pool.acquire() as conn:

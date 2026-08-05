@@ -6,6 +6,19 @@ import asyncpg
 HARDWARE_FIELD_KEYS = ["cpu", "ram", "storage", "ip_address"]
 
 
+def _department_override(rows: list) -> asyncpg.Record | None:
+    """The built-in department setting, if the company configured one.
+
+    Matches on field_type too, not just field_key: a *custom* field whose label
+    slugged to 'department' (possible before 'department' became reserved) must
+    never be mistaken for the built-in setting.
+    """
+    return next(
+        (r for r in rows if r["field_key"] == "department" and r["field_type"] == "department"),
+        None,
+    )
+
+
 async def resolve_field_config(pool: asyncpg.Pool, company_id: str) -> dict:
     """Resolves the effective, agent-facing field configuration for a company.
 
@@ -21,9 +34,12 @@ async def resolve_field_config(pool: asyncpg.Pool, company_id: str) -> dict:
                 uuid.UUID(company_id),
             )
 
-    # Flat by field_key across all field_type values — relies on add_custom_field
-    # (below) rejecting any slug that collides with 'department' or a hardware key.
-    # Nothing in this function itself prevents that collision.
+    # Flat by field_key across all field_type values. add_custom_field (below)
+    # rejects any slug that collides with 'department' or a hardware key for
+    # rows created from now on, but legacy rows created before 'department' was
+    # reserved can still have field_key='department' with field_type='custom'.
+    # _department_override() and the reserved-key skip in the loop below both
+    # guard against mistaking such a row for the built-in department setting.
     overrides = {row["field_key"]: row for row in rows}
 
     user_fields = [
@@ -32,7 +48,7 @@ async def resolve_field_config(pool: asyncpg.Pool, company_id: str) -> dict:
         {"key": "email", "label": "Email", "required": True, "locked": True},
     ]
 
-    department_override = overrides.get("department")
+    department_override = _department_override(rows)
     department_enabled = department_override["enabled"] if department_override else True
     if department_enabled:
         user_fields.append({
@@ -46,6 +62,13 @@ async def resolve_field_config(pool: asyncpg.Pool, company_id: str) -> dict:
 
     for field_key, row in overrides.items():
         if row["field_type"] == "custom" and row["enabled"]:
+            if field_key in _RESERVED_FIELD_KEYS:
+                # Legacy data only: a custom field can only have a reserved
+                # field_key if it was created before that key was reserved
+                # (e.g. 'department' before this rename). The built-in field
+                # wins here; an admin can clear the stray row via the existing
+                # custom-field-remove endpoint.
+                continue
             user_fields.append({
                 "key": field_key,
                 "label": row["label"],
@@ -156,14 +179,18 @@ async def resolve_field_settings_for_admin(pool: asyncpg.Pool, company_id: str) 
         for key in HARDWARE_FIELD_KEYS
     ]
 
-    department_override = overrides.get("department")
+    department_override = _department_override(rows)
     department_enabled = department_override["enabled"] if department_override else True
     department_required = department_override["required"] if department_override else False
 
     custom_fields = [
         {"key": row["field_key"], "label": row["label"], "required": row["required"]}
         for row in rows
-        if row["field_type"] == "custom"
+        # Excludes legacy rows only: a custom field can only have a reserved
+        # field_key (e.g. 'department') if it was created before that key was
+        # reserved. The built-in field wins; an admin can clear the stray row
+        # via the existing custom-field-remove endpoint.
+        if row["field_type"] == "custom" and row["field_key"] not in _RESERVED_FIELD_KEYS
     ]
 
     return {
