@@ -1,3 +1,9 @@
+-- APPLY WITH psql --single-transaction (-1). psql is autocommit by default, so
+-- without it each statement commits on its own: if the ADD CONSTRAINT at the
+-- bottom failed, the DROP CONSTRAINT above it would already be committed and
+-- company_fields would be left with no field_type constraint at all. Postgres
+-- DDL is transactional, so -1 makes the whole rename all-or-nothing.
+--
 -- Renames the per-device "project" field to "department", matching the Assetly
 -- design system's vocabulary (device.dept, "Department Overview" reports).
 -- The column was already made nullable in 004_project_nullable.sql, and
