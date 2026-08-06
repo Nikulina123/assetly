@@ -1,27 +1,128 @@
 {% extends "portal_base.html" %}
+{% import "_icons.html" as icons %}
 {% block title %}{{ device['hostname'] or device['serial_number'] }} — Assetly{% endblock %}
 {% block heading %}{{ device['hostname'] or device['serial_number'] }}{% endblock %}
+{% block subtitle %}<div class="topbar-subtitle">Device Detail</div>{% endblock %}
+{% block topbar_actions %}
+<a class="btn btn-secondary" href="/admin/companies/{{ company['id'] }}/computers">{{ icons.icon('chevron-left', 14) }}Back</a>
+{% endblock %}
 {% block content %}
-<div class="card">
-  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
-    <span class="badge {{ device['status'] }}">{{ device['status'] | capitalize }}</span>
-    <a href="/admin/companies/{{ company['id'] }}/computers" class="muted" style="text-decoration:none">← Computers</a>
+{% set os_lower = (device['os'] or '') | lower %}
+<div class="device-row">
+  <div class="device-main">
+    <div class="card">
+      <div class="device-head">
+        <div class="device-avatar {% if 'mac' in os_lower %}mac{% endif %}">
+          {% if 'mac' in os_lower %}🍎{% elif 'windows' in os_lower %}🪟{% elif 'linux' in os_lower or 'ubuntu' in os_lower %}🐧{% else %}💻{% endif %}
+        </div>
+        <div>
+          <div class="device-name">{{ device['hostname'] or device['serial_number'] }}</div>
+          <div class="device-sub">{{ device['os'] or 'Unknown OS' }} · {{ device['department'] or 'No department' }}</div>
+        </div>
+        <div style="margin-left:auto"><span class="badge {{ device['status'] }}">{{ device['status'] | capitalize }}</span></div>
+      </div>
+      <div class="quick-stats">
+        <div class="quick-stat">
+          <div class="quick-stat-label">{{ icons.icon('cpu', 12) }}CPU</div>
+          <div class="quick-stat-val">{{ device['cpu'] or '—' }}</div>
+        </div>
+        <div class="quick-stat">
+          <div class="quick-stat-label">{{ icons.icon('monitor', 12) }}RAM</div>
+          <div class="quick-stat-val">{{ device['ram'] or '—' }}</div>
+        </div>
+        <div class="quick-stat">
+          <div class="quick-stat-label">{{ icons.icon('hdd', 12) }}Storage</div>
+          <div class="quick-stat-val">{{ device['storage'] or '—' }}</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card flush">
+      <div class="card-header"><div class="card-title">Hardware Specification</div></div>
+      <div class="spec-row">
+        <span class="spec-row-icon">{{ icons.icon('hash', 14) }}</span>
+        <span class="spec-row-label">Serial Number</span>
+        <span class="spec-row-value mono">{{ device['serial_number'] }}</span>
+      </div>
+      <div class="spec-row">
+        <span class="spec-row-icon">{{ icons.icon('building', 14) }}</span>
+        <span class="spec-row-label">Department</span>
+        <span class="spec-row-value">{{ device['department'] or '—' }}</span>
+      </div>
+      <div class="spec-row">
+        <span class="spec-row-icon">{{ icons.icon('mail', 14) }}</span>
+        <span class="spec-row-label">Owner</span>
+        <span class="spec-row-value">{{ device['owner_email'] or '—' }}</span>
+      </div>
+      <div class="spec-row">
+        <span class="spec-row-icon">{{ icons.icon('monitor', 14) }}</span>
+        <span class="spec-row-label">Operating System</span>
+        <span class="spec-row-value">{{ device['os'] or '—' }}</span>
+      </div>
+      <div class="spec-row">
+        <span class="spec-row-icon">{{ icons.icon('cpu', 14) }}</span>
+        <span class="spec-row-label">Processor</span>
+        <span class="spec-row-value">{{ device['cpu'] or '—' }}</span>
+      </div>
+      <div class="spec-row">
+        <span class="spec-row-icon">{{ icons.icon('cpu', 14) }}</span>
+        <span class="spec-row-label">RAM</span>
+        <span class="spec-row-value">{{ device['ram'] or '—' }}</span>
+      </div>
+      <div class="spec-row">
+        <span class="spec-row-icon">{{ icons.icon('hdd', 14) }}</span>
+        <span class="spec-row-label">Storage</span>
+        <span class="spec-row-value">{{ device['storage'] or '—' }}</span>
+      </div>
+      <div class="spec-row">
+        <span class="spec-row-icon">{{ icons.icon('computers', 14) }}</span>
+        <span class="spec-row-label">Brand / Model</span>
+        <span class="spec-row-value">{{ device['brand'] or '—' }} {{ device['model'] or '' }}</span>
+      </div>
+      <div class="spec-row">
+        <span class="spec-row-icon">{{ icons.icon('clock', 14) }}</span>
+        <span class="spec-row-label">Last check-in</span>
+        <span class="spec-row-value mono">{{ device['last_seen_at'].strftime('%Y-%m-%d %H:%M') if device['last_seen_at'] else 'never' }}</span>
+      </div>
+    </div>
   </div>
-  <div class="spec-grid">
-    <div><div class="spec-label">Serial Number</div><div class="spec-value mono">{{ device['serial_number'] }}</div></div>
-    <div><div class="spec-label">Department</div><div class="spec-value">{{ device['department'] or '—' }}</div></div>
-    <div><div class="spec-label">Owner</div><div class="spec-value">{{ device['owner_email'] or '—' }}</div></div>
-    <div><div class="spec-label">Operating System</div><div class="spec-value">{{ device['os'] or '—' }}</div></div>
-    <div><div class="spec-label">Processor</div><div class="spec-value">{{ device['cpu'] or '—' }}</div></div>
-    <div><div class="spec-label">RAM</div><div class="spec-value">{{ device['ram'] or '—' }}</div></div>
-    <div><div class="spec-label">Storage</div><div class="spec-value">{{ device['storage'] or '—' }}</div></div>
-    <div><div class="spec-label">Brand / Model</div><div class="spec-value">{{ device['brand'] or '—' }} {{ device['model'] or '' }}</div></div>
-    <div><div class="spec-label">Last check-in</div><div class="spec-value mono">{{ device['last_seen_at'].strftime('%Y-%m-%d %H:%M') if device['last_seen_at'] else 'never' }}</div></div>
+
+  <div class="side-panel">
+    <div class="card">
+      <div class="side-panel-title">Device Status</div>
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
+        <span class="status-dot {{ device['status'] }}"></span>
+        <span class="mono" style="font-size:13px;color:var(--white)">{{ device['status'] | capitalize }}</span>
+      </div>
+      <div class="side-panel-row">
+        <span class="muted" style="font-size:11px">Last check-in</span>
+        <span class="mono" style="font-size:11px">{{ device['last_seen_at'].strftime('%Y-%m-%d %H:%M') if device['last_seen_at'] else 'never' }}</span>
+      </div>
+      <div class="side-panel-row">
+        <span class="muted" style="font-size:11px">Department</span>
+        <span style="font-size:11px">{{ device['department'] or '—' }}</span>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="side-panel-title">Recent Check-ins</div>
+      {% if history %}
+        {% for h in history[:5] %}
+        <div class="side-panel-row">
+          <span class="mono" style="font-size:11px;color:var(--slate)">{{ h['received_at'].strftime('%Y-%m-%d %H:%M') }}</span>
+          <span style="font-size:10px;color:var(--teal);background:rgba(0,194,168,0.08);padding:1px 6px;border-radius:3px">OK</span>
+        </div>
+        {% endfor %}
+      {% else %}
+        <div class="muted" style="font-size:12px">No check-ins recorded yet.</div>
+      {% endif %}
+    </div>
   </div>
 </div>
 
-<div class="section-title">Check-in history</div>
-<div class="card" style="padding:0;overflow-x:auto">
+<div class="card flush">
+  <div class="card-header"><div class="card-title">Check-in history</div></div>
+  <div style="overflow-x:auto">
   <table class="table">
     <thead>
       <tr><th>Received</th><th>Submitted by</th><th>Department</th><th>Hostname</th><th>IP</th><th>Agent</th></tr>
@@ -30,7 +131,7 @@
       {% for h in history %}
       <tr>
         <td class="mono">{{ h['received_at'].strftime('%Y-%m-%d %H:%M') }}</td>
-        <td>{{ h['first_name'] }} {{ h['last_name'] }}<div class="muted" style="font-size:12px">{{ h['email'] }}</div></td>
+        <td>{{ h['first_name'] }} {{ h['last_name'] }}<div class="muted" style="font-size:11px">{{ h['email'] }}</div></td>
         <td class="muted">{{ h['department'] or '—' }}</td>
         <td class="muted">{{ h['hostname'] }}</td>
         <td class="mono muted">{{ h['ip_address'] or '—' }}</td>
@@ -39,5 +140,6 @@
       {% endfor %}
     </tbody>
   </table>
+  </div>
 </div>
 {% endblock %}

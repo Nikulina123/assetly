@@ -1,34 +1,43 @@
 {% extends "portal_base.html" %}
+{% import "_icons.html" as icons %}
 {% block title %}Computers — Assetly{% endblock %}
+{% block subtitle %}<div class="topbar-subtitle">{{ devices | length }} device{{ '' if devices | length == 1 else 's' }} total</div>{% endblock %}
 {% block content %}
 {% if devices %}
 <div class="toolbar">
-  <input class="input" id="q" type="search" placeholder="Search hostname, serial, department…" style="min-width:280px">
-  <select class="select" id="status-filter">
-    <option value="">All statuses</option>
-    <option value="online">Online</option>
-    <option value="pending">Pending</option>
-    <option value="offline">Offline</option>
-  </select>
+  <div class="search-field" style="min-width:280px;flex:1;max-width:340px">
+    {{ icons.icon('search', 14) }}
+    <input class="input" id="q" type="search" placeholder="Search hostname, serial, department…">
+  </div>
+  <div class="filter-pills" id="status-filter" data-active="">
+    <button type="button" class="filter-pill active" data-status="">All</button>
+    <button type="button" class="filter-pill" data-status="online">Online</button>
+    <button type="button" class="filter-pill" data-status="pending">Pending</button>
+    <button type="button" class="filter-pill" data-status="offline">Offline</button>
+  </div>
 </div>
 
-<div class="card" style="padding:0;overflow-x:auto">
+<div class="card flush" style="overflow-x:auto">
   <table class="table" id="devices">
     <thead>
       <tr>
         <th>Device</th><th>Department</th><th>OS</th><th>RAM</th>
-        <th>Serial</th><th>Last check-in</th><th>Status</th>
+        <th>Last check-in</th><th>Status</th>
       </tr>
     </thead>
     <tbody>
       {% for d in devices %}
       <tr data-status="{{ d['status'] }}">
-        <td><a href="/admin/companies/{{ company['id'] }}/computers/{{ d['serial_number'] | urlencode }}">{{ d['hostname'] or '—' }}</a></td>
-        <td class="muted">{{ d['department'] or '—' }}</td>
+        <td>
+          <a href="/admin/companies/{{ company['id'] }}/computers/{{ d['serial_number'] | urlencode }}">
+            <div class="cell-primary">{{ d['hostname'] or '—' }}</div>
+            <div class="cell-sub">SN: {{ d['serial_number'] }}</div>
+          </a>
+        </td>
+        <td>{% if d['department'] %}<span class="tag">{{ d['department'] }}</span>{% else %}<span class="muted">—</span>{% endif %}</td>
         <td class="muted">{{ d['os'] or '—' }}</td>
-        <td class="muted">{{ d['ram'] or '—' }}</td>
-        <td class="mono muted">{{ d['serial_number'] }}</td>
-        <td class="muted">{{ d['last_seen_at'].strftime('%Y-%m-%d') if d['last_seen_at'] else 'never' }}</td>
+        <td class="muted mono">{{ d['ram'] or '—' }}</td>
+        <td class="muted mono">{{ d['last_seen_at'].strftime('%Y-%m-%d') if d['last_seen_at'] else 'never' }}</td>
         <td><span class="badge {{ d['status'] }}">{{ d['status'] | capitalize }}</span></td>
       </tr>
       {% endfor %}
@@ -39,14 +48,15 @@
 <script>
 (function () {
   var q = document.getElementById('q');
-  var statusFilter = document.getElementById('status-filter');
+  var filterWrap = document.getElementById('status-filter');
+  var pills = Array.prototype.slice.call(filterWrap.querySelectorAll('.filter-pill'));
   var rows = Array.prototype.slice.call(
     document.querySelectorAll('#devices tbody tr')
   );
 
   function apply() {
     var term = q.value.trim().toLowerCase();
-    var status = statusFilter.value;
+    var status = filterWrap.getAttribute('data-active') || '';
     rows.forEach(function (row) {
       var matchesTerm = !term || row.textContent.toLowerCase().indexOf(term) !== -1;
       var matchesStatus = !status || row.getAttribute('data-status') === status;
@@ -55,12 +65,20 @@
   }
 
   q.addEventListener('input', apply);
-  statusFilter.addEventListener('change', apply);
+  pills.forEach(function (pill) {
+    pill.addEventListener('click', function () {
+      pills.forEach(function (p) { p.classList.remove('active'); });
+      pill.classList.add('active');
+      filterWrap.setAttribute('data-active', pill.getAttribute('data-status') || '');
+      apply();
+    });
+  });
 })();
 </script>
 {% else %}
 <div class="card">
   <div class="empty">
+    {{ icons.icon('computers', 32, 'var(--slate-dim)', 1.4) }}
     <div class="empty-title">No devices yet</div>
     <div>Download an agent from Settings and run it on a computer. It appears here after the first check-in.</div>
   </div>

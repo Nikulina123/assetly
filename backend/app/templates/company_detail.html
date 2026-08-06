@@ -1,6 +1,10 @@
 {% extends "portal_base.html" %}
+{% import "_icons.html" as icons %}
 {% block title %}Settings — Assetly{% endblock %}
+{% block subtitle %}<div class="topbar-subtitle">Organization & account preferences</div>{% endblock %}
 {% block content %}
+<div style="max-width:720px;display:flex;flex-direction:column;gap:16px">
+
 {% if new_api_key %}
 <div class="banner banner-success">
   <strong>New API key — save it now, it will not be shown again:</strong>
@@ -8,110 +12,124 @@
 </div>
 {% endif %}
 
-<div class="card" style="margin-bottom:16px">
-  <div class="section-title" style="margin-top:0">Company</div>
-  <div class="spec-grid">
-    <div><div class="spec-label">API key prefix</div><div class="spec-value mono">{{ company['api_key_prefix'] }}…</div></div>
-    <div><div class="spec-label">Status</div><div class="spec-value">{% if company['revoked_at'] %}Revoked{% else %}Active{% endif %}</div></div>
+<div class="card flush">
+  <div class="card-header"><div class="card-title">{{ icons.icon('building', 14, extra_class='spec-row-icon') }}&nbsp;Company</div></div>
+  <div class="card-body">
+    <div class="spec-grid">
+      <div><div class="spec-label">API key prefix</div><div class="spec-value mono">{{ company['api_key_prefix'] }}…</div></div>
+      <div><div class="spec-label">Status</div><div class="spec-value">{% if company['revoked_at'] %}Revoked{% else %}Active{% endif %}</div></div>
+    </div>
   </div>
 </div>
 
-<div class="card" style="margin-bottom:16px">
-  <div class="section-title" style="margin-top:0">Notification email</div>
-  <form method="post" action="/admin/companies/{{ company['id'] }}/notification-email">
-    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-    <div style="display:flex;gap:10px;flex-wrap:wrap">
-      <input class="input" type="email" name="notification_email"
-             value="{{ company['notification_email'] or '' }}" required style="flex:1;min-width:240px">
-      <button type="submit" class="btn">Update</button>
-    </div>
-  </form>
+<div class="card flush">
+  <div class="card-header"><div class="card-title">{{ icons.icon('mail', 14, extra_class='spec-row-icon') }}&nbsp;Notification email</div></div>
+  <div class="card-body">
+    <form method="post" action="/admin/companies/{{ company['id'] }}/notification-email">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <div style="display:flex;gap:10px;flex-wrap:wrap">
+        <input class="input" type="email" name="notification_email"
+               value="{{ company['notification_email'] or '' }}" required style="flex:1;min-width:240px">
+        <button type="submit" class="btn">Update</button>
+      </div>
+    </form>
+  </div>
 </div>
 
-<div class="card" style="margin-bottom:16px">
-  <div class="section-title" style="margin-top:0">API key</div>
-  <div style="display:flex;gap:10px;flex-wrap:wrap">
-    <form method="post" action="/admin/companies/{{ company['id'] }}/rotate-key">
+<div class="card flush">
+  <div class="card-header"><div class="card-title">{{ icons.icon('key', 14, extra_class='spec-row-icon') }}&nbsp;API key</div></div>
+  <div class="card-body">
+    <div style="display:flex;gap:10px;flex-wrap:wrap">
+      <form method="post" action="/admin/companies/{{ company['id'] }}/rotate-key">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <button type="submit" class="btn btn-secondary">{{ icons.icon('refresh', 14) }}Rotate API key</button>
+      </form>
+      {% if not company['revoked_at'] %}
+      <form method="post" action="/admin/companies/{{ company['id'] }}/revoke">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <button type="submit" class="btn btn-danger">Revoke company</button>
+      </form>
+      {% endif %}
+    </div>
+  </div>
+</div>
+
+<div class="card flush">
+  <div class="card-header"><div class="card-title">{{ icons.icon('settings', 14, extra_class='spec-row-icon') }}&nbsp;Check-in fields</div></div>
+  <div class="card-body">
+    <form method="post" action="/admin/companies/{{ company['id'] }}/fields/hardware">
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-      <button type="submit" class="btn btn-secondary">Rotate API key</button>
+      {% for f in field_settings['hardware_field_options'] %}
+      <label class="check-row">
+        <input type="checkbox" name="{{ f['key'] }}" {% if f['enabled'] %}checked{% endif %}> {{ f['label'] }}
+      </label>
+      {% endfor %}
+      <label class="check-row">
+        <input type="checkbox" name="department_enabled" {% if field_settings['department_enabled'] %}checked{% endif %}> Department field enabled
+      </label>
+      <label class="check-row" style="margin-bottom:8px">
+        <input type="checkbox" name="department_required" {% if field_settings['department_required'] %}checked{% endif %}> Department required
+      </label>
+      <button type="submit" class="btn" style="margin-top:8px">Save check-in fields</button>
     </form>
-    {% if not company['revoked_at'] %}
-    <form method="post" action="/admin/companies/{{ company['id'] }}/revoke">
+  </div>
+</div>
+
+<div class="card flush">
+  <div class="card-header"><div class="card-title">{{ icons.icon('reports', 14, extra_class='spec-row-icon') }}&nbsp;Custom fields</div></div>
+  <div class="card-body">
+    {% if field_error %}
+    <div class="banner banner-error">{{ field_error }}</div>
+    {% endif %}
+    {% for cf in field_settings['custom_fields'] %}
+    <div class="custom-field-row">
+      <span style="flex:1">{{ cf['label'] }}
+        <span class="muted">({% if cf['required'] %}required{% else %}optional{% endif %})</span>
+      </span>
+      <form method="post" action="/admin/companies/{{ company['id'] }}/fields/custom/{{ cf['key'] }}/remove">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <button type="submit" class="btn btn-danger">Remove</button>
+      </form>
+    </div>
+    {% endfor %}
+    <form method="post" action="/admin/companies/{{ company['id'] }}/fields/custom" style="margin-top:14px">
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-      <button type="submit" class="btn btn-danger">Revoke company</button>
+      <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+        <input class="input" type="text" name="label" placeholder="Field label" required style="flex:1;min-width:200px">
+        <label class="muted" style="display:flex;align-items:center;gap:6px"><input type="checkbox" name="required"> Required</label>
+        <button type="submit" class="btn">Add custom field</button>
+      </div>
     </form>
+  </div>
+</div>
+
+<div class="card flush">
+  <div class="card-header"><div class="card-title">{{ icons.icon('download', 14, extra_class='spec-row-icon') }}&nbsp;Download agent</div></div>
+  <div class="card-body">
+    {% if company['revoked_at'] %}
+    <div class="muted">Company is revoked — downloads are disabled.</div>
+    {% else %}
+    <div class="banner banner-warning">
+      Downloading generates a new API key and invalidates the current one immediately.
+      Any devices already running this company's installer will need to be updated with the new one.
+    </div>
+    <div style="display:flex;gap:10px;flex-wrap:wrap">
+      <form method="post" action="/admin/companies/{{ company['id'] }}/download/macos">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <button type="submit" class="btn btn-secondary">{{ icons.icon('download', 14) }}Download for macOS</button>
+      </form>
+      <form method="post" action="/admin/companies/{{ company['id'] }}/download/linux">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <button type="submit" class="btn btn-secondary">{{ icons.icon('download', 14) }}Download for Linux</button>
+      </form>
+      <form method="post" action="/admin/companies/{{ company['id'] }}/download/windows">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <button type="submit" class="btn btn-secondary">{{ icons.icon('download', 14) }}Download for Windows</button>
+      </form>
+    </div>
     {% endif %}
   </div>
 </div>
 
-<div class="card" style="margin-bottom:16px">
-  <div class="section-title" style="margin-top:0">Check-in fields</div>
-  <form method="post" action="/admin/companies/{{ company['id'] }}/fields/hardware">
-    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-    {% for f in field_settings['hardware_field_options'] %}
-    <label style="display:block;margin-bottom:6px">
-      <input type="checkbox" name="{{ f['key'] }}" {% if f['enabled'] %}checked{% endif %}> {{ f['label'] }}
-    </label>
-    {% endfor %}
-    <label style="display:block;margin-bottom:6px">
-      <input type="checkbox" name="department_enabled" {% if field_settings['department_enabled'] %}checked{% endif %}> Department field enabled
-    </label>
-    <label style="display:block;margin-bottom:14px">
-      <input type="checkbox" name="department_required" {% if field_settings['department_required'] %}checked{% endif %}> Department required
-    </label>
-    <button type="submit" class="btn">Save check-in fields</button>
-  </form>
-</div>
-
-<div class="card" style="margin-bottom:16px">
-  <div class="section-title" style="margin-top:0">Custom fields</div>
-  {% if field_error %}
-  <div class="banner" style="background:rgba(239,68,68,0.08);border:1px solid rgba(239,68,68,0.25);color:#EF4444">{{ field_error }}</div>
-  {% endif %}
-  {% for cf in field_settings['custom_fields'] %}
-  <div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--border)">
-    <span style="flex:1">{{ cf['label'] }}
-      <span class="muted">({% if cf['required'] %}required{% else %}optional{% endif %})</span>
-    </span>
-    <form method="post" action="/admin/companies/{{ company['id'] }}/fields/custom/{{ cf['key'] }}/remove">
-      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-      <button type="submit" class="btn btn-danger">Remove</button>
-    </form>
-  </div>
-  {% endfor %}
-  <form method="post" action="/admin/companies/{{ company['id'] }}/fields/custom" style="margin-top:14px">
-    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-    <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
-      <input class="input" type="text" name="label" placeholder="Field label" required style="flex:1;min-width:200px">
-      <label class="muted"><input type="checkbox" name="required"> Required</label>
-      <button type="submit" class="btn">Add custom field</button>
-    </div>
-  </form>
-</div>
-
-<div class="card">
-  <div class="section-title" style="margin-top:0">Download agent</div>
-  {% if company['revoked_at'] %}
-  <div class="muted">Company is revoked — downloads are disabled.</div>
-  {% else %}
-  <div class="banner" style="background:rgba(245,166,35,0.08);border:1px solid rgba(245,166,35,0.25);color:#F5A623">
-    Downloading generates a new API key and invalidates the current one immediately.
-    Any devices already running this company's installer will need to be updated with the new one.
-  </div>
-  <div style="display:flex;gap:10px;flex-wrap:wrap">
-    <form method="post" action="/admin/companies/{{ company['id'] }}/download/macos">
-      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-      <button type="submit" class="btn btn-secondary">Download for macOS</button>
-    </form>
-    <form method="post" action="/admin/companies/{{ company['id'] }}/download/linux">
-      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-      <button type="submit" class="btn btn-secondary">Download for Linux</button>
-    </form>
-    <form method="post" action="/admin/companies/{{ company['id'] }}/download/windows">
-      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-      <button type="submit" class="btn btn-secondary">Download for Windows</button>
-    </form>
-  </div>
-  {% endif %}
 </div>
 {% endblock %}

@@ -1,47 +1,106 @@
 {% extends "portal_base.html" %}
+{% import "_icons.html" as icons %}
 {% block title %}Dashboard — Assetly{% endblock %}
+{% block subtitle %}<div class="topbar-subtitle">{{ stats['total'] }} device{{ '' if stats['total'] == 1 else 's' }} across this company</div>{% endblock %}
 {% block content %}
 <div class="stat-row">
-  <div class="card">
-    <div class="stat-label">Total Devices</div>
+  <div class="card stat-card">
+    <div class="stat-card-top">
+      <div class="stat-label">Total Devices</div>
+      <div class="stat-icon blue">{{ icons.icon('computers', 14) }}</div>
+    </div>
     <div class="stat-val">{{ stats['total'] }}</div>
     <div class="stat-sub">across this company</div>
   </div>
-  <div class="card">
-    <div class="stat-label">Online</div>
+  <div class="card stat-card">
+    <div class="stat-card-top">
+      <div class="stat-label">Online</div>
+      <div class="stat-icon teal">{{ icons.icon('wifi', 14) }}</div>
+    </div>
     <div class="stat-val">{{ stats['by_status']['online'] }}</div>
     <div class="stat-sub teal">checked in within 6 months</div>
   </div>
-  <div class="card">
-    <div class="stat-label">Pending Sync</div>
+  <div class="card stat-card">
+    <div class="stat-card-top">
+      <div class="stat-label">Pending Sync</div>
+      <div class="stat-icon amber">{{ icons.icon('refresh', 14) }}</div>
+    </div>
     <div class="stat-val">{{ stats['by_status']['pending'] }}</div>
     <div class="stat-sub amber">overdue, needs action</div>
   </div>
-  <div class="card">
-    <div class="stat-label">Offline</div>
+  <div class="card stat-card">
+    <div class="stat-card-top">
+      <div class="stat-label">Offline</div>
+      <div class="stat-icon">{{ icons.icon('monitor', 14) }}</div>
+    </div>
     <div class="stat-val">{{ stats['by_status']['offline'] }}</div>
     <div class="stat-sub">stale or never reported</div>
   </div>
 </div>
 
-<div class="section-title">Operating systems</div>
-<div class="card">
-  {% if stats['by_os'] %}
-    {% for os_name, count in stats['by_os'] %}
-    <div style="margin-bottom:12px">
-      <div style="display:flex;justify-content:space-between;font-size:13px">
-        <span>{{ os_name }}</span><span class="muted">{{ count }}</span>
-      </div>
-      <div class="bar">
-        <div class="bar-fill" style="width:{{ (count / stats['total'] * 100) | round(1) }}%;background:var(--blue)"></div>
+{% if stats['total'] %}
+<div class="dash-row">
+  <div class="card flush">
+    <div class="card-header">
+      <div>
+        <div class="card-title">OS Distribution</div>
+        <div class="card-title-sub">{{ stats['by_os'] | length }} operating system{{ '' if stats['by_os'] | length == 1 else 's' }} in the fleet</div>
       </div>
     </div>
-    {% endfor %}
-  {% else %}
-    <div class="empty">
-      <div class="empty-title">No devices yet</div>
-      <div>Install the agent on a computer and run it. Devices appear here after the first check-in.</div>
+    <div class="card-body">
+      {% set os_colors = ['var(--blue)', 'var(--blue-lt)', 'var(--teal)', 'var(--amber)', 'var(--slate)'] %}
+      <div class="os-grid">
+        {% for os_name, count in stats['by_os'] %}
+        <div>
+          <div class="bar-row-head">
+            <span class="bar-row-name" title="{{ os_name }}">{{ os_name }}</span>
+            <span class="bar-row-count">{{ count }}</span>
+          </div>
+          <div class="bar-track lg">
+            <div class="bar-fill" style="width:{{ (count / stats['total'] * 100) | round(1) }}%;background:{{ os_colors[loop.index0 % os_colors | length] }}"></div>
+          </div>
+          <div class="os-col-pct">{{ (count / stats['total'] * 100) | round(1) }}%</div>
+        </div>
+        {% endfor %}
+      </div>
     </div>
-  {% endif %}
+  </div>
+
+  <div class="card flush">
+    <div class="card-header">
+      <div>
+        <div class="card-title">Device Status</div>
+        <div class="card-title-sub">{{ stats['total'] }} total devices</div>
+      </div>
+    </div>
+    <div class="card-body">
+      <div class="bar-list">
+        {% for row in [
+          {'label': 'Online', 'val': stats['by_status']['online'], 'color': 'var(--teal)'},
+          {'label': 'Pending', 'val': stats['by_status']['pending'], 'color': 'var(--amber)'},
+          {'label': 'Offline', 'val': stats['by_status']['offline'], 'color': 'var(--red)'},
+        ] %}
+        <div>
+          <div class="bar-row-head">
+            <span class="bar-row-name">{{ row['label'] }}</span>
+            <span class="bar-row-count">{{ row['val'] }}</span>
+          </div>
+          <div class="bar-track">
+            <div class="bar-fill" style="width:{{ (row['val'] / stats['total'] * 100) | round(1) }}%;background:{{ row['color'] }}"></div>
+          </div>
+        </div>
+        {% endfor %}
+      </div>
+    </div>
+  </div>
 </div>
+{% else %}
+<div class="card">
+  <div class="empty">
+    {{ icons.icon('computers', 32, 'var(--slate-dim)', 1.4) }}
+    <div class="empty-title">No devices yet</div>
+    <div>Install the agent on a computer and run it. Devices appear here after the first check-in.</div>
+  </div>
+</div>
+{% endif %}
 {% endblock %}
