@@ -1,18 +1,22 @@
 {% extends "base.html" %}
+{% block title %}Companies — Assetly{% endblock %}
 {% block content %}
-<h2>Companies</h2>
-
 {% if new_api_key %}
-<div style="border:2px solid green; padding:10px; margin-bottom:16px;">
-  <strong>Save this API key now — it won't be shown again:</strong><br>
-  <code>{{ new_api_key }}</code>
+<div class="banner banner-success">
+  <strong>Save this API key now — it will not be shown again:</strong>
+  <div class="mono" style="margin-top:6px">{{ new_api_key }}</div>
 </div>
 {% endif %}
 
-<form method="post" action="/admin/companies">
-  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-  <input type="text" name="name" placeholder="Company name" required>
-  <input type="email" name="notification_email" placeholder="Notification email" required>
-  <button type="submit">Create Company</button>
-</form>
+<div class="card" style="max-width:460px">
+  <div class="section-title" style="margin-top:0">New company</div>
+  <form method="post" action="/admin/companies">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <label class="label" for="name">Company name</label>
+    <input class="input" id="name" name="name" required style="width:100%;margin-bottom:16px">
+    <label class="label" for="notification_email">Notification email</label>
+    <input class="input" id="notification_email" name="notification_email" type="email" required style="width:100%;margin-bottom:20px">
+    <button type="submit" class="btn">Create company</button>
+  </form>
+</div>
 {% endblock %}
