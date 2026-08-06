@@ -1,12 +1,16 @@
+from pathlib import Path
+
 from fastapi import FastAPI, HTTPException
 from fastapi.exception_handlers import http_exception_handler
 from fastapi.responses import RedirectResponse
+from fastapi.staticfiles import StaticFiles
 from starlette.middleware.sessions import SessionMiddleware
 
 from app.config import SESSION_COOKIE_SECURE, SESSION_SECRET_KEY
 from app.routers.admin import NotAuthenticated
 from app.routers.admin import router as admin_router
 from app.routers.checkin import router as checkin_router
+from app.routers.portal import router as portal_router
 
 app = FastAPI(title="Assetly Inventory Check-in API")
 app.add_middleware(
@@ -17,6 +21,12 @@ app.add_middleware(
 )
 app.include_router(checkin_router)
 app.include_router(admin_router)
+app.include_router(portal_router)
+app.mount(
+    "/static",
+    StaticFiles(directory=str(Path(__file__).resolve().parent / "static")),
+    name="static",
+)
 
 
 @app.exception_handler(NotAuthenticated)
