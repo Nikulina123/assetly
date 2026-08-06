@@ -94,6 +94,40 @@
     </div>
   </div>
 </div>
+
+<div class="card flush">
+  <div class="card-header">
+    <div class="card-title">{{ icons.icon('computers', 14, extra_class='spec-row-icon') }}&nbsp;Recent devices</div>
+    <a class="card-link" href="/admin/companies/{{ company['id'] }}/computers">View all &rarr;</a>
+  </div>
+  <div style="overflow-x:auto">
+    <table class="table">
+      <thead>
+        <tr>
+          <th>Device</th><th>Department</th><th>OS</th><th>RAM</th>
+          <th>Last check-in</th><th>Status</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for d in devices[:8] %}
+        <tr>
+          <td>
+            <a href="/admin/companies/{{ company['id'] }}/computers/{{ d['serial_number'] | urlencode }}">
+              <div class="cell-primary">{{ d['hostname'] or '—' }}</div>
+              <div class="cell-sub">SN: {{ d['serial_number'] }}</div>
+            </a>
+          </td>
+          <td>{% if d['department'] %}<span class="tag">{{ d['department'] }}</span>{% else %}<span class="muted">—</span>{% endif %}</td>
+          <td class="muted">{{ d['os'] or '—' }}</td>
+          <td class="muted mono">{{ d['ram'] or '—' }}</td>
+          <td class="muted mono">{{ d['last_seen_at'].strftime('%Y-%m-%d') if d['last_seen_at'] else 'never' }}</td>
+          <td><span class="badge {{ d['status'] }}">{{ d['status'] | capitalize }}</span></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
 {% else %}
 <div class="card">
   <div class="empty">

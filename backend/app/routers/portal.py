@@ -39,6 +39,7 @@ async def dashboard(
 ):
     pool, context = await _shell(request, company_id)
     context["stats"] = await dashboard_stats(pool, str(company_id))
+    context["devices"] = await list_devices(pool, str(company_id))
     context["nav_active"] = "dashboard"
     return templates.TemplateResponse("portal_dashboard.html", context)
 
