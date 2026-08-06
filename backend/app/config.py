@@ -27,3 +27,17 @@ OPS_ALERT_EMAIL = os.environ.get("OPS_ALERT_EMAIL", "")
 # If INTERVAL_MONTHS changes, change these with it.
 DEVICE_ONLINE_MAX_AGE_DAYS = int(os.environ.get("DEVICE_ONLINE_MAX_AGE_DAYS", "180"))
 DEVICE_PENDING_MAX_AGE_DAYS = int(os.environ.get("DEVICE_PENDING_MAX_AGE_DAYS", "270"))
+
+# Enrollment tokens are reusable within a window rather than single-use:
+# installers are bulk-pushed via GPO/MDM to whole sites, so a single-use token
+# would enroll one machine and silently fail every other one.
+ENROLLMENT_TOKEN_DAYS = int(os.environ.get("ENROLLMENT_TOKEN_DAYS", "90"))
+
+# Agents deployed before enrollment existed authenticate with the company key.
+# self_update() rewrites the agent on disk but the running process is old code,
+# so a machine only migrates on its NEXT run -- up to INTERVAL_MONTHS (6) later.
+# Refusing company-key check-ins immediately would take those machines dark for
+# a season, silently. Flip to false only once the fleet has converted.
+ALLOW_LEGACY_COMPANY_KEY_CHECKIN = (
+    os.environ.get("ALLOW_LEGACY_COMPANY_KEY_CHECKIN", "true").lower() == "true"
+)
