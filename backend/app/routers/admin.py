@@ -145,6 +145,7 @@ async def company_detail(
             "company": company,
             "csrf_token": _new_csrf_token(request),
             "field_settings": field_settings,
+            "nav_active": "settings",
         },
     )
 
