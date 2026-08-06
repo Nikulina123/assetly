@@ -73,6 +73,11 @@ async def test_expired_token_is_403_with_reason(db_pool, company):
     assert "expired" in resp.json()["detail"].lower()
 
 
+@pytest.mark.xfail(
+    reason="checkin.py still authenticates via resolve_company_id; Task 4 switches "
+           "it to resolve_credential. strict=True so Task 4 cannot forget to unmark.",
+    strict=True,
+)
 async def test_enrolled_credential_authenticates_a_checkin(db_pool, company):
     company_id, _ = company
     token = await create_enrollment_token(db_pool, company_id, label="macOS")
