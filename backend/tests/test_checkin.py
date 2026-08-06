@@ -278,3 +278,58 @@ async def test_checkin_auth_failure_triggers_notification(monkeypatch):
     assert resp.status_code == 401
     assert len(calls) == 1
     assert calls[0].startswith("as_live_")
+
+
+async def test_device_credential_checkin_updates_last_used(db_pool, company):
+    """last_used_at is what makes the Agents page's 'last ping' real rather
+    than inferred from check-in history."""
+    from app.enrollment import create_enrollment_token, enroll_device, list_device_credentials
+    company_id, _ = company
+    token = await create_enrollment_token(db_pool, company_id, label="x")
+    cred = await enroll_device(db_pool, token, "SN-001", "host-1")
+    async with await _client() as client:
+        resp = await client.post(
+            "/api/v1/inventory/checkin",
+            json=_payload(serial_number="SN-001"),
+            headers={"Authorization": f"Bearer {cred}"},
+        )
+    assert resp.status_code == 200
+    creds = await list_device_credentials(db_pool, company_id)
+    assert creds[0]["last_used_at"] is not None
+
+
+async def test_allow_legacy_company_key_checkin_flag_gates_legacy_path(
+    db_pool, company, monkeypatch
+):
+    """Proves ALLOW_LEGACY_COMPANY_KEY_CHECKIN actually gates: with it off, a
+    company-key check-in must be rejected while an enrolled device's own
+    credential keeps working -- switching the flag off retires the legacy
+    path without breaking machines that have already migrated.
+
+    Patches app.auth's own copy of the flag (not app.config's): auth.py does
+    `from app.config import ALLOW_LEGACY_COMPANY_KEY_CHECKIN`, which binds a
+    separate name in app.auth's namespace at import time, so that's the
+    reference resolve_credential actually reads. Same pattern documented in
+    tests/conftest.py for notify_checkin_success/notify_auth_failure."""
+    import app.auth
+    from app.enrollment import create_enrollment_token, enroll_device
+
+    company_id, api_key = company
+    token = await create_enrollment_token(db_pool, company_id, label="x")
+    cred = await enroll_device(db_pool, token, "SN-001", "host-1")
+
+    monkeypatch.setattr(app.auth, "ALLOW_LEGACY_COMPANY_KEY_CHECKIN", False)
+
+    async with await _client() as client:
+        legacy_resp = await client.post(
+            "/api/v1/inventory/checkin",
+            json=_payload(checkin_id=str(uuid.uuid4())),
+            headers={"Authorization": f"Bearer {api_key}"},
+        )
+        device_resp = await client.post(
+            "/api/v1/inventory/checkin",
+            json=_payload(checkin_id=str(uuid.uuid4()), serial_number="SN-001"),
+            headers={"Authorization": f"Bearer {cred}"},
+        )
+    assert legacy_resp.status_code == 401
+    assert device_resp.status_code == 200

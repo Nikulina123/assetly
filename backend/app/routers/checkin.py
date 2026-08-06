@@ -5,7 +5,7 @@ import asyncpg
 from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Request
 from fastapi.responses import JSONResponse
 
-from app.auth import resolve_company_id
+from app.auth import resolve_credential
 from app.db import get_pool
 from app.field_config import resolve_field_config
 from app.hardware import normalize_os
@@ -34,14 +34,16 @@ async def get_current_company_id(
         raise HTTPException(status_code=401, detail="Missing or malformed Authorization header")
     api_key = authorization.removeprefix("Bearer ").strip()
     pool = await get_pool()
-    company_id = await resolve_company_id(pool, api_key)
-    if company_id is None:
+    result = await resolve_credential(pool, api_key)
+    if result is None:
         # Only a present-but-invalid key triggers this -- a missing header
         # entirely (the branch above) is far more common (unconfigured
         # devices, generic bot traffic) and much less actionable, so it's
         # deliberately not notified on, to keep this signal meaningful.
         background_tasks.add_task(notify_auth_failure, api_key[:16] + "...")
         raise HTTPException(status_code=401, detail="Invalid or revoked API key")
+    company_id, credential_id = result
+    request.state.credential_id = credential_id
     return company_id
 
 
@@ -55,6 +57,7 @@ async def get_config(company_id: str = Depends(get_current_company_id)):
 async def checkin(
     payload: CheckinRequest,
     background_tasks: BackgroundTasks,
+    request: Request,
     company_id: str = Depends(get_current_company_id),
 ):
     platform_name, os_version = normalize_os(payload.os)
@@ -121,6 +124,13 @@ async def checkin(
                 payload.os, os_version, platform_name,
                 payload.email, payload.department,
             )
+
+            credential_id = getattr(request.state, "credential_id", None)
+            if credential_id is not None:
+                await conn.execute(
+                    "UPDATE device_credentials SET last_used_at = NOW() WHERE id = $1",
+                    uuid.UUID(credential_id),
+                )
 
         notification_email = await conn.fetchval(
             "SELECT notification_email FROM companies WHERE id = $1", uuid.UUID(company_id)
