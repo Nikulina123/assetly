@@ -1,6 +1,6 @@
 @echo off
 echo ============================================================
-echo  Webiz Inventory Agent - EXE Builder
+echo  Assetly Inventory Agent - EXE Builder
 echo ============================================================
 echo.
 
@@ -15,16 +15,16 @@ if %errorlevel% neq 0 (
 )
 
 echo.
-echo [2/3] Compiling WebizInventory_Windows.ps1 to EXE...
+echo [2/3] Compiling AssetlyAgent_Windows.ps1 to EXE...
 powershell -ExecutionPolicy Bypass -Command ^
     "Invoke-ps2exe" ^
-    "-InputFile '%~dp0WebizInventory_Windows.ps1'" ^
-    "-OutputFile '%~dp0WebizInventory_Windows.exe'" ^
+    "-InputFile '%~dp0AssetlyAgent_Windows.ps1'" ^
+    "-OutputFile '%~dp0AssetlyAgent_Windows.exe'" ^
     "-NoConsole" ^
     "-STA" ^
-    "-Title 'Webiz Inventory Agent'" ^
-    "-Description 'Webiz device inventory check-in agent'" ^
-    "-Company 'Webiz'" ^
+    "-Title 'Assetly Inventory Agent'" ^
+    "-Description 'Assetly device inventory check-in agent'" ^
+    "-Company 'Assetly'" ^
     "-Version '1.0.0.0'"
 
 if %errorlevel% neq 0 (
@@ -36,9 +36,9 @@ if %errorlevel% neq 0 (
 echo.
 echo [3/3] Done!
 echo.
-echo   Output: %~dp0WebizInventory_Windows.exe
+echo   Output: %~dp0AssetlyAgent_Windows.exe
 echo.
-echo   Distribute WebizInventory_Windows.exe to employees.
+echo   Distribute AssetlyAgent_Windows.exe to employees.
 echo   The EXE contains no readable source code or passwords.
 echo.
 pause

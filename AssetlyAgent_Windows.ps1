@@ -1,7 +1,7 @@
 ﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
-    Webiz Inventory Agent for Windows — self-contained, no Python needed.
+    Assetly Inventory Agent for Windows — self-contained, no Python needed.
     First run: Right-click → Run with PowerShell  (or run as any user).
     After that: registered in Task Scheduler, runs silently at every login,
                 shows the form only when 6 months have elapsed.
@@ -12,14 +12,14 @@
 #  next to this script/exe (written by the admin portal's download button).
 #  GitHubRawUrl stays hardcoded here since self-update isn't part of this change.
 # ════════════════════════════════════════════════════════════════════════════════
-$GitHubRawUrl  = "https://raw.githubusercontent.com/Nikulina123/Check-in_agent/refs/heads/main/WebizInventory_Windows.ps1"
+$GitHubRawUrl  = "https://raw.githubusercontent.com/Nikulina123/Check-in_agent/refs/heads/main/AssetlyAgent_Windows.ps1"
 
 $IntervalMonths   = 6
 $CancelRetryHours = (2/60)   # TEST: 2 minutes — change back to 24 for production
-$TaskName         = "WebizInventoryAgent"
+$TaskName         = "AssetlyInventoryAgent"
 $Departments      = @("Webiz ERP","Fundbox","Playtika","Artlist","The5%ers","Other")
 
-$StateDir   = "$env:LOCALAPPDATA\WebizInventory"
+$StateDir   = "$env:LOCALAPPDATA\AssetlyInventory"
 $StateFile  = "$StateDir\state.json"
 $QueueFile  = "$StateDir\queue.json"
 $LogFile    = "$StateDir\agent.log"
@@ -30,8 +30,8 @@ $ScriptPath = if ($MyInvocation.MyCommand.Path) { $MyInvocation.MyCommand.Path }
               else { [System.Diagnostics.Process]::GetCurrentProcess().MainModule.FileName }
 # Detect whether we are running as a compiled EXE (ps2exe) or a plain PS1
 $IsExe      = $ScriptPath -like "*.exe" -and $ScriptPath -notlike "*powershell*" -and $ScriptPath -notlike "*pwsh*"
-$ScriptDest = if ($IsExe) { "$StateDir\WebizInventory_Windows.exe" } `
-                          else { "$StateDir\WebizInventory_Windows.ps1" }
+$ScriptDest = if ($IsExe) { "$StateDir\AssetlyAgent_Windows.exe" } `
+                          else { "$StateDir\AssetlyAgent_Windows.ps1" }
 
 # ── Ensure state dir ─────────────────────────────────────────────────────────
 if (-not (Test-Path $StateDir)) { New-Item -ItemType Directory -Path $StateDir -Force | Out-Null }
@@ -257,7 +257,7 @@ function Show-InventoryForm {
 
     # ── Form ──────────────────────────────────────────────────────────────────
     $form                  = New-Object System.Windows.Forms.Form
-    $form.Text             = "Webiz Inventory Agent"
+    $form.Text             = "Assetly Inventory Agent"
     $form.ClientSize       = New-Object System.Drawing.Size(520, 684)
     $form.StartPosition    = "CenterScreen"
     $form.FormBorderStyle  = "FixedDialog"
@@ -272,15 +272,15 @@ function Show-InventoryForm {
     $hdr.BackColor = [System.Drawing.Color]::FromArgb(26, 43, 90)
 
     $logoLbl           = New-Object System.Windows.Forms.Label
-    $logoLbl.Text      = "WEBIZ"
+    $logoLbl.Text      = "ASSETLY"
     $logoLbl.Font      = New-Object System.Drawing.Font("Segoe UI", 28, [System.Drawing.FontStyle]::Bold)
     $logoLbl.ForeColor = [System.Drawing.Color]::White
     $logoLbl.Location  = New-Object System.Drawing.Point(22, 14)
     $logoLbl.AutoSize  = $true
     $hdr.Controls.Add($logoLbl)
 
-    # Logo image override (place webiz_logo.png next to this script)
-    $logoFile = Join-Path (Split-Path $ScriptPath) "webiz_logo.png"
+    # Logo image override (place assetly_logo.png next to this script)
+    $logoFile = Join-Path (Split-Path $ScriptPath) "assetly_logo.png"
     if (Test-Path $logoFile) {
         try {
             $img           = [System.Drawing.Image]::FromFile($logoFile)
@@ -306,7 +306,7 @@ function Show-InventoryForm {
 
     # ── Welcome text ──────────────────────────────────────────────────────────
     $welcome           = New-Object System.Windows.Forms.Label
-    $welcome.Text      = "Hello, I am Inventory Agent of Webiz and I need following information"
+    $welcome.Text      = "Hello, I am Inventory Agent of Assetly and I need following information"
     $welcome.Location  = New-Object System.Drawing.Point(26, 96)
     $welcome.Size      = New-Object System.Drawing.Size(468, 40)
     $welcome.Font      = New-Object System.Drawing.Font("Segoe UI", 11)
@@ -554,7 +554,7 @@ function Register-StartupTask {
     Register-ScheduledTask -TaskName $TaskName -Action $action `
         -Trigger @($triggerLogon, $triggerHourly) `
         -Settings $settings -Principal $principal `
-        -Description "Webiz Inventory Agent — checks in every 6 months" | Out-Null
+        -Description "Assetly Inventory Agent — checks in every 6 months" | Out-Null
 
     Write-Log "Task Scheduler task '$TaskName' registered."
 }
@@ -562,7 +562,7 @@ function Register-StartupTask {
 # ════════════════════════════════════════════════════════════════════════════════
 #  MAIN
 # ════════════════════════════════════════════════════════════════════════════════
-Write-Log "=== Webiz Inventory Agent started ==="
+Write-Log "=== Assetly Inventory Agent started ==="
 
 # Register startup task if not already registered
 $task = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
@@ -633,7 +633,7 @@ Save-State $state
 # Success dialog
 $dialogMsg = "Thank you, $($ud.first_name)!`n`nYour device has been registered."
 if (-not $immediate) { $dialogMsg += "`n`n(Offline — data will sync automatically.)" }
-[System.Windows.Forms.MessageBox]::Show($dialogMsg, "Webiz Inventory – Done",
+[System.Windows.Forms.MessageBox]::Show($dialogMsg, "Assetly Inventory – Done",
     [System.Windows.Forms.MessageBoxButtons]::OK,
     [System.Windows.Forms.MessageBoxIcon]::Information) | Out-Null
 

@@ -11,7 +11,7 @@ SESSION_COOKIE_SECURE = os.environ.get("SESSION_COOKIE_SECURE", "false").lower()
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 WINDOWS_EXE_PATH = Path(
-    os.environ.get("WINDOWS_EXE_PATH", str(REPO_ROOT / "backend" / "static" / "WebizInventory_Windows.exe"))
+    os.environ.get("WINDOWS_EXE_PATH", str(REPO_ROOT / "backend" / "static" / "AssetlyAgent_Windows.exe"))
 )
 PUBLIC_API_BASE_URL = os.environ.get("PUBLIC_API_BASE_URL", "https://api.example.com")
 CHECKIN_API_URL_FOR_DOWNLOAD = f"{PUBLIC_API_BASE_URL}/api/v1/inventory/checkin"

@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-Webiz Inventory Agent v2.0
+Assetly Inventory Agent v2.0
 Cross-platform (macOS + Linux) — zero pip dependencies.
-Config is loaded from  ~/.webiz_inventory/config.json  (written by the installer).
+Config is loaded from  ~/.assetly_inventory/config.json  (written by the installer).
 """
 
 import os, sys, json, platform, subprocess, datetime, hashlib, socket, re, time, argparse
@@ -15,9 +15,9 @@ import logging
 # ─── Paths ────────────────────────────────────────────────────────────────────
 _sys = platform.system()
 if _sys == "Darwin":
-    STATE_DIR = Path.home() / "Library" / "Application Support" / "WebizInventory"
+    STATE_DIR = Path.home() / "Library" / "Application Support" / "AssetlyInventory"
 else:
-    STATE_DIR = Path.home() / ".webiz_inventory"
+    STATE_DIR = Path.home() / ".assetly_inventory"
 
 CONFIG_FILE = STATE_DIR / "config.json"
 STATE_FILE  = STATE_DIR / "state.json"
@@ -34,7 +34,7 @@ logging.basicConfig(
         logging.StreamHandler(sys.stdout),
     ]
 )
-log = logging.getLogger("webiz")
+log = logging.getLogger("assetly")
 
 # ─── Config ───────────────────────────────────────────────────────────────────
 _cfg: dict = {}
@@ -340,7 +340,7 @@ class InventoryForm(tk.Tk):
         self.user_data: dict = {}
         self._field_widgets: dict = {}   # non-department field key -> tk.Entry
 
-        self.title("Webiz Inventory Agent")
+        self.title("Assetly Inventory Agent")
         self.configure(bg=BG_COLOR)
         self.resizable(False, False)
         self._center()
@@ -382,7 +382,7 @@ class InventoryForm(tk.Tk):
         hdr.pack_propagate(False)
 
         logo_shown = False
-        logo_file = Path(__file__).parent / "webiz_logo.png"
+        logo_file = Path(__file__).parent / "assetly_logo.png"
         if logo_file.exists():
             try:
                 self._logo_img = tk.PhotoImage(file=str(logo_file))
@@ -393,7 +393,7 @@ class InventoryForm(tk.Tk):
                 pass
 
         if not logo_shown:
-            tk.Label(hdr, text="WEBIZ", fg="white", bg=BRAND_COLOR,
+            tk.Label(hdr, text="ASSETLY", fg="white", bg=BRAND_COLOR,
                      font=("Helvetica", 30, "bold")).pack(side="left", padx=22, pady=16)
 
         # Red accent line
@@ -404,7 +404,7 @@ class InventoryForm(tk.Tk):
         wf.pack(fill="x", padx=26, pady=(18, 4))
         tk.Label(
             wf,
-            text="Hello, I am Inventory Agent of Webiz and I need following information",
+            text="Hello, I am Inventory Agent of Assetly and I need following information",
             wraplength=468, justify="left",
             font=("Helvetica", 12), fg="#1C1C1E", bg=BG_COLOR,
         ).pack(anchor="w")
@@ -517,12 +517,12 @@ class InventoryForm(tk.Tk):
 
 # ─── Main ─────────────────────────────────────────────────────────────────────
 def main():
-    parser = argparse.ArgumentParser(description="Webiz Inventory Agent")
+    parser = argparse.ArgumentParser(description="Assetly Inventory Agent")
     parser.add_argument("--force", action="store_true",
                         help="Bypass the 6-month interval guard and show the form immediately.")
     args = parser.parse_args()
 
-    log.info("=== Webiz Inventory Agent v2.0 started ===")
+    log.info("=== Assetly Inventory Agent v2.0 started ===")
 
     # When launched as a background service (LaunchAgent / systemd), stdout is not
     # a TTY. Wait briefly so the desktop session is fully ready before showing a GUI.
@@ -572,7 +572,7 @@ def main():
     dialog_msg = f"Thank you, {app.user_data['first_name']}!\n\nYour device has been registered."
     if not immediate:
         dialog_msg += "\n\n(Offline — data will sync automatically.)"
-    messagebox.showinfo("Webiz Inventory – Done", dialog_msg)
+    messagebox.showinfo("Assetly Inventory – Done", dialog_msg)
 
     log.info("=== Completed successfully ===")
 

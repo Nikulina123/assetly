@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # ════════════════════════════════════════════════════════════════════════════════
-#  Webiz Inventory Agent — Linux Installer
+#  Assetly Inventory Agent — Linux Installer
 #  Single-file: just run this once.  Everything else is automatic.
 #
-#  Usage:  chmod +x WebizInventory_Linux.sh && ./WebizInventory_Linux.sh
+#  Usage:  chmod +x AssetlyAgent_Linux.sh && ./AssetlyAgent_Linux.sh
 #  Note:   Does NOT require root.  dmidecode (serial number) needs sudo — the
 #          script configures a passwordless sudoers rule automatically.
 # ════════════════════════════════════════════════════════════════════════════════
@@ -29,15 +29,15 @@ _die() {
 }
 trap '_die $LINENO' ERR
 
-AGENT_DIR="$HOME/.webiz_inventory"
+AGENT_DIR="$HOME/.assetly_inventory"
 AGENT_FILE="$AGENT_DIR/inventory_agent.py"
 CONFIG_FILE="$AGENT_DIR/config.json"
 UNIT_DIR="$HOME/.config/systemd/user"
-SERVICE_NAME="webiz-inventory"
+SERVICE_NAME="assetly-inventory"
 
 echo ""
 echo "┌─────────────────────────────────────────┐"
-echo "│   Webiz Inventory Agent – Linux Setup   │"
+echo "│  Assetly Inventory Agent – Linux Setup  │"
 echo "└─────────────────────────────────────────┘"
 echo ""
 
@@ -84,7 +84,7 @@ echo "      Python + tkinter: OK"
 echo ""
 echo "[2/6] Configuring sudo for dmidecode (serial number collection)…"
 SUDOERS_LINE="$USER ALL=(ALL) NOPASSWD: /usr/sbin/dmidecode"
-SUDOERS_FILE="/etc/sudoers.d/webiz-inventory"
+SUDOERS_FILE="/etc/sudoers.d/assetly-inventory"
 if sudo sh -c "echo '$SUDOERS_LINE' > '$SUDOERS_FILE' && chmod 0440 '$SUDOERS_FILE'" 2>/dev/null; then
     echo "      Sudoers rule created: $SUDOERS_FILE"
 else
@@ -175,7 +175,7 @@ mkdir -p "$UNIT_DIR"
 
 cat > "$UNIT_DIR/${SERVICE_NAME}.service" <<EOF
 [Unit]
-Description=Webiz Inventory Agent
+Description=Assetly Inventory Agent
 After=graphical-session.target network-online.target
 Wants=graphical-session.target
 
@@ -197,7 +197,7 @@ EOF
 # Timer: fires at login + re-checks once daily (agent exits immediately if < 6 months)
 cat > "$UNIT_DIR/${SERVICE_NAME}.timer" <<EOF
 [Unit]
-Description=Webiz Inventory Agent – 6-month check-in timer
+Description=Assetly Inventory Agent – 6-month check-in timer
 
 [Timer]
 OnBootSec=2min
@@ -239,5 +239,5 @@ echo ""
 echo "   To uninstall:"
 echo "   systemctl --user disable --now ${SERVICE_NAME}.timer ${SERVICE_NAME}.service"
 echo "   rm ~/.config/systemd/user/${SERVICE_NAME}.*"
-echo "   sudo rm /etc/sudoers.d/webiz-inventory"
+echo "   sudo rm /etc/sudoers.d/assetly-inventory"
 echo ""

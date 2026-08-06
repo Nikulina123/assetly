@@ -2,7 +2,7 @@
 
 Usage:
     cd backend && source venv/bin/activate
-    python3 -m scripts.seed_admin --email admin@webiz.com --password 'a-strong-password'
+    python3 -m scripts.seed_admin --email admin@assetly.com --password 'a-strong-password'
 
 (Must be run as `-m scripts.seed_admin`, not `scripts/seed_admin.py` directly —
 the latter puts scripts/ rather than backend/ on sys.path, so `from app...`

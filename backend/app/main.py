@@ -8,7 +8,7 @@ from app.routers.admin import NotAuthenticated
 from app.routers.admin import router as admin_router
 from app.routers.checkin import router as checkin_router
 
-app = FastAPI(title="Webiz Inventory Check-in API")
+app = FastAPI(title="Assetly Inventory Check-in API")
 app.add_middleware(
     SessionMiddleware,
     secret_key=SESSION_SECRET_KEY,

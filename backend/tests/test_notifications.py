@@ -145,11 +145,11 @@ def test_notify_auth_failure_sends_to_ops_email(monkeypatch):
         "app.notifications.send_email",
         lambda to, subject, html, text=None: captured.update(to=to, subject=subject),
     )
-    monkeypatch.setattr("app.notifications.OPS_ALERT_EMAIL", "ops@webiz.example")
+    monkeypatch.setattr("app.notifications.OPS_ALERT_EMAIL", "ops@assetly.example")
 
     notify_auth_failure("wz_live_abc12345")
 
-    assert captured["to"] == "ops@webiz.example"
+    assert captured["to"] == "ops@assetly.example"
     assert "Auth failure" in captured["subject"]
 
 

@@ -5,7 +5,7 @@ import urllib.request
 
 from app.config import NOTIFICATION_FROM_EMAIL, OPS_ALERT_EMAIL, SENDLY_API_KEY
 
-log = logging.getLogger("webiz_backend")
+log = logging.getLogger("assetly_backend")
 
 SENDLY_SEND_URL = "https://app.sendly.ge/api/v1/email/send"
 
@@ -54,7 +54,7 @@ def notify_checkin_success(
         f"{custom_lines}"
     )
     try:
-        send_email(to_email, f"[Webiz Inventory] Check-in complete – {full_name} / {hostname}", html_body)
+        send_email(to_email, f"[Assetly Inventory] Check-in complete – {full_name} / {hostname}", html_body)
     except Exception as e:
         log.warning(f"Failed to send checkin-success notification to {to_email}: {e}")
 
@@ -66,6 +66,6 @@ def notify_auth_failure(key_prefix: str) -> None:
         return
     html_body = f"<p>A check-in request was rejected: invalid or revoked API key (prefix: {html.escape(key_prefix)}).</p>"
     try:
-        send_email(OPS_ALERT_EMAIL, "[Webiz Inventory] Auth failure on checkin endpoint", html_body)
+        send_email(OPS_ALERT_EMAIL, "[Assetly Inventory] Auth failure on checkin endpoint", html_body)
     except Exception as e:
         log.warning(f"Failed to send auth-failure notification: {e}")

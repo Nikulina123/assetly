@@ -389,13 +389,13 @@ async def download_macos(
     _check_csrf(request, csrf_token)
     pool = await get_pool()
     await _get_active_company_or_404(pool, company_id)
-    template_text = _load_installer_template("WebizInventory_macOS.sh")
+    template_text = _load_installer_template("AssetlyAgent_macOS.sh")
     api_key = await _rotate_key_for_download(pool, company_id)
     script_text = _render_installer_script(template_text, CHECKIN_API_URL_FOR_DOWNLOAD, api_key)
     return Response(
         content=script_text,
         media_type="text/x-shellscript",
-        headers={"Content-Disposition": 'attachment; filename="WebizInventory_macOS.sh"'},
+        headers={"Content-Disposition": 'attachment; filename="AssetlyAgent_macOS.sh"'},
     )
 
 
@@ -409,13 +409,13 @@ async def download_linux(
     _check_csrf(request, csrf_token)
     pool = await get_pool()
     await _get_active_company_or_404(pool, company_id)
-    template_text = _load_installer_template("WebizInventory_Linux.sh")
+    template_text = _load_installer_template("AssetlyAgent_Linux.sh")
     api_key = await _rotate_key_for_download(pool, company_id)
     script_text = _render_installer_script(template_text, CHECKIN_API_URL_FOR_DOWNLOAD, api_key)
     return Response(
         content=script_text,
         media_type="text/x-shellscript",
-        headers={"Content-Disposition": 'attachment; filename="WebizInventory_Linux.sh"'},
+        headers={"Content-Disposition": 'attachment; filename="AssetlyAgent_Linux.sh"'},
     )
 
 
@@ -447,11 +447,11 @@ async def download_windows(
 
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as zf:
-        zf.write(WINDOWS_EXE_PATH, arcname="WebizInventory_Windows.exe")
+        zf.write(WINDOWS_EXE_PATH, arcname="AssetlyAgent_Windows.exe")
         zf.writestr("config.json", config_bytes)
 
     return Response(
         content=buffer.getvalue(),
         media_type="application/zip",
-        headers={"Content-Disposition": 'attachment; filename="WebizInventory_Windows.zip"'},
+        headers={"Content-Disposition": 'attachment; filename="AssetlyAgent_Windows.zip"'},
     )

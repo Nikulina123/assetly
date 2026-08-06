@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # ════════════════════════════════════════════════════════════════════════════════
-#  Webiz Inventory Agent — macOS Installer
+#  Assetly Inventory Agent — macOS Installer
 #  Single-file: just run this once.  Everything else is automatic.
 #
-#  Usage:  chmod +x WebizInventory_macOS.sh && ./WebizInventory_macOS.sh
+#  Usage:  chmod +x AssetlyAgent_macOS.sh && ./AssetlyAgent_macOS.sh
 # ════════════════════════════════════════════════════════════════════════════════
 
 # ─── CONFIGURATION — edit these lines before distributing ────────────────────
@@ -28,16 +28,16 @@ _die() {
 }
 trap '_die $LINENO' ERR
 
-AGENT_DIR="$HOME/Library/Application Support/WebizInventory"
+AGENT_DIR="$HOME/Library/Application Support/AssetlyInventory"
 AGENT_FILE="$AGENT_DIR/inventory_agent.py"
 CONFIG_FILE="$AGENT_DIR/config.json"
 PLIST_DIR="$HOME/Library/LaunchAgents"
-PLIST_LABEL="com.webiz.inventory"
+PLIST_LABEL="com.assetly.inventory"
 PLIST_FILE="$PLIST_DIR/$PLIST_LABEL.plist"
 
 echo ""
 echo "┌─────────────────────────────────────────┐"
-echo "│   Webiz Inventory Agent – macOS Setup   │"
+echo "│  Assetly Inventory Agent – macOS Setup  │"
 echo "└─────────────────────────────────────────┘"
 echo ""
 
@@ -261,7 +261,7 @@ echo "   The agent runs silently at every login."
 echo "   It shows the form only when 6 months have passed since the last check-in."
 echo ""
 echo "   Useful commands:"
-echo "   launchctl list | grep webiz            # check if loaded"
+echo "   launchctl list | grep assetly          # check if loaded"
 echo "   launchctl start $PLIST_LABEL           # trigger manually"
 echo "   tail -f \"$AGENT_DIR/agent.log\"        # live log"
 echo ""

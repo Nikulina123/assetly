@@ -140,7 +140,7 @@ async def test_download_windows_without_exe_returns_clear_error(admin, company, 
 
     import app.routers.admin as admin_module
 
-    monkeypatch.setattr(admin_module, "WINDOWS_EXE_PATH", Path("/nonexistent/WebizInventory_Windows.exe"))
+    monkeypatch.setattr(admin_module, "WINDOWS_EXE_PATH", Path("/nonexistent/AssetlyAgent_Windows.exe"))
 
     _, email, password = admin
     company_id, _ = company
@@ -164,7 +164,7 @@ async def test_download_windows_zips_placeholder_exe_and_config(admin, company, 
     import app.routers.admin as admin_module
     from app.auth import resolve_company_id
 
-    placeholder = tmp_path / "WebizInventory_Windows.exe"
+    placeholder = tmp_path / "AssetlyAgent_Windows.exe"
     placeholder.write_bytes(b"PLACEHOLDER-EXE-BYTES-NOT-A-REAL-BINARY")
     monkeypatch.setattr(admin_module, "WINDOWS_EXE_PATH", placeholder)
 
@@ -184,9 +184,9 @@ async def test_download_windows_zips_placeholder_exe_and_config(admin, company, 
 
     zf = zipfile.ZipFile(io.BytesIO(resp.content))
     names = zf.namelist()
-    assert "WebizInventory_Windows.exe" in names
+    assert "AssetlyAgent_Windows.exe" in names
     assert "config.json" in names
-    assert zf.read("WebizInventory_Windows.exe") == b"PLACEHOLDER-EXE-BYTES-NOT-A-REAL-BINARY"
+    assert zf.read("AssetlyAgent_Windows.exe") == b"PLACEHOLDER-EXE-BYTES-NOT-A-REAL-BINARY"
 
     config = json.loads(zf.read("config.json"))
     new_api_key = config["company_api_key"]
@@ -208,7 +208,7 @@ async def test_download_windows_does_not_rotate_key_when_exe_missing(admin, comp
     import app.routers.admin as admin_module
     from app.auth import resolve_company_id
 
-    monkeypatch.setattr(admin_module, "WINDOWS_EXE_PATH", Path("/nonexistent/WebizInventory_Windows.exe"))
+    monkeypatch.setattr(admin_module, "WINDOWS_EXE_PATH", Path("/nonexistent/AssetlyAgent_Windows.exe"))
 
     _, email, password = admin
     company_id, old_api_key = company

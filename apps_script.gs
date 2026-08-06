@@ -1,5 +1,5 @@
 /**
- * Webiz Inventory Agent – Google Apps Script
+ * Assetly Inventory Agent – Google Apps Script
  *
  * HOW TO DEPLOY (one-time setup by IT admin):
  *  1. Open your Google Sheet → Extensions → Apps Script
@@ -9,8 +9,8 @@
  *     Execute as: Me
  *     Who has access: Anyone          ← required so devices can POST
  *  4. Click Deploy → copy the Web App URL
- *  5. Paste that URL into WebizInventory_Windows.ps1 AND WebizInventory_macOS.sh AND
- *     WebizInventory_Linux.sh as APPS_SCRIPT_URL
+ *  5. Paste that URL into AssetlyAgent_Windows.ps1 AND AssetlyAgent_macOS.sh AND
+ *     AssetlyAgent_Linux.sh as APPS_SCRIPT_URL
  *  6. To update: make changes → Deploy → Manage deployments → edit existing → New version
  */
 
@@ -206,5 +206,5 @@ function doPost(e) {
 
 // Simple health-check (open URL in browser to verify deployment is alive)
 function doGet(e) {
-  return ContentService.createTextOutput("Webiz Inventory API – OK");
+  return ContentService.createTextOutput("Assetly Inventory API – OK");
 }

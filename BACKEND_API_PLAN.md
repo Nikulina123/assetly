@@ -1,4 +1,4 @@
-# Webiz Inventory — Backend API Implementation Plan
+# Assetly Inventory — Backend API Implementation Plan
 
 ## Endpoint
 
@@ -177,7 +177,7 @@ payload = {
 }
 ```
 
-**PowerShell (`WebizInventory_Windows.ps1`):**
+**PowerShell (`AssetlyAgent_Windows.ps1`):**
 ```powershell
 $payload["checkin_id"]      = [guid]::NewGuid().ToString()
 $payload["agent_version"]   = "1.0"
