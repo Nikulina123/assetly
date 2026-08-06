@@ -18,6 +18,11 @@ class EnrollmentError(Exception):
     """Raised for a token that is unknown, expired, revoked, or exhausted."""
 
 
+class UnknownTokenError(EnrollmentError):
+    """The bearer matched no enrollment token. Callers may fall back to the
+    legacy company-key path; every other EnrollmentError is terminal."""
+
+
 def _generate_token() -> str:
     return "as_enroll_" + secrets.token_hex(32)
 
@@ -128,7 +133,7 @@ async def enroll_device(
         async with conn.transaction():
             row = await _resolve_token_row(conn, token)
             if row is None:
-                raise EnrollmentError("Unknown enrollment token")
+                raise UnknownTokenError("Unknown enrollment token")
             if row["revoked_at"] is not None:
                 raise EnrollmentError("Enrollment token has been revoked")
             if row["expires_at"] <= now:

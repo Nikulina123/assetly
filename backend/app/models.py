@@ -42,3 +42,12 @@ class CheckinRequest(BaseModel):
 class CheckinResponse(BaseModel):
     status: str
     id: uuid.UUID
+
+
+class EnrollRequest(BaseModel):
+    serial_number: str
+    hostname: str | None = None
+
+
+class EnrollResponse(BaseModel):
+    credential: str

@@ -10,6 +10,7 @@ from app.config import SESSION_COOKIE_SECURE, SESSION_SECRET_KEY
 from app.routers.admin import NotAuthenticated
 from app.routers.admin import router as admin_router
 from app.routers.checkin import router as checkin_router
+from app.routers.enroll import router as enroll_router
 from app.routers.portal import router as portal_router
 
 app = FastAPI(title="Assetly Inventory Check-in API")
@@ -20,6 +21,7 @@ app.add_middleware(
     same_site="lax",
 )
 app.include_router(checkin_router)
+app.include_router(enroll_router)
 app.include_router(admin_router)
 app.include_router(portal_router)
 app.mount(
