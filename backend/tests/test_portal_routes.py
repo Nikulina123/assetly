@@ -65,7 +65,6 @@ async def test_unknown_company_is_404(db_pool, admin):
     assert resp.status_code == 404
 
 
-@pytest.mark.xfail(reason="portal templates land in Task 13", strict=True)
 async def test_dashboard_renders_for_admin(db_pool, company, admin):
     company_id, api_key = company
     _, email, password = admin
@@ -78,7 +77,6 @@ async def test_dashboard_renders_for_admin(db_pool, company, admin):
     assert "Total Devices" in resp.text
 
 
-@pytest.mark.xfail(reason="portal templates land in Task 13", strict=True)
 async def test_computers_page_does_not_leak_other_company_devices(db_pool, company, admin):
     """RLS must scope every portal read to the company in the URL. This is the
     first place a path segment picks a tenant, so a regression here is a
@@ -98,7 +96,6 @@ async def test_computers_page_does_not_leak_other_company_devices(db_pool, compa
     assert "SN-BBB" not in resp.text
 
 
-@pytest.mark.xfail(reason="portal templates land in Task 13", strict=True)
 async def test_device_detail_renders(db_pool, company, admin):
     company_id, api_key = company
     _, email, password = admin
@@ -119,3 +116,47 @@ async def test_device_detail_unknown_serial_is_404(db_pool, company, admin):
         await _login(client, email, password)
         resp = await client.get(f"/admin/companies/{company_id}/computers/NOPE")
     assert resp.status_code == 404
+
+
+async def test_dashboard_renders_empty_state_for_company_with_no_devices(db_pool, company, admin):
+    """Guards the by_os division-by-zero path in portal_dashboard.html: a
+    company with zero devices must render the empty state, not crash computing
+    a percentage width from stats['total'] == 0."""
+    company_id, _ = company
+    _, email, password = admin
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test", follow_redirects=True) as client:
+        await _login(client, email, password)
+        resp = await client.get(f"/admin/companies/{company_id}/dashboard")
+    assert resp.status_code == 200
+    assert "Total Devices" in resp.text
+    assert "No devices yet" in resp.text
+
+
+async def test_device_pages_render_with_missing_optional_fields(db_pool, company, admin):
+    """cpu, ram, storage, ip_address, department, and agent_version are all
+    optional on CheckinRequest. Submitting without them must not raise in
+    either the Computers list or the device detail template (both use
+    `or '—'` guards and a conditional strftime for None values)."""
+    company_id, api_key = company
+    _, email, password = admin
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test", follow_redirects=True) as client:
+        resp = await client.post(
+            "/api/v1/inventory/checkin",
+            json={
+                "checkin_id": str(uuid.uuid4()),
+                "timestamp": "2026-07-30T10:00:00",
+                "first_name": "A", "last_name": "B", "email": "a@example.com",
+                "serial_number": "SN-BARE", "hostname": "bare-host",
+                "brand": "Apple", "model": "MacBook Pro", "os": "macOS 14.4.1",
+            },
+            headers={"Authorization": f"Bearer {api_key}"},
+        )
+        assert resp.status_code == 200
+        await _login(client, email, password)
+        computers_resp = await client.get(f"/admin/companies/{company_id}/computers")
+        device_resp = await client.get(f"/admin/companies/{company_id}/computers/SN-BARE")
+    assert computers_resp.status_code == 200
+    assert device_resp.status_code == 200
+    assert "SN-BARE" in device_resp.text

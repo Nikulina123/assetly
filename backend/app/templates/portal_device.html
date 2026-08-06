@@ -1,0 +1,43 @@
+{% extends "portal_base.html" %}
+{% block title %}{{ device['hostname'] or device['serial_number'] }} — Assetly{% endblock %}
+{% block heading %}{{ device['hostname'] or device['serial_number'] }}{% endblock %}
+{% block content %}
+<div class="card">
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+    <span class="badge {{ device['status'] }}">{{ device['status'] | capitalize }}</span>
+    <a href="/admin/companies/{{ company['id'] }}/computers" class="muted" style="text-decoration:none">← Computers</a>
+  </div>
+  <div class="spec-grid">
+    <div><div class="spec-label">Serial Number</div><div class="spec-value mono">{{ device['serial_number'] }}</div></div>
+    <div><div class="spec-label">Department</div><div class="spec-value">{{ device['department'] or '—' }}</div></div>
+    <div><div class="spec-label">Owner</div><div class="spec-value">{{ device['owner_email'] or '—' }}</div></div>
+    <div><div class="spec-label">Operating System</div><div class="spec-value">{{ device['os'] or '—' }}</div></div>
+    <div><div class="spec-label">Processor</div><div class="spec-value">{{ device['cpu'] or '—' }}</div></div>
+    <div><div class="spec-label">RAM</div><div class="spec-value">{{ device['ram'] or '—' }}</div></div>
+    <div><div class="spec-label">Storage</div><div class="spec-value">{{ device['storage'] or '—' }}</div></div>
+    <div><div class="spec-label">Brand / Model</div><div class="spec-value">{{ device['brand'] or '—' }} {{ device['model'] or '' }}</div></div>
+    <div><div class="spec-label">Last check-in</div><div class="spec-value mono">{{ device['last_seen_at'].strftime('%Y-%m-%d %H:%M') if device['last_seen_at'] else 'never' }}</div></div>
+  </div>
+</div>
+
+<div class="section-title">Check-in history</div>
+<div class="card" style="padding:0;overflow-x:auto">
+  <table class="table">
+    <thead>
+      <tr><th>Received</th><th>Submitted by</th><th>Department</th><th>Hostname</th><th>IP</th><th>Agent</th></tr>
+    </thead>
+    <tbody>
+      {% for h in history %}
+      <tr>
+        <td class="mono">{{ h['received_at'].strftime('%Y-%m-%d %H:%M') }}</td>
+        <td>{{ h['first_name'] }} {{ h['last_name'] }}<div class="muted" style="font-size:12px">{{ h['email'] }}</div></td>
+        <td class="muted">{{ h['department'] or '—' }}</td>
+        <td class="muted">{{ h['hostname'] }}</td>
+        <td class="mono muted">{{ h['ip_address'] or '—' }}</td>
+        <td class="mono muted">{{ h['agent_version'] or '—' }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

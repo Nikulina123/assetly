@@ -1,0 +1,47 @@
+{% extends "portal_base.html" %}
+{% block title %}Dashboard — Assetly{% endblock %}
+{% block content %}
+<div class="stat-row">
+  <div class="card">
+    <div class="stat-label">Total Devices</div>
+    <div class="stat-val">{{ stats['total'] }}</div>
+    <div class="stat-sub">across this company</div>
+  </div>
+  <div class="card">
+    <div class="stat-label">Online</div>
+    <div class="stat-val">{{ stats['by_status']['online'] }}</div>
+    <div class="stat-sub teal">checked in within 6 months</div>
+  </div>
+  <div class="card">
+    <div class="stat-label">Pending Sync</div>
+    <div class="stat-val">{{ stats['by_status']['pending'] }}</div>
+    <div class="stat-sub amber">overdue, needs action</div>
+  </div>
+  <div class="card">
+    <div class="stat-label">Offline</div>
+    <div class="stat-val">{{ stats['by_status']['offline'] }}</div>
+    <div class="stat-sub">stale or never reported</div>
+  </div>
+</div>
+
+<div class="section-title">Operating systems</div>
+<div class="card">
+  {% if stats['by_os'] %}
+    {% for os_name, count in stats['by_os'] %}
+    <div style="margin-bottom:12px">
+      <div style="display:flex;justify-content:space-between;font-size:13px">
+        <span>{{ os_name }}</span><span class="muted">{{ count }}</span>
+      </div>
+      <div class="bar">
+        <div class="bar-fill" style="width:{{ (count / stats['total'] * 100) | round(1) }}%;background:var(--blue)"></div>
+      </div>
+    </div>
+    {% endfor %}
+  {% else %}
+    <div class="empty">
+      <div class="empty-title">No devices yet</div>
+      <div>Install the agent on a computer and run it. Devices appear here after the first check-in.</div>
+    </div>
+  {% endif %}
+</div>
+{% endblock %}

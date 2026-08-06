@@ -1,0 +1,69 @@
+{% extends "portal_base.html" %}
+{% block title %}Computers — Assetly{% endblock %}
+{% block content %}
+{% if devices %}
+<div class="toolbar">
+  <input class="input" id="q" type="search" placeholder="Search hostname, serial, department…" style="min-width:280px">
+  <select class="select" id="status-filter">
+    <option value="">All statuses</option>
+    <option value="online">Online</option>
+    <option value="pending">Pending</option>
+    <option value="offline">Offline</option>
+  </select>
+</div>
+
+<div class="card" style="padding:0;overflow-x:auto">
+  <table class="table" id="devices">
+    <thead>
+      <tr>
+        <th>Device</th><th>Department</th><th>OS</th><th>RAM</th>
+        <th>Serial</th><th>Last check-in</th><th>Status</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for d in devices %}
+      <tr data-status="{{ d['status'] }}">
+        <td><a href="/admin/companies/{{ company['id'] }}/computers/{{ d['serial_number'] | urlencode }}">{{ d['hostname'] or '—' }}</a></td>
+        <td class="muted">{{ d['department'] or '—' }}</td>
+        <td class="muted">{{ d['os'] or '—' }}</td>
+        <td class="muted">{{ d['ram'] or '—' }}</td>
+        <td class="mono muted">{{ d['serial_number'] }}</td>
+        <td class="muted">{{ d['last_seen_at'].strftime('%Y-%m-%d') if d['last_seen_at'] else 'never' }}</td>
+        <td><span class="badge {{ d['status'] }}">{{ d['status'] | capitalize }}</span></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<script>
+(function () {
+  var q = document.getElementById('q');
+  var statusFilter = document.getElementById('status-filter');
+  var rows = Array.prototype.slice.call(
+    document.querySelectorAll('#devices tbody tr')
+  );
+
+  function apply() {
+    var term = q.value.trim().toLowerCase();
+    var status = statusFilter.value;
+    rows.forEach(function (row) {
+      var matchesTerm = !term || row.textContent.toLowerCase().indexOf(term) !== -1;
+      var matchesStatus = !status || row.getAttribute('data-status') === status;
+      row.style.display = matchesTerm && matchesStatus ? '' : 'none';
+    });
+  }
+
+  q.addEventListener('input', apply);
+  statusFilter.addEventListener('change', apply);
+})();
+</script>
+{% else %}
+<div class="card">
+  <div class="empty">
+    <div class="empty-title">No devices yet</div>
+    <div>Download an agent from Settings and run it on a computer. It appears here after the first check-in.</div>
+  </div>
+</div>
+{% endif %}
+{% endblock %}
