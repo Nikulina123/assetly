@@ -59,7 +59,7 @@ async def test_checkin_with_unknown_key_is_rejected():
         resp = await client.post(
             "/api/v1/inventory/checkin",
             json=_payload(),
-            headers={"Authorization": "Bearer wz_live_unknown"},
+            headers={"Authorization": "Bearer as_live_unknown"},
         )
     assert resp.status_code == 401
 
@@ -273,8 +273,8 @@ async def test_checkin_auth_failure_triggers_notification(monkeypatch):
         resp = await client.post(
             "/api/v1/inventory/checkin",
             json=_payload(),
-            headers={"Authorization": "Bearer wz_live_doesnotexist"},
+            headers={"Authorization": "Bearer as_live_doesnotexist"},
         )
     assert resp.status_code == 401
     assert len(calls) == 1
-    assert calls[0].startswith("wz_live_")
+    assert calls[0].startswith("as_live_")

@@ -147,7 +147,7 @@ def test_notify_auth_failure_sends_to_ops_email(monkeypatch):
     )
     monkeypatch.setattr("app.notifications.OPS_ALERT_EMAIL", "ops@assetly.example")
 
-    notify_auth_failure("wz_live_abc12345")
+    notify_auth_failure("as_live_abc12345")
 
     assert captured["to"] == "ops@assetly.example"
     assert "Auth failure" in captured["subject"]
@@ -158,6 +158,6 @@ def test_notify_auth_failure_noops_without_ops_email(monkeypatch):
     monkeypatch.setattr("app.notifications.send_email", lambda *a, **kw: called.append(1))
     monkeypatch.setattr("app.notifications.OPS_ALERT_EMAIL", "")
 
-    notify_auth_failure("wz_live_abc12345")
+    notify_auth_failure("as_live_abc12345")
 
     assert called == []

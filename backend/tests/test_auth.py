@@ -6,12 +6,12 @@ pytestmark = pytest.mark.asyncio
 
 async def test_generate_api_key_has_expected_prefix_and_length():
     key = generate_api_key()
-    assert key.startswith("wz_live_")
-    assert len(key) == len("wz_live_") + 64  # 32 bytes hex-encoded
+    assert key.startswith("as_live_")
+    assert len(key) == len("as_live_") + 64  # 32 bytes hex-encoded
 
 
 async def test_hash_api_key_is_deterministic_sha256():
-    key = "wz_live_abc123"
+    key = "as_live_abc123"
     assert hash_api_key(key) == hash_api_key(key)
     assert len(hash_api_key(key)) == 64
 
@@ -23,7 +23,7 @@ async def test_resolve_company_id_returns_id_for_valid_key(db_pool, company):
 
 
 async def test_resolve_company_id_returns_none_for_unknown_key(db_pool):
-    resolved = await resolve_company_id(db_pool, "wz_live_doesnotexist")
+    resolved = await resolve_company_id(db_pool, "as_live_doesnotexist")
     assert resolved is None
 
 

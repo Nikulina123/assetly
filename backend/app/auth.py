@@ -5,7 +5,10 @@ import asyncpg
 
 
 def generate_api_key() -> str:
-    return "wz_live_" + secrets.token_hex(32)
+    # Keys issued before the Assetly rebrand carry a "wz_live_" prefix and keep
+    # working: resolve_company_id matches on a SHA-256 hash of the whole string,
+    # never on the prefix, so old and new keys coexist with no migration.
+    return "as_live_" + secrets.token_hex(32)
 
 
 def hash_api_key(api_key: str) -> str:

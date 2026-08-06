@@ -62,7 +62,7 @@ async def test_create_company_shows_new_api_key_once(admin, db_pool):
         await client.aclose()
     assert resp.status_code == 200
     assert b"New Co" in resp.content
-    assert b"wz_live_" in resp.content
+    assert b"as_live_" in resp.content
 
     async with db_pool.acquire() as conn:
         row = await conn.fetchrow("SELECT id FROM companies WHERE name = 'New Co'")
@@ -118,7 +118,7 @@ async def test_rotate_key_invalidates_old_key_and_activates_new(admin, company, 
     finally:
         await client.aclose()
     assert resp.status_code == 200
-    assert b"wz_live_" in resp.content
+    assert b"as_live_" in resp.content
 
     old_resolved = await resolve_company_id(db_pool, old_api_key)
     assert old_resolved is None

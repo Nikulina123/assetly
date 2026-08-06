@@ -63,7 +63,7 @@ async def test_download_macos_rotates_key_and_embeds_new_one(admin, company, db_
     assert "APPS_SCRIPT_URL" not in body
     assert 'CHECKIN_API_URL="https://api.example.com/api/v1/inventory/checkin"' in body
 
-    match = re.search(r'COMPANY_API_KEY="(wz_live_[a-f0-9]+)"', body)
+    match = re.search(r'COMPANY_API_KEY="(as_live_[a-f0-9]+)"', body)
     assert match is not None, "no COMPANY_API_KEY found in downloaded script"
     new_api_key = match.group(1)
     assert new_api_key != old_api_key
@@ -91,7 +91,7 @@ async def test_download_linux_contains_a_fresh_key(admin, company, db_pool):
     assert resp.status_code == 200
     body = resp.text
     assert "APPS_SCRIPT_URL" not in body
-    match = re.search(r'COMPANY_API_KEY="(wz_live_[a-f0-9]+)"', body)
+    match = re.search(r'COMPANY_API_KEY="(as_live_[a-f0-9]+)"', body)
     assert match is not None
     new_api_key = match.group(1)
     assert new_api_key != old_api_key
@@ -190,7 +190,7 @@ async def test_download_windows_zips_placeholder_exe_and_config(admin, company, 
 
     config = json.loads(zf.read("config.json"))
     new_api_key = config["company_api_key"]
-    assert new_api_key.startswith("wz_live_")
+    assert new_api_key.startswith("as_live_")
     assert new_api_key != old_api_key
     assert config["checkin_api_url"] == "https://api.example.com/api/v1/inventory/checkin"
 
