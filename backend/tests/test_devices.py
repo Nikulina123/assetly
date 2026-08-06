@@ -17,25 +17,28 @@ async def _reset_app_pool():
     await db_module.close_pool()
 
 
-async def _submit(api_key, serial_number, hostname="host-1", os_name="macOS 14.4.1"):
+async def _submit(api_key, serial_number, hostname="host-1", os_name="macOS 14.4.1", custom_fields=None):
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
+        payload = {
+            "checkin_id": str(uuid.uuid4()),
+            "timestamp": "2026-07-30T10:00:00",
+            "first_name": "Nino",
+            "last_name": "Nikoladze",
+            "email": "nino@example.com",
+            "department": "Engineering",
+            "serial_number": serial_number,
+            "hostname": hostname,
+            "brand": "Apple",
+            "model": "MacBook Pro",
+            "ram": "16 GB",
+            "os": os_name,
+        }
+        if custom_fields is not None:
+            payload["custom_fields"] = custom_fields
         return await client.post(
             "/api/v1/inventory/checkin",
-            json={
-                "checkin_id": str(uuid.uuid4()),
-                "timestamp": "2026-07-30T10:00:00",
-                "first_name": "Nino",
-                "last_name": "Nikoladze",
-                "email": "nino@example.com",
-                "department": "Engineering",
-                "serial_number": serial_number,
-                "hostname": hostname,
-                "brand": "Apple",
-                "model": "MacBook Pro",
-                "ram": "16 GB",
-                "os": os_name,
-            },
+            json=payload,
             headers={"Authorization": f"Bearer {api_key}"},
         )
 
@@ -66,6 +69,18 @@ async def test_checkin_history_is_newest_first(db_pool, company):
     history = await get_checkin_history(db_pool, company_id, "SN-001")
     assert len(history) == 2
     assert history[0]["hostname"] == "new-name"
+
+
+async def test_checkin_history_decodes_custom_fields_to_dict(db_pool, company):
+    """asyncpg returns JSONB columns as raw text unless a codec is registered
+    (none is), so custom_fields must be decoded in devices.py -- otherwise the
+    device-detail template that iterates it would crash or render
+    character-by-character instead of key/value pairs."""
+    company_id, api_key = company
+    await _submit(api_key, "SN-001", custom_fields={"location": "Tbilisi HQ"})
+    history = await get_checkin_history(db_pool, company_id, "SN-001")
+    assert history[0]["custom_fields"] == {"location": "Tbilisi HQ"}
+    assert isinstance(history[0]["custom_fields"], dict)
 
 
 async def test_dashboard_stats_counts_devices(db_pool, company):
@@ -112,3 +127,17 @@ async def test_queries_never_cross_tenant_boundary(db_pool, company):
 
     assert await get_device(db_pool, company_a_id, "SN-B-001") is None
     assert await get_checkin_history(db_pool, company_a_id, "SN-B-001") == []
+
+    # Mirrored: an asymmetric bug (correct for A but not B) must be caught too.
+    devices_b = await list_devices(db_pool, company_b_id)
+    serials_b = {d["serial_number"] for d in devices_b}
+    assert serials_b == {"SN-B-001"}
+    assert "SN-A-001" not in serials_b
+
+    assert await get_device(db_pool, company_b_id, "SN-A-001") is None
+    assert await get_checkin_history(db_pool, company_b_id, "SN-A-001") == []
+
+    stats_a = await dashboard_stats(db_pool, company_a_id)
+    stats_b = await dashboard_stats(db_pool, company_b_id)
+    assert stats_a["total"] == 1
+    assert stats_b["total"] == 1

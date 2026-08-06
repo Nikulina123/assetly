@@ -9,6 +9,7 @@ Status is derived in Python via device_status.derive_status, never in SQL, so
 there is exactly one definition of it.
 """
 import datetime
+import json
 import uuid
 from collections import Counter
 
@@ -23,6 +24,12 @@ _DEVICE_COLUMNS = (
 
 
 async def _fetch(pool: asyncpg.Pool, company_id: str, query: str, *args) -> list:
+    # Both the RLS setting and the WHERE clause's $1 are derived from this same
+    # company_id argument, deliberately -- they cannot desync. Postgres ANDs the
+    # RLS policy with the WHERE clause, so if a future refactor ever sourced them
+    # from two different values, a mismatch would silently return [] (an "empty
+    # state") rather than raise an error, unlike the missing-set_config case
+    # below which errors loudly. Keep them derived from one argument.
     async with pool.acquire() as conn:
         async with conn.transaction():
             await conn.execute("SELECT set_config('app.company_id', $1, true)", company_id)
@@ -37,6 +44,15 @@ def _with_status(row: asyncpg.Record, now: datetime.datetime) -> dict:
 
 def _now() -> datetime.datetime:
     return datetime.datetime.now(datetime.timezone.utc)
+
+
+def _decode_checkin(row: asyncpg.Record) -> dict:
+    checkin = dict(row)
+    # asyncpg returns JSONB as raw text unless a codec is registered, and none
+    # is. Decode here so consumers get a dict rather than each having to know.
+    raw = checkin.get("custom_fields")
+    checkin["custom_fields"] = json.loads(raw) if isinstance(raw, str) else (raw or {})
+    return checkin
 
 
 async def list_devices(pool: asyncpg.Pool, company_id: str) -> list[dict]:
@@ -67,7 +83,7 @@ async def get_checkin_history(pool: asyncpg.Pool, company_id: str, serial_number
         "ORDER BY received_at DESC",
         serial_number,
     )
-    return [dict(row) for row in rows]
+    return [_decode_checkin(row) for row in rows]
 
 
 async def dashboard_stats(pool: asyncpg.Pool, company_id: str) -> dict:
