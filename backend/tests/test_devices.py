@@ -1,0 +1,114 @@
+import uuid
+
+import pytest
+import pytest_asyncio
+from httpx import ASGITransport, AsyncClient
+
+import app.db as db_module
+from app.devices import dashboard_stats, get_checkin_history, get_device, list_devices
+from app.main import app
+
+pytestmark = pytest.mark.asyncio
+
+
+@pytest_asyncio.fixture(autouse=True)
+async def _reset_app_pool():
+    yield
+    await db_module.close_pool()
+
+
+async def _submit(api_key, serial_number, hostname="host-1", os_name="macOS 14.4.1"):
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        return await client.post(
+            "/api/v1/inventory/checkin",
+            json={
+                "checkin_id": str(uuid.uuid4()),
+                "timestamp": "2026-07-30T10:00:00",
+                "first_name": "Nino",
+                "last_name": "Nikoladze",
+                "email": "nino@example.com",
+                "department": "Engineering",
+                "serial_number": serial_number,
+                "hostname": hostname,
+                "brand": "Apple",
+                "model": "MacBook Pro",
+                "ram": "16 GB",
+                "os": os_name,
+            },
+            headers={"Authorization": f"Bearer {api_key}"},
+        )
+
+
+async def test_list_devices_returns_submitted_device(db_pool, company):
+    company_id, api_key = company
+    await _submit(api_key, "SN-001")
+    devices = await list_devices(db_pool, company_id)
+    assert len(devices) == 1
+    assert devices[0]["serial_number"] == "SN-001"
+    assert devices[0]["status"] in {"online", "pending", "offline"}
+
+
+async def test_list_devices_empty_for_new_company(db_pool, company):
+    company_id, _ = company
+    assert await list_devices(db_pool, company_id) == []
+
+
+async def test_get_device_returns_none_for_unknown_serial(db_pool, company):
+    company_id, _ = company
+    assert await get_device(db_pool, company_id, "NO-SUCH-SERIAL") is None
+
+
+async def test_checkin_history_is_newest_first(db_pool, company):
+    company_id, api_key = company
+    await _submit(api_key, "SN-001", hostname="old-name")
+    await _submit(api_key, "SN-001", hostname="new-name")
+    history = await get_checkin_history(db_pool, company_id, "SN-001")
+    assert len(history) == 2
+    assert history[0]["hostname"] == "new-name"
+
+
+async def test_dashboard_stats_counts_devices(db_pool, company):
+    company_id, api_key = company
+    await _submit(api_key, "SN-001", os_name="macOS 14.4.1")
+    await _submit(api_key, "SN-002", os_name="Windows 11")
+    stats = await dashboard_stats(db_pool, company_id)
+    assert stats["total"] == 2
+    assert stats["by_status"]["online"] == 2
+    assert dict(stats["by_os"])["Windows 11"] == 1
+
+
+async def test_queries_never_cross_tenant_boundary(db_pool, company):
+    """These are the first queries in the codebase where a URL path segment
+    (not an API key) selects which company's data is read. Every other read
+    in this codebase is scoped by the caller's own API key, so there is no
+    way for company A to even name company B's identifier. Here, an operator
+    types a company's id/serial into the portal URL, so a missing or wrong
+    app.company_id setting would let one tenant read another tenant's devices
+    and check-in history. This test proves Postgres RLS -- not a WHERE clause
+    an author might forget -- is what blocks that.
+    """
+    from app.auth import generate_api_key, hash_api_key
+
+    company_a_id, api_key_a = company
+
+    api_key_b = generate_api_key()
+    key_hash_b = hash_api_key(api_key_b)
+    async with db_pool.acquire() as conn:
+        row_b = await conn.fetchrow(
+            "INSERT INTO companies (name, api_key_hash, api_key_prefix) "
+            "VALUES ($1, $2, $3) RETURNING id",
+            "Other Co", key_hash_b, api_key_b[:8],
+        )
+    company_b_id = str(row_b["id"])
+
+    await _submit(api_key_a, "SN-A-001", hostname="host-a")
+    await _submit(api_key_b, "SN-B-001", hostname="host-b")
+
+    devices_a = await list_devices(db_pool, company_a_id)
+    serials_a = {d["serial_number"] for d in devices_a}
+    assert serials_a == {"SN-A-001"}
+    assert "SN-B-001" not in serials_a
+
+    assert await get_device(db_pool, company_a_id, "SN-B-001") is None
+    assert await get_checkin_history(db_pool, company_a_id, "SN-B-001") == []
