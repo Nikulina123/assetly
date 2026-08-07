@@ -46,8 +46,14 @@ if CONFIG_FILE.exists():
 
 CHECKIN_API_URL  = _cfg.get("checkin_api_url", "https://api.example.com/api/v1/inventory/checkin")
 CONFIG_API_URL   = CHECKIN_API_URL.rsplit("/checkin", 1)[0] + "/config"
-COMPANY_API_KEY  = _cfg.get("company_api_key", "")
+ENROLL_API_URL   = CHECKIN_API_URL.rsplit("/inventory/checkin", 1)[0] + "/enroll"
 GITHUB_RAW_URL   = _cfg.get("github_raw_url", "")
+
+# Resolved lazily by resolve_credential() before the first authenticated call --
+# never read at import time, because enrollment may need to run first and write
+# a new value back to config.json. (No type hint: this file targets Python 3.9,
+# which predates the `str | None` union syntax used elsewhere in this codebase.)
+_credential = None
 
 INTERVAL_MONTHS  = 6
 CANCEL_RETRY_H   = (2/60)   # TEST: 2 minutes — change back to 24 for production
@@ -67,6 +73,82 @@ def load_state() -> dict:
 
 def save_state(state: dict):
     STATE_FILE.write_text(json.dumps(state, indent=2))
+
+# ─── Credential resolution / enrollment ────────────────────────────────────────
+def save_config(cfg: dict):
+    """Rewrites config.json, keeping it owner-only. The installers create it
+    chmod 600 already; explicitly re-applying that after every write means a
+    rewrite can never leave it more permissive, regardless of process umask."""
+    CONFIG_FILE.write_text(json.dumps(cfg, indent=2))
+    try:
+        os.chmod(CONFIG_FILE, 0o600)
+    except Exception as e:
+        log.warning(f"Could not set config.json permissions to 600: {e}")
+
+def enroll(bearer: str) -> str:
+    """Exchanges an enrollment token or legacy company key for a per-device
+    credential via POST /api/v1/enroll. On any failure this logs and exits --
+    callers never get a partial/failed enrollment back to handle."""
+    hw = collect_hardware()
+    data = json.dumps({
+        "serial_number": hw.get("serial_number", ""),
+        "hostname":      hw.get("hostname", ""),
+    }).encode()
+    req = urllib.request.Request(
+        ENROLL_API_URL, data=data,
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {bearer}",
+            "User-Agent": "Mozilla/5.0",
+        },
+        method="POST",
+    )
+    try:
+        resp = urllib.request.urlopen(req, timeout=15)
+        result = json.loads(resp.read().decode())
+    except urllib.error.HTTPError as e:
+        try:
+            detail = json.loads(e.read().decode()).get("detail", str(e))
+        except Exception:
+            detail = str(e)
+        log.error(f"Enrollment failed ({e.code}): {detail}")
+        sys.exit(1)
+    except Exception as e:
+        log.error(f"Enrollment request failed: {e}")
+        sys.exit(1)
+
+    credential = result.get("credential")
+    if not credential:
+        log.error(f"Enrollment response missing 'credential': {result!r}")
+        sys.exit(1)
+    return credential
+
+def resolve_credential(cfg: dict) -> str:
+    """Returns the bearer to authenticate with, enrolling first if needed.
+
+    Order matters: an already-enrolled machine must never fall back to a
+    shared secret, and a self-migrating one must drop the company key once it
+    has its own credential.
+    """
+    global _credential
+    if cfg.get("device_credential"):
+        _credential = cfg["device_credential"]
+        return _credential
+
+    bearer = cfg.get("enrollment_token") or cfg.get("company_api_key")
+    if not bearer:
+        log.error("No device credential, enrollment token, or company key in config.json — cannot authenticate.")
+        sys.exit(1)
+
+    log.info("No device credential on file — enrolling…")
+    credential = enroll(bearer)
+    cfg["device_credential"] = credential
+    cfg.pop("enrollment_token", None)
+    cfg.pop("company_api_key", None)   # self-migration: never reuse it
+    save_config(cfg)
+    log.info("Enrolled successfully — device credential saved to config.json.")
+    _credential = credential
+    return credential
 
 # ─── 6-month + 24 h guard ─────────────────────────────────────────────────────
 def _months_diff(d1: datetime.datetime, d2: datetime.datetime) -> float:
@@ -237,7 +319,7 @@ def _post_to_sheets(payload: dict) -> bool:
             CHECKIN_API_URL, data=data,
             headers={
                 "Content-Type": "application/json",
-                "Authorization": f"Bearer {COMPANY_API_KEY}",
+                "Authorization": f"Bearer {_credential}",
                 "User-Agent": "Mozilla/5.0",
             },
             method="POST",
@@ -250,7 +332,7 @@ def _post_to_sheets(payload: dict) -> bool:
             log.info("Server reports this checkin_id already recorded — treating as success.")
             return True
         if e.code in (401, 403):
-            log.error(f"Authentication failed ({e.code}) — check company_api_key in config.json. Not queuing as offline.")
+            log.error(f"Authentication failed ({e.code}) — device credential in config.json may be invalid or revoked. Not queuing as offline.")
             return False
         log.warning(f"HTTP submit failed: {e}")
         return False
@@ -294,7 +376,7 @@ def fetch_field_config() -> dict:
         req = urllib.request.Request(
             CONFIG_API_URL,
             headers={
-                "Authorization": f"Bearer {COMPANY_API_KEY}",
+                "Authorization": f"Bearer {_credential}",
                 "User-Agent": "Mozilla/5.0",
             },
             method="GET",
@@ -529,6 +611,11 @@ def main():
     if not sys.stdout.isatty():
         log.info("Background launch detected — waiting 15 s for desktop to settle…")
         time.sleep(15)
+
+    # 0. Resolve credentials, enrolling first if this machine has none yet.
+    #    Must happen before any authenticated call -- flush_queue() below is
+    #    the earliest one.
+    resolve_credential(_cfg)
 
     # 1. Self-update (silent, restarts if new version found)
     self_update()

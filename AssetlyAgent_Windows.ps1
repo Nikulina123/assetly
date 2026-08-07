@@ -8,8 +8,9 @@
 #>
 
 # ════════════════════════════════════════════════════════════════════════════════
-#  CONFIGURATION — checkin_api_url/enrollment_token load from config.json placed
-#  next to this script/exe (written by the admin portal's download button).
+#  CONFIGURATION — checkin_api_url/enrollment_token (or company_api_key, or an
+#  already-issued device_credential) load from config.json placed next to this
+#  script/exe (written by the admin portal's download button).
 #  GitHubRawUrl stays hardcoded here since self-update isn't part of this change.
 # ════════════════════════════════════════════════════════════════════════════════
 $GitHubRawUrl  = "https://raw.githubusercontent.com/Nikulina123/Check-in_agent/refs/heads/main/AssetlyAgent_Windows.ps1"
@@ -44,11 +45,14 @@ function Write-Log {
     # Write-Host intentionally omitted — ps2exe -NoConsole turns every Write-Host into a popup dialog
 }
 
-# ── Load checkin_api_url / enrollment_token from config.json next to this script/exe ──
+# ── Load checkin_api_url / full config from config.json next to this script/exe ──
+# Returns the parsed config object too (not just checkin_api_url) so Resolve-Credential
+# below can read device_credential / enrollment_token / company_api_key and Save-Config
+# can write back to the same file.
 function Get-CheckinConfig {
     $ownDir = Split-Path -Path $ScriptPath -Parent
     $configFile = "$ownDir\config.json"
-    $result = @{ CheckinApiUrl = "https://api.example.com/api/v1/inventory/checkin"; EnrollmentToken = "" }
+    $result = @{ CheckinApiUrl = "https://api.example.com/api/v1/inventory/checkin"; Cfg = $null; ConfigFile = $configFile }
     if (-not (Test-Path $configFile)) {
         Write-Log "No config.json found next to script/exe at $configFile — using placeholder checkin URL, all submissions will fail auth." "WARN"
         return $result
@@ -56,18 +60,83 @@ function Get-CheckinConfig {
     try {
         $cfg = Get-Content $configFile -Raw | ConvertFrom-Json
         if ($cfg.checkin_api_url) { $result.CheckinApiUrl = $cfg.checkin_api_url }
-        if ($cfg.enrollment_token) { $result.EnrollmentToken = $cfg.enrollment_token }
-        if (-not $cfg.checkin_api_url -or -not $cfg.enrollment_token) {
-            Write-Log "config.json at $configFile is missing checkin_api_url or enrollment_token — running with a partial/placeholder value." "WARN"
+        $result.Cfg = $cfg
+        if (-not $cfg.checkin_api_url) {
+            Write-Log "config.json at $configFile is missing checkin_api_url — running with a placeholder value." "WARN"
         }
     } catch {
         Write-Log "Failed to parse config.json at $configFile — using placeholder values: $_" "WARN"
     }
     return $result
 }
-$CheckinConfig = Get-CheckinConfig
-$CheckinApiUrl = $CheckinConfig.CheckinApiUrl
-$EnrollmentToken = $CheckinConfig.EnrollmentToken
+$CheckinConfig  = Get-CheckinConfig
+$CheckinApiUrl  = $CheckinConfig.CheckinApiUrl
+$ConfigFilePath = $CheckinConfig.ConfigFile
+$Cfg            = $CheckinConfig.Cfg
+$EnrollApiUrl   = $CheckinApiUrl -replace '/inventory/checkin$', '/enroll'
+
+# ════════════════════════════════════════════════════════════════════════════════
+#  CREDENTIAL RESOLUTION / ENROLLMENT
+#  Mirrors inventory_agent.py's resolve_credential()/enroll(): an already-
+#  enrolled machine must never fall back to a shared secret, and a
+#  self-migrating one must drop the company key once it has its own credential.
+# ════════════════════════════════════════════════════════════════════════════════
+function Save-Config($cfgObj, $path) {
+    $cfgObj | ConvertTo-Json | Set-Content -Path $path -Encoding UTF8
+}
+
+function Invoke-Enroll($bearer) {
+    $hw   = Get-Hardware
+    $body = @{ serial_number = $hw.serial_number; hostname = $hw.hostname } | ConvertTo-Json -Compress
+    try {
+        $resp = Invoke-RestMethod -Uri $EnrollApiUrl -Method POST -Body $body `
+                    -ContentType "application/json" `
+                    -Headers @{ Authorization = "Bearer $bearer" } -TimeoutSec 15
+    } catch {
+        $detail = $_.Exception.Message
+        if ($_.ErrorDetails -and $_.ErrorDetails.Message) {
+            try {
+                $errBody = $_.ErrorDetails.Message | ConvertFrom-Json
+                if ($errBody.detail) { $detail = $errBody.detail }
+            } catch {}
+        }
+        Write-Log "Enrollment failed: $detail" "ERROR"
+        exit 1
+    }
+    if (-not $resp.credential) {
+        Write-Log "Enrollment response missing 'credential': $($resp | ConvertTo-Json -Compress)" "ERROR"
+        exit 1
+    }
+    return $resp.credential
+}
+
+function Resolve-Credential($cfgObj, $path) {
+    if ($cfgObj -and $cfgObj.device_credential) {
+        return $cfgObj.device_credential
+    }
+
+    $bearer = $null
+    if ($cfgObj) {
+        if ($cfgObj.enrollment_token) { $bearer = $cfgObj.enrollment_token }
+        elseif ($cfgObj.company_api_key) { $bearer = $cfgObj.company_api_key }
+    }
+    if (-not $bearer) {
+        Write-Log "No device credential, enrollment token, or company key in config.json — cannot authenticate." "ERROR"
+        exit 1
+    }
+
+    Write-Log "No device credential on file — enrolling…"
+    $credential = Invoke-Enroll $bearer
+    $cfgObj | Add-Member -NotePropertyName device_credential -NotePropertyValue $credential -Force
+    foreach ($key in @('enrollment_token', 'company_api_key')) {
+        if ($cfgObj.PSObject.Properties.Match($key).Count -gt 0) {
+            $cfgObj.PSObject.Properties.Remove($key)
+        }
+    }
+    Save-Config $cfgObj $path
+    Write-Log "Enrolled successfully — device credential saved to config.json."
+    return $credential
+}
 
 # ════════════════════════════════════════════════════════════════════════════════
 #  SELF-UPDATE
@@ -187,7 +256,8 @@ function Submit-ToSheets {
     try {
         $body = $Payload | ConvertTo-Json -Compress
         $resp = Invoke-RestMethod -Uri $CheckinApiUrl -Method POST -Body $body `
-                    -ContentType "application/json" -TimeoutSec 15
+                    -ContentType "application/json" `
+                    -Headers @{ Authorization = "Bearer $DeviceCredential" } -TimeoutSec 15
         return ($resp.status -eq "ok")
     } catch {
         Write-Log "HTTP submit failed: $_" "WARN"
@@ -563,6 +633,10 @@ function Register-StartupTask {
 #  MAIN
 # ════════════════════════════════════════════════════════════════════════════════
 Write-Log "=== Assetly Inventory Agent started ==="
+
+# Resolve credentials, enrolling first if this machine has none yet. Must
+# happen before any authenticated call -- Flush-Queue below is the earliest one.
+$DeviceCredential = Resolve-Credential $Cfg $ConfigFilePath
 
 # Register startup task if not already registered
 $task = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
