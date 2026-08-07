@@ -109,9 +109,10 @@
     {% if company['revoked_at'] %}
     <div class="muted">Company is revoked — downloads are disabled.</div>
     {% else %}
-    <div class="banner banner-warning">
-      Downloading generates a new API key and invalidates the current one immediately.
-      Any devices already running this company's installer will need to be updated with the new one.
+    <div class="banner">
+      Each download embeds a fresh enrollment token. Downloading one platform does
+      not affect installers you downloaded earlier, so macOS, Windows and Linux can
+      be rolled out together. Devices already reporting are unaffected.
     </div>
     <div style="display:flex;gap:10px;flex-wrap:wrap">
       <form method="post" action="/admin/companies/{{ company['id'] }}/download/macos">
