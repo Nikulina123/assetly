@@ -294,4 +294,12 @@ async def test_company_detail_shows_download_buttons(admin, company):
     assert b"Download for Linux" in resp.content
     assert b"Download for Windows" in resp.content
     assert b"Not yet available" not in resp.content
-    assert b"generates a new API key" in resp.content.lower() or b"invalidat" in resp.content.lower()
+    # The page must tell the admin that downloading one platform does NOT break
+    # installers already downloaded for others. It previously warned the exact
+    # opposite, which was true of the old rotate-on-download behaviour and is
+    # false now -- so this asserts the corrected promise, not just any copy.
+    assert b"enrollment token" in resp.content.lower()
+    # Fragment chosen to sit on a single source line -- the full sentence wraps
+    # across a line break in the template, so a longer substring would never match.
+    assert b"not affect installers you downloaded earlier" in resp.content.lower()
+    assert b"invalidat" not in resp.content.lower()
