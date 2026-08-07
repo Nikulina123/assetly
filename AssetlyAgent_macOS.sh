@@ -8,7 +8,7 @@
 
 # ─── CONFIGURATION — edit these lines before distributing ────────────────────
 CHECKIN_API_URL="https://api.example.com/api/v1/inventory/checkin"   # ← FILL IN (replaced automatically when downloaded from the admin portal)
-COMPANY_API_KEY=""                                                    # ← FILL IN (replaced automatically when downloaded from the admin portal)
+ENROLLMENT_TOKEN=""                                                   # ← FILL IN (replaced automatically when downloaded from the admin portal)
 GITHUB_RAW_URL="https://raw.githubusercontent.com/Nikulina123/Check-in_Agent/main/inventory_agent.py"
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -181,7 +181,7 @@ echo "[3/5] Writing configuration…"
 cat > "$CONFIG_FILE" <<JSON
 {
   "checkin_api_url": "$CHECKIN_API_URL",
-  "company_api_key": "$COMPANY_API_KEY",
+  "enrollment_token": "$ENROLLMENT_TOKEN",
   "github_raw_url":  "$GITHUB_RAW_URL"
 }
 JSON

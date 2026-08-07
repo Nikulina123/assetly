@@ -43,8 +43,14 @@ async def test_download_macos_requires_login(company):
     assert resp.status_code == 303
 
 
-async def test_download_macos_rotates_key_and_embeds_new_one(admin, company, db_pool):
+async def test_download_macos_embeds_a_fresh_enrollment_token(admin, company, db_pool):
+    """Downloads used to rotate the shared company key (invalidating every
+    previously-downloaded installer); they now mint an additive enrollment
+    token instead. Assert the new contract: a fresh, working token is
+    embedded, and the company's legacy key -- untouched by the download --
+    still resolves."""
     from app.auth import resolve_company_id
+    from app.enrollment import enroll_device
 
     _, email, password = admin
     company_id, old_api_key = company
@@ -63,19 +69,22 @@ async def test_download_macos_rotates_key_and_embeds_new_one(admin, company, db_
     assert "APPS_SCRIPT_URL" not in body
     assert 'CHECKIN_API_URL="https://api.example.com/api/v1/inventory/checkin"' in body
 
-    match = re.search(r'COMPANY_API_KEY="(as_live_[a-f0-9]+)"', body)
-    assert match is not None, "no COMPANY_API_KEY found in downloaded script"
-    new_api_key = match.group(1)
-    assert new_api_key != old_api_key
+    match = re.search(r'ENROLLMENT_TOKEN="(as_enroll_[a-f0-9]+)"', body)
+    assert match is not None, "no ENROLLMENT_TOKEN found in downloaded script"
+    token = match.group(1)
 
+    # The embedded token actually works.
+    credential = await enroll_device(db_pool, token, "SN-MACOS-DL", "host-macos-dl")
+    assert credential.startswith("as_dev_")
+
+    # The download did not touch the company's shared key at all.
     old_resolved = await resolve_company_id(db_pool, old_api_key)
-    assert old_resolved is None
-    new_resolved = await resolve_company_id(db_pool, new_api_key)
-    assert new_resolved == company_id
+    assert old_resolved == company_id
 
 
-async def test_download_linux_contains_a_fresh_key(admin, company, db_pool):
+async def test_download_linux_embeds_a_fresh_enrollment_token(admin, company, db_pool):
     from app.auth import resolve_company_id
+    from app.enrollment import enroll_device
 
     _, email, password = admin
     company_id, old_api_key = company
@@ -91,15 +100,15 @@ async def test_download_linux_contains_a_fresh_key(admin, company, db_pool):
     assert resp.status_code == 200
     body = resp.text
     assert "APPS_SCRIPT_URL" not in body
-    match = re.search(r'COMPANY_API_KEY="(as_live_[a-f0-9]+)"', body)
+    match = re.search(r'ENROLLMENT_TOKEN="(as_enroll_[a-f0-9]+)"', body)
     assert match is not None
-    new_api_key = match.group(1)
-    assert new_api_key != old_api_key
+    token = match.group(1)
+
+    credential = await enroll_device(db_pool, token, "SN-LINUX-DL", "host-linux-dl")
+    assert credential.startswith("as_dev_")
 
     old_resolved = await resolve_company_id(db_pool, old_api_key)
-    assert old_resolved is None
-    new_resolved = await resolve_company_id(db_pool, new_api_key)
-    assert new_resolved == company_id
+    assert old_resolved == company_id
 
 
 async def test_download_blocked_for_revoked_company(admin, company, db_pool):
@@ -163,6 +172,7 @@ async def test_download_windows_zips_placeholder_exe_and_config(admin, company, 
 
     import app.routers.admin as admin_module
     from app.auth import resolve_company_id
+    from app.enrollment import enroll_device
 
     placeholder = tmp_path / "AssetlyAgent_Windows.exe"
     placeholder.write_bytes(b"PLACEHOLDER-EXE-BYTES-NOT-A-REAL-BINARY")
@@ -189,24 +199,28 @@ async def test_download_windows_zips_placeholder_exe_and_config(admin, company, 
     assert zf.read("AssetlyAgent_Windows.exe") == b"PLACEHOLDER-EXE-BYTES-NOT-A-REAL-BINARY"
 
     config = json.loads(zf.read("config.json"))
-    new_api_key = config["company_api_key"]
-    assert new_api_key.startswith("as_live_")
-    assert new_api_key != old_api_key
+    token = config["enrollment_token"]
+    assert token.startswith("as_enroll_")
     assert config["checkin_api_url"] == "https://api.example.com/api/v1/inventory/checkin"
 
+    # The embedded token actually works.
+    credential = await enroll_device(db_pool, token, "SN-WIN-DL", "host-win-dl")
+    assert credential.startswith("as_dev_")
+
+    # The download did not touch the company's shared key at all.
     old_resolved = await resolve_company_id(db_pool, old_api_key)
-    assert old_resolved is None
-    new_resolved = await resolve_company_id(db_pool, new_api_key)
-    assert new_resolved == company_id
+    assert old_resolved == company_id
 
 
-async def test_download_windows_does_not_rotate_key_when_exe_missing(admin, company, db_pool, monkeypatch):
-    """The exe-missing check must happen BEFORE key rotation -- verify the
-    old key still resolves after a 503, proving nothing was rotated."""
+async def test_download_windows_does_not_mint_token_when_exe_missing(admin, company, db_pool, monkeypatch):
+    """The exe-missing check must happen BEFORE any token is minted -- verify
+    no token was created (and the legacy key is unaffected either way, since
+    downloads no longer touch it)."""
     from pathlib import Path
 
     import app.routers.admin as admin_module
     from app.auth import resolve_company_id
+    from app.enrollment import list_tokens
 
     monkeypatch.setattr(admin_module, "WINDOWS_EXE_PATH", Path("/nonexistent/AssetlyAgent_Windows.exe"))
 
@@ -225,6 +239,46 @@ async def test_download_windows_does_not_rotate_key_when_exe_missing(admin, comp
 
     resolved = await resolve_company_id(db_pool, old_api_key)
     assert resolved == company_id
+    assert await list_tokens(db_pool, str(company_id)) == []
+
+
+async def test_downloading_two_platforms_leaves_both_installers_working(admin, company, db_pool):
+    """The bug this whole design exists to fix: downloading macOS then Linux
+    used to invalidate the macOS installer's key (both installers embedded
+    the single shared company key, and each download rotated it). Tokens are
+    additive, so both must now enroll successfully."""
+    from app.enrollment import list_device_credentials
+
+    _, email, password = admin
+    company_id, _ = company
+    client = await _logged_in_client(email, password)
+    try:
+        csrf_token = await _get_csrf_token(client, company_id)
+        mac = await client.post(
+            f"/admin/companies/{company_id}/download/macos",
+            data={"csrf_token": csrf_token},
+        )
+        lin = await client.post(
+            f"/admin/companies/{company_id}/download/linux",
+            data={"csrf_token": csrf_token},
+        )
+    finally:
+        await client.aclose()
+
+    mac_token = re.search(r'ENROLLMENT_TOKEN="([^"]+)"', mac.text).group(1)
+    lin_token = re.search(r'ENROLLMENT_TOKEN="([^"]+)"', lin.text).group(1)
+    assert mac_token != lin_token
+
+    async with await _client() as client:
+        for token, serial in ((mac_token, "SN-MAC"), (lin_token, "SN-LIN")):
+            resp = await client.post(
+                "/api/v1/enroll",
+                json={"serial_number": serial, "hostname": serial.lower()},
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            assert resp.status_code == 200, f"{serial} failed to enroll"
+
+    assert len(await list_device_credentials(db_pool, company_id)) == 2
 
 
 async def test_company_detail_shows_download_buttons(admin, company):

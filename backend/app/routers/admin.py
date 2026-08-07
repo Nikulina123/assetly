@@ -13,6 +13,7 @@ from app.admin_auth import resolve_admin
 from app.auth import generate_api_key, hash_api_key
 from app.config import CHECKIN_API_URL_FOR_DOWNLOAD, REPO_ROOT, WINDOWS_EXE_PATH
 from app.db import get_pool
+from app.enrollment import create_enrollment_token
 from app.field_config import (
     add_custom_field,
     remove_custom_field,
@@ -334,47 +335,32 @@ async def _get_active_company_or_404(pool, company_id: uuid.UUID):
     return company
 
 
-async def _rotate_key_for_download(pool, company_id: uuid.UUID) -> str:
-    """Every download embeds a freshly-rotated key, since plaintext keys are
-    never stored/readable after creation (see rotate_key). This invalidates
-    the company's current key -- callers must have already confirmed the
-    company is active (_get_active_company_or_404) before calling this."""
-    api_key = generate_api_key()
-    key_hash = hash_api_key(api_key)
-    async with pool.acquire() as conn:
-        await conn.execute(
-            "UPDATE companies SET api_key_hash = $1, api_key_prefix = $2 WHERE id = $3",
-            key_hash, api_key[:8], company_id,
-        )
-    return api_key
-
-
 _CHECKIN_API_URL_PATTERN = r'^CHECKIN_API_URL=".*?"(\s*#.*)?$'
-_COMPANY_API_KEY_PATTERN = r'^COMPANY_API_KEY=".*?"(\s*#.*)?$'
+_ENROLLMENT_TOKEN_PATTERN = r'^ENROLLMENT_TOKEN=".*?"(\s*#.*)?$'
 
 
 def _load_installer_template(filename: str) -> str:
     """Reads the installer script and confirms both substitution markers are
-    present, BEFORE any key rotation happens -- so a missing file or a marker
+    present, BEFORE any token is minted -- so a missing file or a marker
     that's drifted out of sync (e.g. the script's formatting changed) can't
-    leave a company's key rotated with no valid installer to show for it."""
+    leave a token minted with no valid installer to show for it."""
     text = (REPO_ROOT / filename).read_text()
     if not re.search(_CHECKIN_API_URL_PATTERN, text, flags=re.MULTILINE):
         raise RuntimeError(f"{filename}: CHECKIN_API_URL substitution marker not found")
-    if not re.search(_COMPANY_API_KEY_PATTERN, text, flags=re.MULTILINE):
-        raise RuntimeError(f"{filename}: COMPANY_API_KEY substitution marker not found")
+    if not re.search(_ENROLLMENT_TOKEN_PATTERN, text, flags=re.MULTILINE):
+        raise RuntimeError(f"{filename}: ENROLLMENT_TOKEN substitution marker not found")
     return text
 
 
-def _render_installer_script(template_text: str, checkin_api_url: str, company_api_key: str) -> str:
+def _render_installer_script(template_text: str, checkin_api_url: str, enrollment_token: str) -> str:
     text = re.sub(
         _CHECKIN_API_URL_PATTERN,
         f'CHECKIN_API_URL="{checkin_api_url}"',
         template_text, count=1, flags=re.MULTILINE,
     )
     text = re.sub(
-        _COMPANY_API_KEY_PATTERN,
-        f'COMPANY_API_KEY="{company_api_key}"',
+        _ENROLLMENT_TOKEN_PATTERN,
+        f'ENROLLMENT_TOKEN="{enrollment_token}"',
         text, count=1, flags=re.MULTILINE,
     )
     return text
@@ -391,8 +377,8 @@ async def download_macos(
     pool = await get_pool()
     await _get_active_company_or_404(pool, company_id)
     template_text = _load_installer_template("AssetlyAgent_macOS.sh")
-    api_key = await _rotate_key_for_download(pool, company_id)
-    script_text = _render_installer_script(template_text, CHECKIN_API_URL_FOR_DOWNLOAD, api_key)
+    token = await create_enrollment_token(pool, str(company_id), label="macOS installer")
+    script_text = _render_installer_script(template_text, CHECKIN_API_URL_FOR_DOWNLOAD, token)
     return Response(
         content=script_text,
         media_type="text/x-shellscript",
@@ -411,8 +397,8 @@ async def download_linux(
     pool = await get_pool()
     await _get_active_company_or_404(pool, company_id)
     template_text = _load_installer_template("AssetlyAgent_Linux.sh")
-    api_key = await _rotate_key_for_download(pool, company_id)
-    script_text = _render_installer_script(template_text, CHECKIN_API_URL_FOR_DOWNLOAD, api_key)
+    token = await create_enrollment_token(pool, str(company_id), label="Linux installer")
+    script_text = _render_installer_script(template_text, CHECKIN_API_URL_FOR_DOWNLOAD, token)
     return Response(
         content=script_text,
         media_type="text/x-shellscript",
@@ -428,10 +414,10 @@ async def download_windows(
     admin_id: str = Depends(require_admin),
 ):
     _check_csrf(request, csrf_token)
-    # Checked before any DB work / key rotation below -- same validate-before-
-    # rotate ordering as _load_installer_template for macos/linux, so a
-    # missing build artifact can't leave a company's key rotated with
-    # nothing to download.
+    # Checked before any DB work / token minting below -- same validate-before-
+    # mutate ordering as _load_installer_template for macos/linux, so a
+    # missing build artifact can't leave a token minted with nothing to
+    # download.
     if not WINDOWS_EXE_PATH.exists():
         raise HTTPException(
             status_code=503,
@@ -439,11 +425,11 @@ async def download_windows(
         )
     pool = await get_pool()
     await _get_active_company_or_404(pool, company_id)
-    api_key = await _rotate_key_for_download(pool, company_id)
+    token = await create_enrollment_token(pool, str(company_id), label="Windows installer")
 
     config_bytes = json.dumps({
         "checkin_api_url": CHECKIN_API_URL_FOR_DOWNLOAD,
-        "company_api_key": api_key,
+        "enrollment_token": token,
     }).encode()
 
     buffer = io.BytesIO()

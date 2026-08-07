@@ -8,7 +8,7 @@
 #>
 
 # ════════════════════════════════════════════════════════════════════════════════
-#  CONFIGURATION — checkin_api_url/company_api_key load from config.json placed
+#  CONFIGURATION — checkin_api_url/enrollment_token load from config.json placed
 #  next to this script/exe (written by the admin portal's download button).
 #  GitHubRawUrl stays hardcoded here since self-update isn't part of this change.
 # ════════════════════════════════════════════════════════════════════════════════
@@ -44,11 +44,11 @@ function Write-Log {
     # Write-Host intentionally omitted — ps2exe -NoConsole turns every Write-Host into a popup dialog
 }
 
-# ── Load checkin_api_url / company_api_key from config.json next to this script/exe ──
+# ── Load checkin_api_url / enrollment_token from config.json next to this script/exe ──
 function Get-CheckinConfig {
     $ownDir = Split-Path -Path $ScriptPath -Parent
     $configFile = "$ownDir\config.json"
-    $result = @{ CheckinApiUrl = "https://api.example.com/api/v1/inventory/checkin"; CompanyApiKey = "" }
+    $result = @{ CheckinApiUrl = "https://api.example.com/api/v1/inventory/checkin"; EnrollmentToken = "" }
     if (-not (Test-Path $configFile)) {
         Write-Log "No config.json found next to script/exe at $configFile — using placeholder checkin URL, all submissions will fail auth." "WARN"
         return $result
@@ -56,9 +56,9 @@ function Get-CheckinConfig {
     try {
         $cfg = Get-Content $configFile -Raw | ConvertFrom-Json
         if ($cfg.checkin_api_url) { $result.CheckinApiUrl = $cfg.checkin_api_url }
-        if ($cfg.company_api_key) { $result.CompanyApiKey = $cfg.company_api_key }
-        if (-not $cfg.checkin_api_url -or -not $cfg.company_api_key) {
-            Write-Log "config.json at $configFile is missing checkin_api_url or company_api_key — running with a partial/placeholder value." "WARN"
+        if ($cfg.enrollment_token) { $result.EnrollmentToken = $cfg.enrollment_token }
+        if (-not $cfg.checkin_api_url -or -not $cfg.enrollment_token) {
+            Write-Log "config.json at $configFile is missing checkin_api_url or enrollment_token — running with a partial/placeholder value." "WARN"
         }
     } catch {
         Write-Log "Failed to parse config.json at $configFile — using placeholder values: $_" "WARN"
@@ -67,7 +67,7 @@ function Get-CheckinConfig {
 }
 $CheckinConfig = Get-CheckinConfig
 $CheckinApiUrl = $CheckinConfig.CheckinApiUrl
-$CompanyApiKey = $CheckinConfig.CompanyApiKey
+$EnrollmentToken = $CheckinConfig.EnrollmentToken
 
 # ════════════════════════════════════════════════════════════════════════════════
 #  SELF-UPDATE
