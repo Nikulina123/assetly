@@ -1,9 +1,11 @@
+import datetime
 import io
 import json
 import re
 import uuid
 import zipfile
 from pathlib import Path
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import RedirectResponse, Response
@@ -13,7 +15,12 @@ from app.admin_auth import resolve_admin
 from app.auth import generate_api_key, hash_api_key
 from app.config import CHECKIN_API_URL_FOR_DOWNLOAD, REPO_ROOT, WINDOWS_EXE_PATH
 from app.db import get_pool
-from app.enrollment import create_enrollment_token
+from app.enrollment import (
+    create_enrollment_token,
+    list_tokens,
+    revoke_device_credential,
+    revoke_token,
+)
 from app.field_config import (
     add_custom_field,
     remove_custom_field,
@@ -130,6 +137,26 @@ async def _get_company_or_404(pool, company_id: uuid.UUID):
     return company
 
 
+def _with_token_status(token: dict, now: datetime.datetime) -> dict:
+    # Status is derived here in Python, not stored or computed in SQL, matching
+    # devices.py's device_status pattern -- one definition, evaluated at render
+    # time so "expired" flips the instant the clock passes expires_at.
+    token = dict(token)
+    if token["revoked_at"] is not None:
+        token["status"] = "revoked"
+    elif token["expires_at"] <= now:
+        token["status"] = "expired"
+    else:
+        token["status"] = "active"
+    return token
+
+
+async def _tokens_for_display(pool, company_id: str) -> list[dict]:
+    now = datetime.datetime.now(datetime.timezone.utc)
+    tokens = await list_tokens(pool, company_id)
+    return [_with_token_status(t, now) for t in tokens]
+
+
 @router.get("/companies/{company_id}")
 async def company_detail(
     request: Request, company_id: uuid.UUID, admin_id: str = Depends(require_admin)
@@ -146,6 +173,7 @@ async def company_detail(
             "company": company,
             "csrf_token": _new_csrf_token(request),
             "field_settings": field_settings,
+            "tokens": await _tokens_for_display(pool, str(company_id)),
             "nav_active": "settings",
         },
     )
@@ -185,6 +213,7 @@ async def rotate_key(
             "csrf_token": _new_csrf_token(request),
             "new_api_key": api_key,
             "field_settings": field_settings,
+            "tokens": await _tokens_for_display(pool, str(company_id)),
         },
     )
 
@@ -225,6 +254,7 @@ async def revoke_company(
             "company": company,
             "csrf_token": _new_csrf_token(request),
             "field_settings": field_settings,
+            "tokens": await _tokens_for_display(pool, str(company_id)),
         },
     )
 
@@ -305,6 +335,7 @@ async def add_custom_field_route(
                 "csrf_token": _new_csrf_token(request),
                 "field_settings": field_settings,
                 "field_error": str(e),
+                "tokens": await _tokens_for_display(pool, str(company_id)),
             },
         )
     return RedirectResponse(f"/admin/companies/{company_id}", status_code=303)
@@ -323,6 +354,50 @@ async def remove_custom_field_route(
     await _get_company_or_404(pool, company_id)
     await remove_custom_field(pool, str(company_id), field_key)
     return RedirectResponse(f"/admin/companies/{company_id}", status_code=303)
+
+
+@router.post("/companies/{company_id}/tokens/{token_id}/revoke")
+async def revoke_enrollment_token(
+    request: Request,
+    company_id: uuid.UUID,
+    token_id: uuid.UUID,
+    csrf_token: str = Form(...),
+    admin_id: str = Depends(require_admin),
+):
+    """Blocks future enrollments with this token. Devices that already
+    enrolled through it keep their own credential and are untouched -- the
+    token is only ever a gate for NEW enrollments, never a live credential
+    itself."""
+    _check_csrf(request, csrf_token)
+    pool = await get_pool()
+    await _get_company_or_404(pool, company_id)
+    await revoke_token(pool, str(company_id), str(token_id))
+    return RedirectResponse(f"/admin/companies/{company_id}", status_code=303)
+
+
+@router.post("/companies/{company_id}/devices/{serial_number}/revoke")
+async def revoke_device(
+    request: Request,
+    company_id: uuid.UUID,
+    serial_number: str,
+    csrf_token: str = Form(...),
+    admin_id: str = Depends(require_admin),
+):
+    """Revokes exactly one machine's credential. Every other device in the
+    company -- including ones enrolled through the same token -- keeps
+    checking in normally; this is a single-device action, not a fleet-wide
+    one. Serial numbers are free-form strings from client hardware and may
+    contain characters that need escaping in a URL, so the redirect target
+    below re-encodes it (Starlette has already decoded the incoming path
+    segment for us by the time `serial_number` reaches this function)."""
+    _check_csrf(request, csrf_token)
+    pool = await get_pool()
+    await _get_company_or_404(pool, company_id)
+    await revoke_device_credential(pool, str(company_id), serial_number)
+    return RedirectResponse(
+        f"/admin/companies/{company_id}/computers/{quote(serial_number, safe='')}",
+        status_code=303,
+    )
 
 
 async def _get_active_company_or_404(pool, company_id: uuid.UUID):

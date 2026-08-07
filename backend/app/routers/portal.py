@@ -11,6 +11,7 @@ from fastapi.templating import Jinja2Templates
 
 from app.db import get_pool
 from app.devices import dashboard_stats, get_checkin_history, get_device, list_devices
+from app.enrollment import list_device_credentials
 from app.routers.admin import _all_companies, _get_company_or_404, _new_csrf_token, require_admin
 
 router = APIRouter(prefix="/admin/companies")
@@ -67,5 +68,12 @@ async def device_detail(
         raise HTTPException(status_code=404, detail="Device not found")
     context["device"] = device
     context["history"] = await get_checkin_history(pool, str(company_id), serial_number)
+    # No single-row lookup exists in enrollment.py (out of scope to add one for
+    # this), so filter the company's credential list for this device. Fleet
+    # size per company is small enough that this is fine on a page view.
+    credentials = await list_device_credentials(pool, str(company_id))
+    context["credential"] = next(
+        (c for c in credentials if c["serial_number"] == serial_number), None
+    )
     context["nav_active"] = "computers"
     return templates.TemplateResponse("portal_device.html", context)

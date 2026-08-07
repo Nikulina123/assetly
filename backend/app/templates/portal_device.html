@@ -105,6 +105,29 @@
     </div>
 
     <div class="card">
+      <div class="side-panel-title">Device Credential</div>
+      {% if credential and not credential['revoked_at'] %}
+      <div class="muted" style="font-size:11px;margin-bottom:10px">
+        Revoking stops <strong>this machine only</strong> from checking in — no other
+        device in the company is affected.
+      </div>
+      <form method="post" action="/admin/companies/{{ company['id'] }}/devices/{{ device['serial_number'] | urlencode }}/revoke">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <button type="submit" class="btn btn-danger" style="width:100%">{{ icons.icon('trash', 14) }}Revoke device</button>
+      </form>
+      {% elif credential %}
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+        <span class="badge offline">Revoked</span>
+      </div>
+      <div class="muted" style="font-size:11px">
+        This machine can no longer check in. Other devices in the company are unaffected.
+      </div>
+      {% else %}
+      <div class="muted" style="font-size:11px">No enrollment credential on file for this device.</div>
+      {% endif %}
+    </div>
+
+    <div class="card">
       <div class="side-panel-title">Recent Check-ins</div>
       {% if history %}
         {% for h in history[:5] %}

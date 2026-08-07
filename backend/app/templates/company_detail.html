@@ -132,5 +132,49 @@
   </div>
 </div>
 
+<div class="card flush">
+  <div class="card-header"><div class="card-title">{{ icons.icon('key', 14, extra_class='spec-row-icon') }}&nbsp;Enrollment tokens</div></div>
+  <div class="card-body">
+    <div class="banner">
+      Revoking a token blocks future enrollments from that installer only — it does not
+      touch devices that already enrolled with it, and they keep checking in normally.
+    </div>
+    {% if tokens %}
+    <div style="overflow-x:auto">
+    <table class="table">
+      <thead>
+        <tr>
+          <th>Label</th><th>Token</th><th>Expires</th><th>Devices</th><th>Status</th><th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for t in tokens %}
+        <tr>
+          <td>{{ t['label'] or '—' }}</td>
+          <td class="mono">{{ t['token_prefix'] }}…</td>
+          <td class="mono muted">{{ t['expires_at'].strftime('%Y-%m-%d %H:%M') }}</td>
+          <td class="mono">{{ t['used_count'] }} / {{ t['max_devices'] if t['max_devices'] is not none else 'unlimited' }}</td>
+          <td>
+            <span class="badge {% if t['status'] == 'active' %}online{% elif t['status'] == 'revoked' %}offline{% else %}pending{% endif %}">{{ t['status'] | capitalize }}</span>
+          </td>
+          <td>
+            {% if t['status'] == 'active' %}
+            <form method="post" action="/admin/companies/{{ company['id'] }}/tokens/{{ t['id'] }}/revoke">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+              <button type="submit" class="btn btn-danger">Revoke</button>
+            </form>
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    </div>
+    {% else %}
+    <div class="muted">No enrollment tokens yet. Download an installer above to create one.</div>
+    {% endif %}
+  </div>
+</div>
+
 </div>
 {% endblock %}
