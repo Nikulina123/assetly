@@ -1,6 +1,8 @@
-# Test-only dependencies. Kept out of requirements.txt so they never ship in
-# the deployed function bundle.
--r requirements.txt
+# Test-only dependencies. Kept out of the root requirements.txt so they never
+# ship in the deployed function bundle.
+#
+# Install with:  pip install -r backend/requirements-dev.txt
+-r ../requirements.txt
 
 pytest==8.3.3
 pytest-asyncio==0.24.0

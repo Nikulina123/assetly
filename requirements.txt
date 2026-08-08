@@ -1,5 +1,17 @@
-# Vercel's Python builder installs from a requirements.txt at the repo root.
-# The actual runtime dependency list lives in backend/requirements.txt so that
-# local dev, CI, a container deploy, and the deployed function can never drift
-# apart -- this file exists only to point Vercel at it.
--r backend/requirements.txt
+# Runtime dependencies -- the single source of truth for them.
+#
+# This list lives at the repo root, literally, because Vercel's Python builder
+# installs from a root requirements.txt and does NOT support pip's `-r` include
+# directive: pointing this file at backend/requirements.txt fails the build with
+# "could not parse requirements.txt: Error parsing included file". Test-only
+# dependencies are in backend/requirements-dev.txt, which pip reads normally and
+# which chains back to this file.
+fastapi==0.115.0
+uvicorn[standard]==0.30.6
+asyncpg==0.29.0
+pydantic==2.9.2
+python-dotenv==1.0.1
+bcrypt==4.2.0
+jinja2==3.1.4
+python-multipart==0.0.9
+itsdangerous==2.2.0
