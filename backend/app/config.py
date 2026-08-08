@@ -9,6 +9,18 @@ DATABASE_URL = os.environ["DATABASE_URL"]
 SESSION_SECRET_KEY = os.environ["SESSION_SECRET_KEY"]
 SESSION_COOKIE_SECURE = os.environ.get("SESSION_COOKIE_SECURE", "false").lower() == "true"
 
+# asyncpg pool sizing. Under serverless, every warm instance holds its own pool,
+# so what actually lands on Postgres is (instances x max_size), not max_size --
+# concurrency has to come from more instances, not fatter pools, or a traffic
+# spike exhausts the connection limit. Deliberately small; raise only on a
+# long-lived single-process deployment (container/VM), where the opposite is
+# true and a bigger pool is free.
+DB_POOL_MAX_SIZE = int(os.environ.get("DB_POOL_MAX_SIZE", "2"))
+# Caps how long one query can hold a slot. Without it a query blocked on a lock
+# runs until the platform kills the whole invocation, which surfaces as an
+# opaque function timeout rather than a database error anyone can act on.
+DB_COMMAND_TIMEOUT = float(os.environ.get("DB_COMMAND_TIMEOUT", "10"))
+
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 WINDOWS_EXE_PATH = Path(
     os.environ.get("WINDOWS_EXE_PATH", str(REPO_ROOT / "backend" / "static" / "AssetlyAgent_Windows.exe"))
