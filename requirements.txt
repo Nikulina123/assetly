@@ -1,0 +1,5 @@
+# Vercel's Python builder installs from a requirements.txt at the repo root.
+# The actual runtime dependency list lives in backend/requirements.txt so that
+# local dev, CI, a container deploy, and the deployed function can never drift
+# apart -- this file exists only to point Vercel at it.
+-r backend/requirements.txt
