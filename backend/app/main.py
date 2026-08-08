@@ -7,6 +7,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.middleware.sessions import SessionMiddleware
 
 from app.config import SESSION_COOKIE_SECURE, SESSION_SECRET_KEY
+from app.db import get_pool
 from app.routers.admin import NotAuthenticated
 from app.routers.admin import router as admin_router
 from app.routers.checkin import router as checkin_router
@@ -29,6 +30,22 @@ app.mount(
     StaticFiles(directory=str(Path(__file__).resolve().parent / "static")),
     name="static",
 )
+
+
+@app.get("/healthz", include_in_schema=False)
+async def healthz():
+    """Liveness plus database reachability, for uptime monitoring and for
+    confirming a deploy is actually serving rather than merely built.
+
+    Deliberately queries no application table: every one of them is either
+    RLS-protected (and would error without app.company_id set) or holds tenant
+    data that has no business being reachable from an unauthenticated endpoint.
+    SELECT 1 still proves the credentials, network path, and pooler all work.
+    """
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.fetchval("SELECT 1")
+    return {"status": "ok"}
 
 
 @app.exception_handler(NotAuthenticated)
