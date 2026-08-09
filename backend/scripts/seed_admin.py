@@ -9,9 +9,10 @@ the latter puts scripts/ rather than backend/ on sys.path, so `from app...`
 fails with ModuleNotFoundError. `-m` runs from the current directory instead,
 which is backend/, where the `app` package actually lives.)
 
-Connects as the `admin` superuser role (not webiz_app — webiz_app only has
-SELECT on the admins table, per migrations/002_admin_auth.sql), since account
-creation is an operator action, not something the running app does itself.
+Connects as the `admin` superuser role (not assetly — the assetly app role only
+has SELECT on the admins table, per migrations/002_admin_auth.sql), since
+account creation is an operator action, not something the running app does
+itself.
 """
 import argparse
 import asyncio

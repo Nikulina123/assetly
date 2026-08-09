@@ -6,7 +6,7 @@ import pytest_asyncio
 
 TEST_DATABASE_URL = os.environ.get(
     "TEST_DATABASE_URL",
-    "postgresql://webiz_app@localhost:5432/webiz_checkin_test",
+    "postgresql://assetly@localhost:5432/webiz_checkin_test",
 )
 
 ADMIN_TEST_DATABASE_URL = os.environ.get(
@@ -38,7 +38,7 @@ def _stub_checkin_notifications(monkeypatch):
 
 @pytest_asyncio.fixture
 async def db_pool():
-    # Truncate via a separate admin connection: webiz_app intentionally has no
+    # Truncate via a separate admin connection: assetly intentionally has no
     # TRUNCATE grant in production (TRUNCATE bypasses RLS entirely), so test
     # cleanup can't go through the same role the app itself uses.
     admin_conn = await asyncpg.connect(ADMIN_TEST_DATABASE_URL)
@@ -74,7 +74,7 @@ async def admin(db_pool):
     """Inserts one admin with a known plaintext password, returns (admin_id, email, password).
 
     Inserted via a separate admin-role connection (like the db_pool truncate
-    step above): webiz_app intentionally only has SELECT on admins (see
+    step above): assetly intentionally only has SELECT on admins (see
     migrations/002_admin_auth.sql) since admin accounts are seeded via
     scripts/seed_admin.py run as the `admin` superuser, not through the app.
     """
