@@ -58,7 +58,11 @@ _credential = None
 INTERVAL_MONTHS  = 6
 CANCEL_RETRY_H   = (2/60)   # TEST: 2 minutes — change back to 24 for production
 
-DEPARTMENTS = ["Webiz ERP", "Fundbox", "Playtika", "Artlist", "The5%ers", "Other"]
+# Only used when the server cannot be reached. The live list arrives per
+# company on the department entry of GET /api/v1/inventory/config, and an admin
+# edits it in the portal. Kept in sync with DEFAULT_DEPARTMENT_OPTIONS in
+# backend/app/field_config.py and $DefaultDepartments in AssetlyAgent_Windows.ps1.
+DEFAULT_DEPARTMENT_OPTIONS = ["Webiz ERP", "Fundbox", "Playtika", "Artlist", "The5%ers", "Other"]
 
 BRAND_COLOR  = "#1A2B5A"
 ACCENT_COLOR = "#E8303A"
@@ -345,7 +349,8 @@ DEFAULT_FIELD_CONFIG = {
         {"key": "first_name", "label": "First Name", "required": True, "locked": True},
         {"key": "last_name", "label": "Last Name", "required": True, "locked": True},
         {"key": "email", "label": "Email", "required": True, "locked": True},
-        {"key": "department", "label": "Department", "required": False, "locked": False},
+        {"key": "department", "label": "Department", "required": False, "locked": False,
+         "options": DEFAULT_DEPARTMENT_OPTIONS},
     ],
     "hardware_fields": ["cpu", "ram", "storage", "ip_address"],
 }
@@ -362,10 +367,20 @@ def _is_valid_field_config(config) -> bool:
     if not isinstance(user_fields, list) or not isinstance(hardware_fields, list):
         return False
     required_keys = {"key", "label", "required", "locked"}
-    return all(
-        isinstance(f, dict) and required_keys.issubset(f) and isinstance(f["key"], str)
-        for f in user_fields
-    ) and all(isinstance(key, str) for key in hardware_fields)
+    for f in user_fields:
+        if not (isinstance(f, dict) and required_keys.issubset(f) and isinstance(f["key"], str)):
+            return False
+        # Optional, and only ever present on department. An options list that
+        # arrived empty or wrong-typed would build a dropdown the user cannot
+        # pick anything from, so it's rejected here and the defaults are used.
+        options = f.get("options")
+        if options is not None and not (
+            isinstance(options, list)
+            and options
+            and all(isinstance(o, str) for o in options)
+        ):
+            return False
+    return all(isinstance(key, str) for key in hardware_fields)
 
 
 def fetch_field_config() -> dict:
@@ -451,7 +466,11 @@ class InventoryForm(tk.Tk):
         self.focus_force()
 
     def _center(self):
-        w, h = 520, 644
+        # 644 was sized for the four built-in rows. The row count is now
+        # whatever the company configured, so the window has to grow with it
+        # or added custom fields push the Submit button off-screen.
+        w = 520
+        h = 644 + 42 * (len(self.field_config["user_fields"]) - 4)
         self.update_idletasks()
         x = (self.winfo_screenwidth()  - w) // 2
         y = (self.winfo_screenheight() - h) // 2
@@ -503,9 +522,10 @@ class InventoryForm(tk.Tk):
             if f["key"] == "department":
                 tk.Label(form, text=f["label"] + suffix, font=("Helvetica", 11, "bold"),
                          bg=BG_COLOR, anchor="w").grid(row=row, column=0, sticky="w", pady=(10, 2))
-                self._v_department = tk.StringVar(value=DEPARTMENTS[0])
+                options = f.get("options") or DEFAULT_DEPARTMENT_OPTIONS
+                self._v_department = tk.StringVar(value=options[0])
                 ttk.Combobox(
-                    form, textvariable=self._v_department, values=DEPARTMENTS,
+                    form, textvariable=self._v_department, values=options,
                     state="readonly", font=("Helvetica", 11), width=36,
                 ).grid(row=row, column=1, sticky="ew", padx=(8, 0), pady=(10, 2))
             else:
@@ -520,11 +540,23 @@ class InventoryForm(tk.Tk):
         tk.Label(pf, text="Device information that will be recorded:",
                  font=("Helvetica", 9, "italic"), fg="#6B7280", bg=BG_COLOR).pack(anchor="w")
         hw = self.hw
-        preview = (
-            f"  {hw['brand']} {hw['model']}  •  SN: {hw.get('serial_number','?')}  •  {hw['os']}\n"
-            f"  CPU: {hw['cpu']}  •  RAM: {hw['ram']}  •  Storage: {hw['storage']}\n"
-            f"  Host: {hw['hostname']}  •  IP: {hw['ip_address']}"
-        )
+        # Only what will actually be submitted: the label above promises
+        # "information that will be recorded", and submit_to_sheets() drops
+        # every hardware key the company has switched off.
+        enabled_hw = set(self.field_config["hardware_fields"])
+        lines = [f"  {hw['brand']} {hw['model']}  •  SN: {hw.get('serial_number','?')}  •  {hw['os']}"]
+        specs = [
+            f"{label}: {hw[key]}"
+            for key, label in (("cpu", "CPU"), ("ram", "RAM"), ("storage", "Storage"))
+            if key in enabled_hw
+        ]
+        if specs:
+            lines.append("  " + "  •  ".join(specs))
+        host_line = f"  Host: {hw['hostname']}"
+        if "ip_address" in enabled_hw:
+            host_line += f"  •  IP: {hw['ip_address']}"
+        lines.append(host_line)
+        preview = "\n".join(lines)
         tk.Label(pf, text=preview, font=("Helvetica", 9), fg="#374151",
                  bg=BG_COLOR, justify="left", wraplength=468).pack(anchor="w")
 

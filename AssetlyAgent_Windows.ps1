@@ -11,14 +11,35 @@
 #  CONFIGURATION — checkin_api_url/enrollment_token (or company_api_key, or an
 #  already-issued device_credential) load from config.json placed next to this
 #  script/exe (written by the admin portal's download button).
-#  GitHubRawUrl stays hardcoded here since self-update isn't part of this change.
+#
+#  Which *fields* the form asks for is NOT configured here: it is fetched per
+#  company from GET /api/v1/inventory/config on every run (see Get-FieldConfig),
+#  exactly as inventory_agent.py does on macOS/Linux. An admin toggling a field
+#  in the portal therefore reaches this agent on its next run, with no rebuild
+#  and no redeploy. The hardcoded values below are only fallbacks for when that
+#  endpoint cannot be reached.
 # ════════════════════════════════════════════════════════════════════════════════
 $GitHubRawUrl  = "https://raw.githubusercontent.com/Nikulina123/Check-in_agent/refs/heads/main/AssetlyAgent_Windows.ps1"
+# The compiled agent updates itself from the build CI commits to the repository,
+# which is the same artifact the portal serves for "Download for Windows".
+$GitHubExeUrl  = "https://raw.githubusercontent.com/Nikulina123/Check-in_agent/refs/heads/main/backend/static/AssetlyAgent_Windows.exe"
+
+# Windows PowerShell 5.1 still negotiates TLS 1.0 by default on older builds,
+# which raw.githubusercontent.com refuses outright. Without this the self-update
+# below fails on exactly the machines most in need of an update.
+try {
+    [Net.ServicePointManager]::SecurityProtocol =
+        [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+} catch {}
 
 $IntervalMonths   = 6
 $CancelRetryHours = (2/60)   # TEST: 2 minutes — change back to 24 for production
 $TaskName         = "AssetlyInventoryAgent"
-$Departments      = @("Webiz ERP","Fundbox","Playtika","Artlist","The5%ers","Other")
+$AgentVersion     = "2.0"
+# Fallback only — the live per-company list arrives on the department entry of
+# the field config. Kept in sync with DEFAULT_DEPARTMENT_OPTIONS in
+# backend/app/field_config.py and inventory_agent.py.
+$DefaultDepartments = @("Webiz ERP","Fundbox","Playtika","Artlist","The5%ers","Other")
 
 $StateDir   = "$env:LOCALAPPDATA\AssetlyInventory"
 $StateFile  = "$StateDir\state.json"
@@ -136,6 +157,7 @@ $CheckinApiUrl  = $CheckinConfig.CheckinApiUrl
 $ConfigFilePath = $CheckinConfig.ConfigFile
 $Cfg            = $CheckinConfig.Cfg
 $EnrollApiUrl   = $CheckinApiUrl -replace '/inventory/checkin$', '/enroll'
+$ConfigApiUrl   = $CheckinApiUrl -replace '/checkin$', '/config'
 
 # ════════════════════════════════════════════════════════════════════════════════
 #  CREDENTIAL RESOLUTION / ENROLLMENT
@@ -201,17 +223,183 @@ function Resolve-Credential($cfgObj, $path) {
 }
 
 # ════════════════════════════════════════════════════════════════════════════════
+#  FIELD CONFIGURATION
+#  Mirrors inventory_agent.py's fetch_field_config()/DEFAULT_FIELD_CONFIG. This
+#  is what makes a portal change reach this agent: the form below is built from
+#  whatever this returns, so enabling, disabling, adding or removing a field in
+#  the portal takes effect on the next run without recompiling anything.
+# ════════════════════════════════════════════════════════════════════════════════
+$DefaultFieldConfig = [PSCustomObject]@{
+    user_fields = @(
+        [PSCustomObject]@{ key = 'first_name'; label = 'First Name'; required = $true;  locked = $true  }
+        [PSCustomObject]@{ key = 'last_name';  label = 'Last Name';  required = $true;  locked = $true  }
+        [PSCustomObject]@{ key = 'email';      label = 'Email';      required = $true;  locked = $true  }
+        [PSCustomObject]@{ key = 'department'; label = 'Department'; required = $false; locked = $false
+                           options = $DefaultDepartments }
+    )
+    hardware_fields = @('cpu','ram','storage','ip_address')
+}
+
+function Test-FieldConfig($Config) {
+    <#  Guards against a malformed-but-200-OK response reaching the form, where
+        a missing key would surface as a blank label or a dropdown with nothing
+        in it rather than as an error anyone can act on. #>
+    if ($null -eq $Config) { return $false }
+    if ($null -eq $Config.user_fields -or $null -eq $Config.hardware_fields) { return $false }
+    foreach ($f in @($Config.user_fields)) {
+        if ($null -eq $f) { return $false }
+        foreach ($prop in @('key','label','required','locked')) {
+            if ($f.PSObject.Properties.Match($prop).Count -eq 0) { return $false }
+        }
+        if ($f.key -isnot [string] -or -not $f.key) { return $false }
+        # Optional, and only ever sent for department.
+        if ($f.PSObject.Properties.Match('options').Count -gt 0 -and $null -ne $f.options) {
+            $options = @($f.options)
+            if ($options.Count -eq 0) { return $false }
+            foreach ($option in $options) { if ($option -isnot [string]) { return $false } }
+        }
+    }
+    foreach ($key in @($Config.hardware_fields)) { if ($key -isnot [string]) { return $false } }
+    return $true
+}
+
+function Get-FieldConfig {
+    <# Falls back to the defaults on any failure (network/auth/parse/shape) so a
+       config-fetch problem never blocks check-in entirely. #>
+    try {
+        $config = Invoke-RestMethod -Uri $ConfigApiUrl -Method GET `
+                      -Headers @{ Authorization = "Bearer $DeviceCredential" } -TimeoutSec 10
+        if (-not (Test-FieldConfig $config)) {
+            throw "Malformed field config response: $($config | ConvertTo-Json -Compress -Depth 5)"
+        }
+        return $config
+    } catch {
+        Write-Log "Failed to fetch field config, using defaults: $_" "WARN"
+        return $DefaultFieldConfig
+    }
+}
+
+# ════════════════════════════════════════════════════════════════════════════════
 #  SELF-UPDATE
 # ════════════════════════════════════════════════════════════════════════════════
+function Get-Sha256([byte[]]$Bytes) {
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    try { return [BitConverter]::ToString($sha.ComputeHash($Bytes)) } finally { $sha.Dispose() }
+}
+
+function Find-LastByteSequence([byte[]]$Haystack, [byte[]]$Needle, [int]$SearchFrom) {
+    for ($i = $Haystack.Length - $Needle.Length; $i -ge $SearchFrom; $i--) {
+        $match = $true
+        for ($j = 0; $j -lt $Needle.Length; $j++) {
+            if ($Haystack[$i + $j] -ne $Needle[$j]) { $match = $false; break }
+        }
+        if ($match) { return $i }
+    }
+    return -1
+}
+
+function Split-EmbeddedConfig([byte[]]$Bytes) {
+    <#  Separates a configured .exe into the build the CI produced and the
+        config block the portal appended, so the two can be compared and
+        recombined independently.
+
+        Without this, self-update could never work: the installed exe always
+        carries a trailing config block that the published build does not, so
+        their hashes differ permanently and every single run would "find an
+        update". The search is anchored to the tail for the same reason
+        embed_windows_config in backend/app/routers/admin.py anchors its own --
+        ps2exe stores this script as plain text, so a copy of the marker sits
+        ~15 KB into the image and matching that one would cut the binary in
+        half. #>
+    $begin = [System.Text.Encoding]::UTF8.GetBytes('ASSETLY-CONFIG' + '-BEGIN:')
+    $end   = [System.Text.Encoding]::UTF8.GetBytes(':ASSETLY-CONFIG' + '-END')
+    $empty = New-Object byte[] 0
+    $parts = @{ Base = $Bytes; Block = $empty }
+
+    if ($Bytes.Length -lt $end.Length) { return $parts }
+    for ($j = 0; $j -lt $end.Length; $j++) {
+        if ($Bytes[$Bytes.Length - $end.Length + $j] -ne $end[$j]) { return $parts }
+    }
+    $searchFrom = [Math]::Max(0, $Bytes.Length - 8192)
+    $at = Find-LastByteSequence $Bytes $begin $searchFrom
+    if ($at -lt 0) { return $parts }
+
+    $base  = New-Object byte[] $at
+    $block = New-Object byte[] ($Bytes.Length - $at)
+    [Array]::Copy($Bytes, 0, $base,  0, $at)
+    [Array]::Copy($Bytes, $at, $block, 0, $block.Length)
+    return @{ Base = $base; Block = $block }
+}
+
+function Invoke-SelfUpdateExe {
+    <#  A compiled agent used to be a dead end: Invoke-SelfUpdate returned
+        immediately for an .exe, so every fix had to be hand-carried to every
+        machine. It now replaces itself from the same artifact the portal
+        serves, carrying its own config block across so an exe that updates
+        before it has ever enrolled still knows its URL and token. #>
+    if (-not $GitHubExeUrl -or $GitHubExeUrl -like "*YOUR_ORG*") { return }
+    $tmp = [System.IO.Path]::GetTempFileName() + ".exe"
+    # PowerShell runs `finally` on the way out of `exit`, so the cleanup below
+    # would delete the staged executable out from under the cmd.exe that was
+    # just scheduled to move it into place -- leaving the old agent running and
+    # re-attempting the same update on every login, forever. Ownership of the
+    # temp file transfers to cmd.exe on that path, and only on that path.
+    $handedOff = $false
+    try {
+        Write-Log "Checking for updates…"
+        Invoke-WebRequest -Uri $GitHubExeUrl -OutFile $tmp -UseBasicParsing -TimeoutSec 60
+        $newBytes = [System.IO.File]::ReadAllBytes($tmp)
+
+        # Same check Build_Windows_EXE.ps1 makes on its own output. A captive
+        # portal's login page is a perfectly successful HTTP response, and
+        # writing one over the agent would brick it on the employee's machine.
+        if ($newBytes.Length -lt 10240 -or $newBytes[0] -ne 0x4D -or $newBytes[1] -ne 0x5A) {
+            Write-Log "Update rejected: downloaded $($newBytes.Length) bytes that are not a PE image." "WARN"
+            return
+        }
+
+        $current = Split-EmbeddedConfig ([System.IO.File]::ReadAllBytes($ScriptPath))
+        if ((Get-Sha256 $current.Base) -eq (Get-Sha256 $newBytes)) { return }
+
+        $combined = New-Object byte[] ($newBytes.Length + $current.Block.Length)
+        [Array]::Copy($newBytes, 0, $combined, 0, $newBytes.Length)
+        if ($current.Block.Length -gt 0) {
+            [Array]::Copy($current.Block, 0, $combined, $newBytes.Length, $current.Block.Length)
+        }
+        [System.IO.File]::WriteAllBytes($tmp, $combined)
+
+        if ($ScriptPath -eq $ScriptDest) {
+            # Windows will not let a running image be overwritten, so hand the
+            # swap to a detached cmd.exe that waits for this process to exit.
+            Write-Log "Update found — scheduling replacement and restart."
+            $cmd = "timeout /t 3 /nobreak >nul & move /Y `"$tmp`" `"$ScriptDest`" & " +
+                   "start `"`" `"$ScriptDest`""
+            Start-Process "cmd.exe" -ArgumentList "/c $cmd" -WindowStyle Hidden
+            $handedOff = $true
+            exit 0
+        }
+        # Running from elsewhere (a fresh download in Downloads, say) — the
+        # installed copy is not locked, so update it and carry on with this run.
+        Write-Log "Update found — updating installed copy. Continuing current run."
+        Copy-Item -Path $tmp -Destination $ScriptDest -Force -ErrorAction SilentlyContinue
+    } catch {
+        Write-Log "Update check failed: $_" "WARN"
+    } finally {
+        if (-not $handedOff) { Remove-Item $tmp -Force -ErrorAction SilentlyContinue }
+    }
+}
+
 function Invoke-SelfUpdate {
-    if ($IsExe) { return }   # compiled EXE — distribute a new EXE to update
+    if ($IsExe) { Invoke-SelfUpdateExe; return }
     if (-not $GitHubRawUrl -or $GitHubRawUrl -like "*YOUR_ORG*") { return }
     try {
         Write-Log "Checking for updates…"
         $new  = (Invoke-WebRequest -Uri $GitHubRawUrl -UseBasicParsing -TimeoutSec 8).Content
         $cur  = Get-Content -Path $ScriptPath -Raw -ErrorAction SilentlyContinue
-        $hash = { param($s) [System.Security.Cryptography.SHA256]::Create().ComputeHash(
-                      [System.Text.Encoding]::UTF8.GetBytes($s)) }
+        # Compare the hash *strings*: -ne between two byte[] operands is
+        # PowerShell's element-wise filter, not an equality test, so the old
+        # form here only worked by accident of an empty array being falsy.
+        $hash = { param($s) Get-Sha256 ([System.Text.Encoding]::UTF8.GetBytes($s)) }
         if ((&$hash $new) -ne (&$hash $cur)) {
             $tmp = [System.IO.Path]::GetTempFileName() + ".ps1"
             $new | Out-File -FilePath $tmp -Encoding UTF8
@@ -316,7 +504,10 @@ function Get-Hardware {
 function Submit-ToSheets {
     param([hashtable]$Payload)
     try {
-        $body = $Payload | ConvertTo-Json -Compress
+        # -Depth matters: custom_fields is a nested hashtable, and at the
+        # default depth of 2 it serializes as the literal string
+        # "System.Collections.Hashtable" rather than as a JSON object.
+        $body = $Payload | ConvertTo-Json -Compress -Depth 10
         $resp = Invoke-RestMethod -Uri $CheckinApiUrl -Method POST -Body $body `
                     -ContentType "application/json" `
                     -Headers @{ Authorization = "Bearer $DeviceCredential" } -TimeoutSec 15
@@ -403,9 +594,19 @@ public class WinForeground {
 "@
 
 function Show-InventoryForm {
-    param([hashtable]$HW)
+    param([hashtable]$HW, $FieldConfig)
 
-    $result = @{ submitted = $false; user_data = @{}; closing = $false }
+    # Everything below is driven by $FieldConfig rather than hardcoded, so the
+    # portal's "Check-in fields" settings are what an employee actually sees.
+    $userFields  = @($FieldConfig.user_fields)
+    $enabledHw   = @($FieldConfig.hardware_fields)
+    $builtInKeys = @('first_name','last_name','email','department')
+
+    # custom_fields is kept separate from user_data because the API takes the
+    # built-ins as top-level keys and everything else nested under
+    # custom_fields (see CheckinRequest in backend/app/models.py).
+    $result   = @{ submitted = $false; user_data = @{}; custom_fields = @{}; closing = $false }
+    $controls = @{}   # field key -> the TextBox or ComboBox that collects it
 
     # ── Form ──────────────────────────────────────────────────────────────────
     $form                  = New-Object System.Windows.Forms.Form
@@ -465,62 +666,42 @@ function Show-InventoryForm {
     $form.Controls.Add($welcome)
 
     # ── Input rows ────────────────────────────────────────────────────────────
+    # One row per configured field, in the order the server sent them. Nothing
+    # here knows which fields exist; that is entirely the portal's call.
     $yPos = 148
 
-    foreach ($row in @(
-        @{ Label = "First Name *"; Var = "tbFirst" },
-        @{ Label = "Last Name *";  Var = "tbLast"  },
-        @{ Label = "Email *";      Var = "tbEmail" }
-    )) {
+    foreach ($field in $userFields) {
         $lbl          = New-Object System.Windows.Forms.Label
-        $lbl.Text     = $row.Label
+        $lbl.Text     = if ($field.required) { "$($field.label) *" } else { $field.label }
         $lbl.Location = New-Object System.Drawing.Point(26, ($yPos + 4))
         $lbl.Size     = New-Object System.Drawing.Size(120, 22)
         $lbl.Font     = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Bold)
+        # Labels are admin-authored now, so one can be longer than the column.
+        # An ellipsis at least says so, where a plain clip silently cuts a word.
+        $lbl.AutoEllipsis = $true
         $form.Controls.Add($lbl)
 
-        $tb           = New-Object System.Windows.Forms.TextBox
-        $tb.Location  = New-Object System.Drawing.Point(152, $yPos)
-        $tb.Size      = New-Object System.Drawing.Size(342, 28)
-        $tb.Font      = New-Object System.Drawing.Font("Segoe UI", 10)
-        $form.Controls.Add($tb)
+        if ($field.key -eq 'department') {
+            $ctrl                 = New-Object System.Windows.Forms.ComboBox
+            $ctrl.DropDownStyle   = "DropDownList"
+            $options = if ($field.PSObject.Properties.Match('options').Count -gt 0 -and $field.options) {
+                @($field.options)
+            } else {
+                $DefaultDepartments
+            }
+            $options | ForEach-Object { $ctrl.Items.Add($_) | Out-Null }
+            if ($ctrl.Items.Count -gt 0) { $ctrl.SelectedIndex = 0 }
+        } else {
+            $ctrl = New-Object System.Windows.Forms.TextBox
+        }
+        $ctrl.Location = New-Object System.Drawing.Point(152, $yPos)
+        $ctrl.Size     = New-Object System.Drawing.Size(342, 28)
+        $ctrl.Font     = New-Object System.Drawing.Font("Segoe UI", 10)
+        $form.Controls.Add($ctrl)
 
-        Set-Variable -Name $row.Var -Value $tb
+        $controls[$field.key] = $ctrl
         $yPos += 44
     }
-
-    # Department dropdown
-    $lblDept          = New-Object System.Windows.Forms.Label
-    $lblDept.Text     = "Department *"
-    $lblDept.Location = New-Object System.Drawing.Point(26, ($yPos + 4))
-    $lblDept.Size     = New-Object System.Drawing.Size(120, 22)
-    $lblDept.Font     = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Bold)
-    $form.Controls.Add($lblDept)
-
-    $cbDepartment             = New-Object System.Windows.Forms.ComboBox
-    $cbDepartment.Location    = New-Object System.Drawing.Point(152, $yPos)
-    $cbDepartment.Size        = New-Object System.Drawing.Size(342, 28)
-    $cbDepartment.Font        = New-Object System.Drawing.Font("Segoe UI", 10)
-    $cbDepartment.DropDownStyle = "DropDownList"
-    $Departments | ForEach-Object { $cbDepartment.Items.Add($_) | Out-Null }
-    $cbDepartment.SelectedIndex = 0
-    $form.Controls.Add($cbDepartment)
-    $yPos += 44
-
-    # Screen size field
-    $lblScreen          = New-Object System.Windows.Forms.Label
-    $lblScreen.Text     = "Screen Size (in.) *"
-    $lblScreen.Location = New-Object System.Drawing.Point(26, ($yPos + 4))
-    $lblScreen.Size     = New-Object System.Drawing.Size(120, 22)
-    $lblScreen.Font     = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Bold)
-    $form.Controls.Add($lblScreen)
-
-    $tbScreen           = New-Object System.Windows.Forms.TextBox
-    $tbScreen.Location  = New-Object System.Drawing.Point(152, $yPos)
-    $tbScreen.Size      = New-Object System.Drawing.Size(342, 28)
-    $tbScreen.Font      = New-Object System.Drawing.Font("Segoe UI", 10)
-    $form.Controls.Add($tbScreen)
-    $yPos += 44
 
     # ── Separator ─────────────────────────────────────────────────────────────
     $sep           = New-Object System.Windows.Forms.Panel
@@ -540,21 +721,30 @@ function Show-InventoryForm {
     $form.Controls.Add($lblHint)
     $yPos += 24
 
+    # Only the rows that will actually be submitted: the label above promises
+    # "information that will be recorded", and the payload built in MAIN drops
+    # every hardware key the company has switched off.
+    $hwRows = [ordered]@{
+        "Device" = "$($HW.brand) $($HW.model)"
+        "Serial" = $HW.serial_number
+        "OS"     = $HW.os
+    }
+    if ($enabledHw -contains 'cpu')     { $hwRows["CPU"]     = $HW.cpu }
+    if ($enabledHw -contains 'ram')     { $hwRows["RAM"]     = $HW.ram }
+    if ($enabledHw -contains 'storage') { $hwRows["Storage"] = $HW.storage }
+    $hwRows["Hostname"] = if ($enabledHw -contains 'ip_address') {
+        "$($HW.hostname)  /  $($HW.ip_address)"
+    } else {
+        $HW.hostname
+    }
+    $hwPanelHeight = 16 + (18 * $hwRows.Count)
+
     $hwPanel           = New-Object System.Windows.Forms.Panel
     $hwPanel.Location  = New-Object System.Drawing.Point(26, $yPos)
-    $hwPanel.Size      = New-Object System.Drawing.Size(468, 142)
+    $hwPanel.Size      = New-Object System.Drawing.Size(468, $hwPanelHeight)
     $hwPanel.BackColor = [System.Drawing.Color]::FromArgb(229, 234, 242)
     $form.Controls.Add($hwPanel)
 
-    $hwRows = [ordered]@{
-        "Device"   = "$($HW.brand) $($HW.model)"
-        "Serial"   = $HW.serial_number
-        "OS"       = $HW.os
-        "CPU"      = $HW.cpu
-        "RAM"      = $HW.ram
-        "Storage"  = $HW.storage
-        "Hostname" = "$($HW.hostname)  /  $($HW.ip_address)"
-    }
     $ry = 8
     foreach ($key in $hwRows.Keys) {
         $kLbl           = New-Object System.Windows.Forms.Label
@@ -575,7 +765,7 @@ function Show-InventoryForm {
 
         $ry += 18
     }
-    $yPos += 150
+    $yPos += $hwPanelHeight + 8
 
     # ── Buttons ───────────────────────────────────────────────────────────────
     $btnSubmit             = New-Object System.Windows.Forms.Button
@@ -599,28 +789,46 @@ function Show-InventoryForm {
     $btnCancel.FlatAppearance.BorderSize = 0
     $form.Controls.Add($btnCancel)
 
+    # The row count is now whatever the company configured, so the window is
+    # sized to its contents instead of to a fixed guess -- otherwise adding a
+    # couple of custom fields pushes Submit off the bottom edge.
+    $form.ClientSize = New-Object System.Drawing.Size(520, ($yPos + 56))
+
     # ── Event handlers ────────────────────────────────────────────────────────
     $btnSubmit.Add_Click({
-        if (-not $tbFirst.Text.Trim()) {
-            [System.Windows.Forms.MessageBox]::Show("Please enter your First Name.", "Missing field") | Out-Null; return
+        $values = @{}
+        foreach ($field in $userFields) {
+            $ctrl = $controls[$field.key]
+            if ($null -eq $ctrl) { continue }
+            $value = if ($ctrl -is [System.Windows.Forms.ComboBox]) {
+                if ($null -ne $ctrl.SelectedItem) { $ctrl.SelectedItem.ToString() } else { "" }
+            } else {
+                $ctrl.Text.Trim()
+            }
+
+            if ($field.required -and -not $value) {
+                [System.Windows.Forms.MessageBox]::Show(
+                    "Please enter your $($field.label).", "Missing field") | Out-Null
+                return
+            }
+            # Format-checked only when there is something to check; whether it
+            # is mandatory at all is the portal's decision, not this agent's.
+            if ($field.key -eq 'email' -and $value -and $value -notmatch '^[^@]+@[^@]+\.[^@]+$') {
+                [System.Windows.Forms.MessageBox]::Show(
+                    "Please enter a valid email address.", "Invalid email") | Out-Null
+                return
+            }
+            $values[$field.key] = $value
         }
-        if (-not $tbLast.Text.Trim()) {
-            [System.Windows.Forms.MessageBox]::Show("Please enter your Last Name.", "Missing field") | Out-Null; return
-        }
-        if ($tbEmail.Text -notmatch '^[^@]+@[^@]+\.[^@]+$') {
-            [System.Windows.Forms.MessageBox]::Show("Please enter a valid email address.", "Invalid email") | Out-Null; return
-        }
-        if (-not $tbScreen.Text.Trim()) {
-            [System.Windows.Forms.MessageBox]::Show("Please enter the screen size (inches).", "Missing field") | Out-Null; return
+
+        foreach ($key in $values.Keys) {
+            if ($builtInKeys -contains $key) {
+                $result.user_data[$key] = $values[$key]
+            } else {
+                $result.custom_fields[$key] = $values[$key]
+            }
         }
         $result.submitted = $true
-        $result.user_data  = @{
-            first_name  = $tbFirst.Text.Trim()
-            last_name   = $tbLast.Text.Trim()
-            email       = $tbEmail.Text.Trim()
-            department  = $cbDepartment.SelectedItem.ToString()
-            screen_size = $tbScreen.Text.Trim()
-        }
         $form.Close()
     })
 
@@ -741,8 +949,12 @@ Write-Log "Collecting hardware information…"
 $hw = Get-Hardware
 Write-Log "HW: $($hw | ConvertTo-Json -Compress)"
 
+# Fetch this company's field config (falls back to defaults on failure)
+$fieldConfig = Get-FieldConfig
+$enabledHwFields = @($fieldConfig.hardware_fields)
+
 # Show GUI
-$res = Show-InventoryForm -HW $hw
+$res = Show-InventoryForm -HW $hw -FieldConfig $fieldConfig
 
 # ── Cancelled ─────────────────────────────────────────────────────────────────
 if (-not $res.submitted) {
@@ -760,22 +972,29 @@ $payload = @{
     # Required by the API, and an idempotency key: generated once here and
     # carried through into the offline queue, so retrying a submission that
     # actually landed answers 409 "duplicate" instead of recording it twice.
-    checkin_id    = [guid]::NewGuid().ToString()
-    timestamp     = $hw.timestamp
-    first_name    = $ud.first_name
-    last_name     = $ud.last_name
-    email         = $ud.email
-    department    = $ud.department
-    screen_size   = $ud.screen_size
-    hostname      = $hw.hostname
-    ip_address    = $hw.ip_address
-    brand         = $hw.brand
-    model         = $hw.model
-    serial_number = $hw.serial_number
-    cpu           = $hw.cpu
-    ram           = $hw.ram
-    storage       = $hw.storage
-    os            = $hw.os
+    checkin_id      = [guid]::NewGuid().ToString()
+    timestamp       = $hw.timestamp
+    first_name      = $ud.first_name
+    last_name       = $ud.last_name
+    email           = $ud.email
+    hostname        = $hw.hostname
+    brand           = $hw.brand
+    model           = $hw.model
+    serial_number   = $hw.serial_number
+    os              = $hw.os
+    agent_version   = $AgentVersion
+    submission_type = "online"
+    platform        = "windows"
+    custom_fields   = $res.custom_fields
+}
+# Department is a configurable field, so it is only sent when the company has
+# it enabled -- sending an empty string would overwrite a device's recorded
+# department with nothing on the next check-in.
+if ($ud.ContainsKey('department')) { $payload.department = $ud.department }
+# Same for the hardware fields: a company that switched CPU off should not
+# have CPU stored anyway.
+foreach ($key in @('cpu','ram','storage','ip_address')) {
+    if ($enabledHwFields -contains $key) { $payload[$key] = $hw[$key] }
 }
 
 Write-Log "Submitting to Google Sheets…"

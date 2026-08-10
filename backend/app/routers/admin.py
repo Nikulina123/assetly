@@ -295,6 +295,7 @@ async def update_hardware_fields(
     ip_address: str | None = Form(None),
     department_enabled: str | None = Form(None),
     department_required: str | None = Form(None),
+    department_options: str | None = Form(None),
     admin_id: str = Depends(require_admin),
 ):
     _check_csrf(request, csrf_token)
@@ -310,6 +311,11 @@ async def update_hardware_fields(
         pool, company_id_str,
         enabled=department_enabled is not None,
         required=department_required is not None,
+        # A textarea always posts, so "" here is an admin who cleared the box
+        # (-> restore the built-in list), which set_department_config
+        # distinguishes from None ("this caller isn't editing the options").
+        # None only reaches it if the field is missing from the form entirely.
+        options=department_options.splitlines() if department_options is not None else None,
     )
 
     return RedirectResponse(f"/admin/companies/{company_id}", status_code=303)

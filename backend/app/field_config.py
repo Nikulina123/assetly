@@ -5,6 +5,16 @@ import asyncpg
 
 HARDWARE_FIELD_KEYS = ["cpu", "ram", "storage", "ip_address"]
 
+# What the department dropdown offers when a company has never edited the list.
+# These are the exact values both agents used to hardcode, so an existing
+# company sees no change at all until an admin edits them. Kept byte-for-byte
+# in sync with DEFAULT_DEPARTMENT_OPTIONS in inventory_agent.py and
+# $DefaultDepartments in AssetlyAgent_Windows.ps1, which are the fallbacks each
+# agent uses when it cannot reach this endpoint.
+DEFAULT_DEPARTMENT_OPTIONS = [
+    "Webiz ERP", "Fundbox", "Playtika", "Artlist", "The5%ers", "Other",
+]
+
 
 def _department_override(rows: list) -> asyncpg.Record | None:
     """The built-in department setting, if the company configured one.
@@ -19,6 +29,19 @@ def _department_override(rows: list) -> asyncpg.Record | None:
     )
 
 
+def _department_options(department_override: asyncpg.Record | None) -> list[str]:
+    """The configured dropdown values, or the built-in list.
+
+    NULL (never configured) and an empty array are treated alike on purpose:
+    set_department_config refuses to store an empty list, but a row could still
+    hold one from a direct DB edit, and a dropdown an employee cannot pick any
+    value from would block check-in entirely on a required field.
+    """
+    if department_override is None:
+        return list(DEFAULT_DEPARTMENT_OPTIONS)
+    return list(department_override["options"] or DEFAULT_DEPARTMENT_OPTIONS)
+
+
 async def resolve_field_config(pool: asyncpg.Pool, company_id: str) -> dict:
     """Resolves the effective, agent-facing field configuration for a company.
 
@@ -29,7 +52,7 @@ async def resolve_field_config(pool: asyncpg.Pool, company_id: str) -> dict:
         async with conn.transaction():
             await conn.execute("SELECT set_config('app.company_id', $1, true)", company_id)
             rows = await conn.fetch(
-                "SELECT field_key, field_type, label, enabled, required "
+                "SELECT field_key, field_type, label, enabled, required, options "
                 "FROM company_fields WHERE company_id = $1 ORDER BY id",
                 uuid.UUID(company_id),
             )
@@ -58,6 +81,10 @@ async def resolve_field_config(pool: asyncpg.Pool, company_id: str) -> dict:
             # "required" for the old project field; department is opt-in.
             "required": department_override["required"] if department_override else False,
             "locked": False,
+            # Only the department entry carries this. A custom field with an
+            # "options" key would read to an agent as a dropdown with nothing
+            # in it, so the loop below deliberately never adds one.
+            "options": _department_options(department_override),
         })
 
     for field_key, row in overrides.items():
@@ -102,17 +129,53 @@ async def set_hardware_field_enabled(pool: asyncpg.Pool, company_id: str, field_
             )
 
 
-async def set_department_config(pool: asyncpg.Pool, company_id: str, enabled: bool, required: bool) -> None:
+def normalize_department_options(options: list[str]) -> list[str]:
+    """Trims, drops blanks, and de-duplicates while preserving order.
+
+    The portal collects these as free text, one per line, so trailing spaces
+    and accidental repeats are ordinary input rather than an error worth
+    rejecting a whole form over. Order is preserved because it is the order the
+    dropdown shows, which admins set deliberately (commonest department first).
+    """
+    seen: dict[str, None] = {}
+    for option in options:
+        cleaned = option.strip()
+        if cleaned:
+            seen.setdefault(cleaned, None)
+    return list(seen)
+
+
+async def set_department_config(
+    pool: asyncpg.Pool,
+    company_id: str,
+    enabled: bool,
+    required: bool,
+    options: list[str] | None = None,
+) -> None:
+    """Writes the department settings. `options=None` means "leave the saved
+    list alone", which is not the same as an empty list: the enabled/required
+    checkboxes are edited through the same form, so a caller that has nothing
+    to say about the options must not silently reset them. An empty list, by
+    contrast, is an explicit clear, and stores NULL so the built-in defaults
+    apply again (see _department_options)."""
+    stored_options = normalize_department_options(options) if options is not None else None
     async with pool.acquire() as conn:
         async with conn.transaction():
             await conn.execute("SELECT set_config('app.company_id', $1, true)", company_id)
             await conn.execute(
                 """
-                INSERT INTO company_fields (company_id, field_key, field_type, label, enabled, required)
-                VALUES ($1, 'department', 'department', 'Department', $2, $3)
-                ON CONFLICT (company_id, field_key) DO UPDATE SET enabled = EXCLUDED.enabled, required = EXCLUDED.required
+                INSERT INTO company_fields (company_id, field_key, field_type, label, enabled, required, options)
+                VALUES ($1, 'department', 'department', 'Department', $2, $3, $4)
+                ON CONFLICT (company_id, field_key) DO UPDATE SET
+                    enabled  = EXCLUDED.enabled,
+                    required = EXCLUDED.required,
+                    -- Not COALESCE: that cannot tell "caller passed nothing"
+                    -- from "caller cleared the list", and the two have to
+                    -- write different values here.
+                    options  = CASE WHEN $5 THEN EXCLUDED.options ELSE company_fields.options END
                 """,
                 uuid.UUID(company_id), enabled, required,
+                stored_options or None, options is not None,
             )
 
 
@@ -163,7 +226,7 @@ async def resolve_field_settings_for_admin(pool: asyncpg.Pool, company_id: str) 
         async with conn.transaction():
             await conn.execute("SELECT set_config('app.company_id', $1, true)", company_id)
             rows = await conn.fetch(
-                "SELECT field_key, field_type, label, enabled, required "
+                "SELECT field_key, field_type, label, enabled, required, options "
                 "FROM company_fields WHERE company_id = $1 ORDER BY id",
                 uuid.UUID(company_id),
             )
@@ -197,5 +260,6 @@ async def resolve_field_settings_for_admin(pool: asyncpg.Pool, company_id: str) 
         "hardware_field_options": hardware_field_options,
         "department_enabled": department_enabled,
         "department_required": department_required,
+        "department_options": _department_options(department_override),
         "custom_fields": custom_fields,
     }

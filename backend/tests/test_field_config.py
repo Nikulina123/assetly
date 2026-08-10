@@ -2,6 +2,7 @@ import pytest
 
 from app.field_config import resolve_field_config
 from app.field_config import (
+    DEFAULT_DEPARTMENT_OPTIONS,
     add_custom_field,
     remove_custom_field,
     resolve_field_settings_for_admin,
@@ -199,6 +200,75 @@ async def test_resolve_field_settings_for_admin_shape(db_pool, company):
     assert settings["custom_fields"] == [
         {"key": "cost_center", "label": "Cost Center", "required": True}
     ]
+
+
+async def test_department_options_default_when_never_configured(db_pool, company):
+    """Every company that predates configurable options keeps the exact list
+    its agents already show, so nothing changes under anyone's feet."""
+    company_id, _ = company
+    config = await resolve_field_config(db_pool, company_id)
+    department = next(f for f in config["user_fields"] if f["key"] == "department")
+    assert department["options"] == DEFAULT_DEPARTMENT_OPTIONS
+
+
+async def test_set_department_options_persists(db_pool, company):
+    company_id, _ = company
+    await set_department_config(
+        db_pool, company_id, enabled=True, required=True,
+        options=["Support", "Engineering", "Finance"],
+    )
+    config = await resolve_field_config(db_pool, company_id)
+    department = next(f for f in config["user_fields"] if f["key"] == "department")
+    assert department["options"] == ["Support", "Engineering", "Finance"]
+
+
+async def test_department_options_survive_a_later_enabled_required_change(db_pool, company):
+    """The enabled/required checkboxes and the option list are edited through
+    the same form, but a caller that passes options=None must leave a
+    previously saved list alone rather than silently reset it to defaults."""
+    company_id, _ = company
+    await set_department_config(
+        db_pool, company_id, enabled=True, required=False, options=["Support"],
+    )
+    await set_department_config(db_pool, company_id, enabled=True, required=True)
+    config = await resolve_field_config(db_pool, company_id)
+    department = next(f for f in config["user_fields"] if f["key"] == "department")
+    assert department["required"] is True
+    assert department["options"] == ["Support"]
+
+
+async def test_empty_department_options_fall_back_to_defaults(db_pool, company):
+    """A dropdown with nothing in it is not a reachable state: clearing the
+    list restores the defaults instead of storing an empty array."""
+    company_id, _ = company
+    await set_department_config(
+        db_pool, company_id, enabled=True, required=False, options=[],
+    )
+    config = await resolve_field_config(db_pool, company_id)
+    department = next(f for f in config["user_fields"] if f["key"] == "department")
+    assert department["options"] == DEFAULT_DEPARTMENT_OPTIONS
+
+
+async def test_admin_settings_expose_department_options(db_pool, company):
+    company_id, _ = company
+    settings = await resolve_field_settings_for_admin(db_pool, company_id)
+    assert settings["department_options"] == DEFAULT_DEPARTMENT_OPTIONS
+
+    await set_department_config(
+        db_pool, company_id, enabled=True, required=False, options=["Support", "Ops"],
+    )
+    settings = await resolve_field_settings_for_admin(db_pool, company_id)
+    assert settings["department_options"] == ["Support", "Ops"]
+
+
+async def test_custom_fields_carry_no_options_key(db_pool, company):
+    """Options are a department-only concept. A custom field that grew an
+    `options` key would read to an agent as a dropdown with no values."""
+    company_id, _ = company
+    await add_custom_field(db_pool, company_id, "Cost Center", required=False)
+    config = await resolve_field_config(db_pool, company_id)
+    custom = next(f for f in config["user_fields"] if f["key"] == "cost_center")
+    assert "options" not in custom
 
 
 def test_slugify_punctuation_only_label_produces_empty_string():

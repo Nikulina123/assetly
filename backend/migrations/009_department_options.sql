@@ -1,0 +1,28 @@
+-- Per-company department dropdown options.
+--
+-- The option list ("Webiz ERP", "Fundbox", ...) was hardcoded identically in
+-- both agents, so every company's employees picked from one company's
+-- departments. This makes it configurable per company, delivered through the
+-- same GET /api/v1/inventory/config the rest of the field config already
+-- travels on -- no rebuild, no redeploy.
+--
+-- TEXT[] rather than JSONB: asyncpg maps a text array straight to list[str] in
+-- both directions, where JSONB would need an encode/decode step at every call
+-- site for a value that is only ever a flat list of strings.
+--
+-- NULL means "never configured", which resolves to DEFAULT_DEPARTMENT_OPTIONS
+-- in app/field_config.py -- so every company that exists today keeps the exact
+-- list its agents show now, and only changes when an admin edits it. Clearing
+-- the field in the portal writes NULL back and returns to those defaults; an
+-- empty array is deliberately never stored, since a department dropdown with
+-- no options is not a state worth being able to reach.
+--
+-- Only the field_type='department' row ever carries this. The column lives on
+-- company_fields anyway rather than in its own table because it is one
+-- optional attribute of a row that already exists, and RLS, the tenant policy,
+-- and every existing GRANT then cover it for free.
+-- IF NOT EXISTS so re-running this against a database that already has it is a
+-- no-op rather than an error, matching the guarded style of 001 and 008. These
+-- are applied by hand with psql, and "did I already run this one?" is a
+-- question an operator should never have to answer from memory.
+ALTER TABLE company_fields ADD COLUMN IF NOT EXISTS options TEXT[];

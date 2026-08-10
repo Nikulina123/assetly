@@ -70,6 +70,10 @@
       <label class="check-row" style="margin-bottom:8px">
         <input type="checkbox" name="department_required" {% if field_settings['department_required'] %}checked{% endif %}> Department required
       </label>
+      <label class="muted" style="display:block;margin:12px 0 4px">Department options &mdash; one per line. Leave empty to restore the built-in list.</label>
+      <textarea class="input" name="department_options" rows="6" style="width:100%;font-family:inherit"
+>{% for option in field_settings['department_options'] %}{{ option }}
+{% endfor %}</textarea>
       <button type="submit" class="btn" style="margin-top:8px">Save check-in fields</button>
     </form>
   </div>

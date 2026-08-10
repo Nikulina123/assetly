@@ -172,6 +172,61 @@ async def test_department_form_round_trips_through_admin_ui(admin, company, db_p
     assert settings["department_required"] is False
 
 
+async def test_department_options_round_trip_through_admin_ui(admin, company, db_pool):
+    """Same silent-drift risk as the checkboxes above: the textarea's `name`
+    and admin.py's Form parameter must match, and the rendered page has to
+    show the saved list back or an admin editing it would wipe it."""
+    from app.field_config import DEFAULT_DEPARTMENT_OPTIONS, resolve_field_config
+
+    _, email, password = admin
+    company_id, _ = company
+    client = await _logged_in_client(email, password)
+    try:
+        get_resp = await client.get(f"/admin/companies/{company_id}")
+        assert 'name="department_options"' in get_resp.text
+        csrf_token = get_resp.text.split('name="csrf_token" value="')[1].split('"')[0]
+
+        resp = await client.post(
+            f"/admin/companies/{company_id}/fields/hardware",
+            data={
+                "csrf_token": csrf_token,
+                "cpu": "on", "ram": "on", "storage": "on", "ip_address": "on",
+                "department_enabled": "on",
+                # Blank lines and stray whitespace are ordinary textarea input.
+                "department_options": "Support\n  Engineering  \n\nFinance\n",
+            },
+        )
+        assert resp.status_code == 303
+
+        config = await resolve_field_config(db_pool, company_id)
+        department = next(f for f in config["user_fields"] if f["key"] == "department")
+        assert department["options"] == ["Support", "Engineering", "Finance"]
+
+        # The saved list has to render back into the textarea.
+        detail_html = (await client.get(f"/admin/companies/{company_id}")).text
+        textarea_body = detail_html.split('name="department_options"')[1].split(">", 1)[1].split("</textarea>")[0]
+        assert textarea_body.strip().splitlines() == ["Support", "Engineering", "Finance"]
+
+        # Clearing the textarea restores the built-in list.
+        csrf_token = detail_html.split('name="csrf_token" value="')[1].split('"')[0]
+        resp = await client.post(
+            f"/admin/companies/{company_id}/fields/hardware",
+            data={
+                "csrf_token": csrf_token,
+                "cpu": "on", "ram": "on", "storage": "on", "ip_address": "on",
+                "department_enabled": "on",
+                "department_options": "",
+            },
+        )
+        assert resp.status_code == 303
+    finally:
+        await client.aclose()
+
+    config = await resolve_field_config(db_pool, company_id)
+    department = next(f for f in config["user_fields"] if f["key"] == "department")
+    assert department["options"] == DEFAULT_DEPARTMENT_OPTIONS
+
+
 async def test_add_custom_field_with_reserved_label_shows_error(admin, company):
     _, email, password = admin
     company_id, _ = company
