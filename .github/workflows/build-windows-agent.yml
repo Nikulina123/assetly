@@ -1,0 +1,66 @@
+name: Build Windows agent
+
+# AssetlyAgent_Windows.exe is a compiled snapshot of AssetlyAgent_Windows.ps1,
+# and the admin portal reads it straight off disk to serve "Download for
+# Windows". It therefore has to live in the repository, and has to be rebuilt
+# whenever the script changes -- otherwise the portal keeps handing out an agent
+# compiled from source that no longer exists.
+#
+# ps2exe only runs on Windows PowerShell 5.1 on Windows, which is the whole
+# reason this is CI rather than something a developer on macOS can do.
+on:
+  push:
+    branches: [main]
+    paths:
+      - AssetlyAgent_Windows.ps1
+      - Build_Windows_EXE.ps1
+      - .github/workflows/build-windows-agent.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+# Two pushes in quick succession would otherwise race to commit different
+# builds of the same script.
+concurrency:
+  group: build-windows-agent
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # `powershell` is Windows PowerShell 5.1; `pwsh` is PowerShell Core, where
+      # ps2exe does not work. Do not switch this.
+      - name: Compile the agent with ps2exe
+        shell: powershell
+        run: |
+          Set-ExecutionPolicy -Scope Process Bypass -Force
+          .\Build_Windows_EXE.ps1
+
+      # Downloadable from the run page, so a build can be tested on a real
+      # Windows machine before anyone trusts the committed copy.
+      - name: Upload the build for inspection
+        uses: actions/upload-artifact@v4
+        with:
+          name: AssetlyAgent_Windows
+          path: backend/static/AssetlyAgent_Windows.exe
+
+      - name: Commit the rebuilt executable
+        shell: bash
+        run: |
+          set -euo pipefail
+          EXE=backend/static/AssetlyAgent_Windows.exe
+          # --porcelain, not `git diff`: on the very first run the executable is
+          # untracked, which `git diff` reports as no change at all.
+          if [ -z "$(git status --porcelain -- "$EXE")" ]; then
+            echo "Executable is byte-identical to the committed one; nothing to do."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "$EXE"
+          git commit -m "build: recompile AssetlyAgent_Windows.exe from ${GITHUB_SHA:0:7}"
+          git push

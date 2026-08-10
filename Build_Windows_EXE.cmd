@@ -1,50 +1,30 @@
 @echo off
+REM Double-clickable wrapper around Build_Windows_EXE.ps1, which holds the
+REM actual build so that this and the GitHub Actions workflow cannot drift.
 echo ============================================================
 echo  Assetly Inventory Agent - EXE Builder
 echo ============================================================
 echo.
 
-echo [1/3] Installing ps2exe module (if not already installed)...
-powershell -ExecutionPolicy Bypass -Command ^
-    "if (-not (Get-Module ps2exe -ListAvailable)) { Install-Module ps2exe -Force -Scope CurrentUser -Repository PSGallery }"
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0Build_Windows_EXE.ps1"
 
 if %errorlevel% neq 0 (
-    echo ERROR: Failed to install ps2exe. Check internet connection or run as admin.
+    echo.
+    echo ERROR: Build failed. See the output above.
     pause
     exit /b 1
 )
 
 echo.
-echo [2/3] Compiling AssetlyAgent_Windows.ps1 to EXE...
-powershell -ExecutionPolicy Bypass -Command ^
-    "Invoke-ps2exe" ^
-    "-InputFile '%~dp0AssetlyAgent_Windows.ps1'" ^
-    "-OutputFile '%~dp0AssetlyAgent_Windows.exe'" ^
-    "-NoConsole" ^
-    "-STA" ^
-    "-Title 'Assetly Inventory Agent'" ^
-    "-Description 'Assetly device inventory check-in agent'" ^
-    "-Company 'Assetly'" ^
-    "-Version '1.0.0.0'"
-
-if %errorlevel% neq 0 (
-    echo ERROR: Compilation failed. See errors above.
-    pause
-    exit /b 1
-)
-
+echo   Commit the EXE to the repository - the admin portal reads it from
+echo   backend\static\ and Vercel bundles it into the deployed function.
 echo.
-echo [3/3] Done!
+echo   Do NOT hand this EXE to employees directly: it is generic and carries no
+echo   company configuration. "Download for Windows" in the admin portal appends
+echo   that company's check-in URL and enrollment token and returns a single,
+echo   ready-to-run EXE.
 echo.
-echo   Output: %~dp0AssetlyAgent_Windows.exe
-echo.
-echo   This EXE is generic and carries no company configuration - do NOT hand it
-echo   to employees directly. Commit it to backend\static\AssetlyAgent_Windows.exe
-echo   (or point the WINDOWS_EXE_PATH environment variable at it) and let the
-echo   admin portal serve it: "Download for Windows" appends this company's
-echo   check-in URL and enrollment token to the end of the file, and hands back a
-echo   single, ready-to-run EXE.
-echo.
-echo   Rebuild and replace it whenever AssetlyAgent_Windows.ps1 changes.
+echo   Rebuild whenever AssetlyAgent_Windows.ps1 changes. Pushing that script to
+echo   main rebuilds and commits it automatically (.github/workflows).
 echo.
 pause
