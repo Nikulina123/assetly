@@ -327,3 +327,32 @@ async def test_company_detail_shows_download_buttons(admin, company):
     # across a line break in the template, so a longer substring would never match.
     assert b"not affect installers you downloaded earlier" in resp.content.lower()
     assert b"invalidat" not in resp.content.lower()
+
+
+async def test_diagnostics_reports_what_is_on_disk(admin, company):
+    """Guards the deploy check itself: it is only useful if it reports the
+    real size and hash of the artifacts the download routes read."""
+    import hashlib
+
+    from app.config import REPO_ROOT
+
+    _, email, password = admin
+    client = await _logged_in_client(email, password)
+    try:
+        resp = await client.get("/admin/diagnostics")
+    finally:
+        await client.aclose()
+    assert resp.status_code == 200
+    body = resp.json()
+
+    agent = REPO_ROOT / "inventory_agent.py"
+    assert body["agent_source"]["exists"] is True
+    assert body["agent_source"]["bytes"] == agent.stat().st_size
+    assert body["agent_source"]["sha256"] == hashlib.sha256(agent.read_bytes()).hexdigest()
+    assert body["macos_postinstall"]["exists"] is True
+
+
+async def test_diagnostics_requires_login():
+    async with await _client() as client:
+        resp = await client.get("/admin/diagnostics", follow_redirects=False)
+    assert resp.status_code == 303

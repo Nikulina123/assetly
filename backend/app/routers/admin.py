@@ -1,4 +1,5 @@
 import datetime
+import hashlib
 import json
 import re
 import uuid
@@ -444,6 +445,43 @@ def _render_installer_script(template_text: str, checkin_api_url: str, enrollmen
         text, count=1, flags=re.MULTILINE,
     )
     return text
+
+
+@router.get("/diagnostics")
+async def diagnostics(request: Request, admin_id: str = Depends(require_admin)):
+    """Reports what this instance actually has on disk.
+
+    Every file a download route reads is committed to the repository, which
+    makes it tempting to assume the deployed instance holds the same bytes.
+    That assumption is invisible from a checkout and has already been wrong
+    twice: once because vercel.json did not bundle the directory at all, and
+    once because a served executable did not match the committed one. Hashes
+    are included so a served artifact can be compared with `sha256sum` against
+    a local checkout without downloading anything.
+    """
+    def describe(path: Path) -> dict:
+        if not path.is_file():
+            return {"path": str(path), "exists": False}
+        data = path.read_bytes()
+        return {
+            "path": str(path),
+            "exists": True,
+            "bytes": len(data),
+            "sha256": hashlib.sha256(data).hexdigest(),
+        }
+
+    static_dir = WINDOWS_EXE_PATH.parent
+    return {
+        "repo_root": str(REPO_ROOT),
+        "checkin_api_url": CHECKIN_API_URL_FOR_DOWNLOAD,
+        "windows_exe": describe(WINDOWS_EXE_PATH),
+        "agent_source": describe(REPO_ROOT / "inventory_agent.py"),
+        "macos_postinstall": describe(REPO_ROOT / "AssetlyAgent_macOS_postinstall.sh"),
+        "linux_installer": describe(REPO_ROOT / "AssetlyAgent_Linux.sh"),
+        "windows_exe_dir": (
+            sorted(p.name for p in static_dir.iterdir()) if static_dir.is_dir() else None
+        ),
+    }
 
 
 # Delimiters the Windows agent scans for at the tail of its own executable.
