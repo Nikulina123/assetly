@@ -57,9 +57,19 @@ function Get-EmbeddedConfig {
         # arbitrary binary earlier in the image can never look like a marker.
         $tailLength = [Math]::Min(8192, $bytes.Length)
         $tail = [System.Text.Encoding]::UTF8.GetString($bytes, $bytes.Length - $tailLength, $tailLength)
-        $match = [regex]::Match($tail, 'ASSETLY-CONFIG-BEGIN:(.*?):ASSETLY-CONFIG-END', 'Singleline')
-        if (-not $match.Success) { return $null }
-        return $match.Groups[1].Value | ConvertFrom-Json
+
+        # Split so that the compiled .exe never contains the marker as one
+        # contiguous string. ps2exe embeds this script as plain text, so a
+        # whole literal here would put a decoy copy of the marker ~15 KB into
+        # the binary -- which the portal's embedder mistook for an
+        # already-present config block and truncated the executable at.
+        $begin = 'ASSETLY-CONFIG' + '-BEGIN:'
+        $end   = ':ASSETLY-CONFIG' + '-END'
+        # Not $matches: that is a PowerShell automatic variable.
+        $found = [regex]::Matches($tail, [regex]::Escape($begin) + '(.*?)' + [regex]::Escape($end), 'Singleline')
+        if ($found.Count -eq 0) { return $null }
+        # Last match wins: the live config is whatever sits closest to the end.
+        return $found[$found.Count - 1].Groups[1].Value | ConvertFrom-Json
     } catch {
         Write-Log "Failed to read the embedded config block from $ScriptPath : $_" "WARN"
         return $null

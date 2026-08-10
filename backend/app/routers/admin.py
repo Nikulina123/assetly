@@ -497,10 +497,19 @@ def embed_windows_config(exe_bytes: bytes, config: dict) -> bytes:
     has already been through a download once -- someone copying a configured
     exe back over the build artifact, say -- still comes out with exactly one
     config block, and the one that belongs to the company downloading it.
+
+    The search is anchored to the end of the file, and that is not a detail.
+    The agent has to contain this marker in order to look for it, and ps2exe
+    stores the script as plain text, so the compiled executable holds a copy of
+    the string ~15 KB in. Searching the whole file finds *that* copy and
+    truncates the binary mid-script, which shipped an unrunnable 16 KB exe to
+    every Windows download until it was caught. A block this function wrote is
+    always the last thing in the file; anything else is the agent's own source.
     """
-    already_embedded = exe_bytes.find(WINDOWS_CONFIG_BEGIN)
-    if already_embedded != -1:
-        exe_bytes = exe_bytes[:already_embedded]
+    if exe_bytes.endswith(WINDOWS_CONFIG_END):
+        previous_block = exe_bytes.rfind(WINDOWS_CONFIG_BEGIN)
+        if previous_block != -1:
+            exe_bytes = exe_bytes[:previous_block]
     return exe_bytes + WINDOWS_CONFIG_BEGIN + json.dumps(config).encode() + WINDOWS_CONFIG_END
 
 
