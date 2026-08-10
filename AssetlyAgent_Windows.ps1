@@ -322,7 +322,20 @@ function Submit-ToSheets {
                     -Headers @{ Authorization = "Bearer $DeviceCredential" } -TimeoutSec 15
         return ($resp.status -eq "ok")
     } catch {
-        Write-Log "HTTP submit failed: $_" "WARN"
+        $status = $null
+        if ($_.Exception.Response) { $status = [int]$_.Exception.Response.StatusCode }
+        # 409 means the server already holds this checkin_id: a retry of a
+        # submission that did land. Counting it as a failure would re-queue it
+        # forever. inventory_agent.py treats it the same way.
+        if ($status -eq 409) {
+            Write-Log "Server already recorded this checkin_id — treating as success."
+            return $true
+        }
+        # Every failure below is shown to the user as "offline", which is only
+        # true of network errors. A 4xx is the server refusing the submission
+        # and will refuse every retry identically, so log the status code --
+        # after the fact it is the only way to tell the two apart.
+        Write-Log "HTTP submit failed (status: $status): $_" "WARN"
         return $false
     }
 }
@@ -351,6 +364,13 @@ function Flush-Queue {
     foreach ($item in $items) {
         $tbl = @{}
         $item.PSObject.Properties | ForEach-Object { $tbl[$_.Name] = $_.Value }
+        # Entries queued by a build that predates checkin_id are rejected 422 on
+        # every attempt and would sit here forever. Give them one so they drain,
+        # and keep it on the item so a later retry reuses the same key.
+        if (-not $tbl.ContainsKey('checkin_id') -or -not $tbl['checkin_id']) {
+            $tbl['checkin_id'] = [guid]::NewGuid().ToString()
+            $item | Add-Member -NotePropertyName checkin_id -NotePropertyValue $tbl['checkin_id'] -Force
+        }
         if (Submit-ToSheets $tbl) {
             Write-Log "  Flushed: $($item.timestamp)"
         } else {
@@ -737,6 +757,10 @@ if (-not $res.submitted) {
 # ── Submitted ─────────────────────────────────────────────────────────────────
 $ud = $res.user_data
 $payload = @{
+    # Required by the API, and an idempotency key: generated once here and
+    # carried through into the offline queue, so retrying a submission that
+    # actually landed answers 409 "duplicate" instead of recording it twice.
+    checkin_id    = [guid]::NewGuid().ToString()
     timestamp     = $hw.timestamp
     first_name    = $ud.first_name
     last_name     = $ud.last_name
