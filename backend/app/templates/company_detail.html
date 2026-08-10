@@ -113,6 +113,8 @@
       Each download embeds a fresh enrollment token. Downloading one platform does
       not affect installers you downloaded earlier, so macOS, Windows and Linux can
       be rolled out together. Devices already reporting are unaffected.
+      macOS gets a double-clickable <code>.pkg</code> and Windows a single
+      <code>.exe</code> — both configured for this company, nothing to edit.
     </div>
     <div style="display:flex;gap:10px;flex-wrap:wrap">
       <form method="post" action="/admin/companies/{{ company['id'] }}/download/macos">

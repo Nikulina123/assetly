@@ -25,6 +25,14 @@ REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 WINDOWS_EXE_PATH = Path(
     os.environ.get("WINDOWS_EXE_PATH", str(REPO_ROOT / "backend" / "static" / "AssetlyAgent_Windows.exe"))
 )
+
+# Identity of the macOS installer package. The identifier is what macOS keys
+# receipts on, so changing it turns every future install into a second, parallel
+# product rather than an upgrade of this one -- treat it as permanent. The
+# version is what `pkgutil --pkg-info` reports, and should be bumped whenever
+# the installed agent changes.
+MACOS_PKG_IDENTIFIER = os.environ.get("MACOS_PKG_IDENTIFIER", "com.assetly.inventory-agent")
+MACOS_PKG_VERSION = os.environ.get("MACOS_PKG_VERSION", "2.0")
 PUBLIC_API_BASE_URL = os.environ.get("PUBLIC_API_BASE_URL", "https://api.example.com")
 CHECKIN_API_URL_FOR_DOWNLOAD = f"{PUBLIC_API_BASE_URL}/api/v1/inventory/checkin"
 

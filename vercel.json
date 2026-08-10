@@ -4,7 +4,7 @@
   "functions": {
     "api/index.py": {
       "maxDuration": 30,
-      "includeFiles": "{backend/app/templates/**,backend/app/static/**,AssetlyAgent_macOS.sh,AssetlyAgent_Linux.sh}"
+      "includeFiles": "{backend/app/templates/**,backend/app/static/**,AssetlyAgent_macOS_postinstall.sh,AssetlyAgent_Linux.sh,inventory_agent.py}"
     }
   },
   "rewrites": [

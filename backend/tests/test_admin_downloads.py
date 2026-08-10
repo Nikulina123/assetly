@@ -7,7 +7,17 @@ from httpx import ASGITransport, AsyncClient
 import app.db as db_module
 from app.main import app
 
+from .pkg_reader import read_flat_package
+
 pytestmark = pytest.mark.asyncio
+
+
+def _postinstall_of(pkg_bytes: bytes) -> str:
+    """The macOS download is a binary .pkg, so assertions about what the
+    installer will actually do have to go through the archive rather than the
+    response body. Unpacking it here also means every macOS download test
+    doubles as a check that the package we hand out is well-formed."""
+    return read_flat_package(pkg_bytes)["postinstall"].decode()
 
 
 @pytest_asyncio.fixture(autouse=True)
@@ -64,13 +74,19 @@ async def test_download_macos_embeds_a_fresh_enrollment_token(admin, company, db
     finally:
         await client.aclose()
     assert resp.status_code == 200
-    assert "attachment" in resp.headers.get("content-disposition", "")
-    body = resp.text
+    assert 'filename="AssetlyAgent_macOS.pkg"' in resp.headers.get("content-disposition", "")
+
+    scripts = read_flat_package(resp.content)
+    # The agent travels inside the package: an installed Mac must not have to
+    # reach GitHub to get it.
+    assert scripts["inventory_agent.py"].startswith(b"#!/usr/bin/env python3")
+
+    body = scripts["postinstall"].decode()
     assert "APPS_SCRIPT_URL" not in body
     assert 'CHECKIN_API_URL="https://api.example.com/api/v1/inventory/checkin"' in body
 
     match = re.search(r'ENROLLMENT_TOKEN="(as_enroll_[a-f0-9]+)"', body)
-    assert match is not None, "no ENROLLMENT_TOKEN found in downloaded script"
+    assert match is not None, "no ENROLLMENT_TOKEN found in the package's postinstall"
     token = match.group(1)
 
     # The embedded token actually works.
@@ -165,11 +181,21 @@ async def test_download_windows_without_exe_returns_clear_error(admin, company, 
     assert resp.status_code == 503
 
 
-async def test_download_windows_zips_placeholder_exe_and_config(admin, company, db_pool, tmp_path, monkeypatch):
-    import io
+def _embedded_windows_config(exe_bytes: bytes) -> dict:
     import json
-    import zipfile
 
+    match = re.search(
+        rb"ASSETLY-CONFIG-BEGIN:(.*?):ASSETLY-CONFIG-END", exe_bytes, re.DOTALL
+    )
+    assert match is not None, "no embedded config block found in the downloaded exe"
+    return json.loads(match.group(1))
+
+
+async def test_download_windows_serves_one_exe_with_config_embedded(
+    admin, company, db_pool, tmp_path, monkeypatch
+):
+    """A single file, not a zip of two: the config rides on the end of the PE
+    image so there is nothing for a deployer to separate it from."""
     import app.routers.admin as admin_module
     from app.auth import resolve_company_id
     from app.enrollment import enroll_device
@@ -190,15 +216,13 @@ async def test_download_windows_zips_placeholder_exe_and_config(admin, company, 
     finally:
         await client.aclose()
     assert resp.status_code == 200
-    assert "attachment" in resp.headers.get("content-disposition", "")
+    assert 'filename="AssetlyAgent_Windows.exe"' in resp.headers.get("content-disposition", "")
 
-    zf = zipfile.ZipFile(io.BytesIO(resp.content))
-    names = zf.namelist()
-    assert "AssetlyAgent_Windows.exe" in names
-    assert "config.json" in names
-    assert zf.read("AssetlyAgent_Windows.exe") == b"PLACEHOLDER-EXE-BYTES-NOT-A-REAL-BINARY"
+    # The executable itself is byte-for-byte the build artifact -- appending must
+    # not disturb the image, or Windows will not load it.
+    assert resp.content.startswith(b"PLACEHOLDER-EXE-BYTES-NOT-A-REAL-BINARY")
 
-    config = json.loads(zf.read("config.json"))
+    config = _embedded_windows_config(resp.content)
     token = config["enrollment_token"]
     assert token.startswith("as_enroll_")
     assert config["checkin_api_url"] == "https://api.example.com/api/v1/inventory/checkin"
@@ -265,7 +289,7 @@ async def test_downloading_two_platforms_leaves_both_installers_working(admin, c
     finally:
         await client.aclose()
 
-    mac_token = re.search(r'ENROLLMENT_TOKEN="([^"]+)"', mac.text).group(1)
+    mac_token = re.search(r'ENROLLMENT_TOKEN="([^"]+)"', _postinstall_of(mac.content)).group(1)
     lin_token = re.search(r'ENROLLMENT_TOKEN="([^"]+)"', lin.text).group(1)
     assert mac_token != lin_token
 

@@ -1,9 +1,7 @@
 import datetime
-import io
 import json
 import re
 import uuid
-import zipfile
 from pathlib import Path
 from urllib.parse import quote
 
@@ -13,7 +11,13 @@ from fastapi.templating import Jinja2Templates
 
 from app.admin_auth import resolve_admin
 from app.auth import generate_api_key, hash_api_key
-from app.config import CHECKIN_API_URL_FOR_DOWNLOAD, REPO_ROOT, WINDOWS_EXE_PATH
+from app.config import (
+    CHECKIN_API_URL_FOR_DOWNLOAD,
+    MACOS_PKG_IDENTIFIER,
+    MACOS_PKG_VERSION,
+    REPO_ROOT,
+    WINDOWS_EXE_PATH,
+)
 from app.db import get_pool
 from app.enrollment import (
     create_enrollment_token,
@@ -28,6 +32,7 @@ from app.field_config import (
     set_department_config,
     set_hardware_field_enabled,
 )
+from app.macos_pkg import build_flat_package
 
 router = APIRouter(prefix="/admin")
 templates = Jinja2Templates(directory=str(Path(__file__).resolve().parent.parent / "templates"))
@@ -441,6 +446,26 @@ def _render_installer_script(template_text: str, checkin_api_url: str, enrollmen
     return text
 
 
+# Delimiters the Windows agent scans for at the tail of its own executable.
+# Kept byte-for-byte in sync with Get-EmbeddedConfig in AssetlyAgent_Windows.ps1.
+WINDOWS_CONFIG_BEGIN = b"ASSETLY-CONFIG-BEGIN:"
+WINDOWS_CONFIG_END = b":ASSETLY-CONFIG-END"
+
+
+def embed_windows_config(exe_bytes: bytes, config: dict) -> bytes:
+    """Appends a config block to a PE image, replacing one already present.
+
+    Replacing rather than appending keeps this idempotent: an executable that
+    has already been through a download once -- someone copying a configured
+    exe back over the build artifact, say -- still comes out with exactly one
+    config block, and the one that belongs to the company downloading it.
+    """
+    already_embedded = exe_bytes.find(WINDOWS_CONFIG_BEGIN)
+    if already_embedded != -1:
+        exe_bytes = exe_bytes[:already_embedded]
+    return exe_bytes + WINDOWS_CONFIG_BEGIN + json.dumps(config).encode() + WINDOWS_CONFIG_END
+
+
 @router.post("/companies/{company_id}/download/macos")
 async def download_macos(
     request: Request,
@@ -448,16 +473,36 @@ async def download_macos(
     csrf_token: str = Form(...),
     admin_id: str = Depends(require_admin),
 ):
+    """Serves a double-clickable installer package rather than a shell script.
+
+    The agent's source travels inside the package, so an install never depends
+    on GitHub being reachable from the machine being set up. A missing agent
+    file surfaces here, as a failed download an admin can see, instead of
+    hundreds of installs each failing on their own later.
+    """
     _check_csrf(request, csrf_token)
     pool = await get_pool()
     await _get_active_company_or_404(pool, company_id)
-    template_text = _load_installer_template("AssetlyAgent_macOS.sh")
+    postinstall_template = _load_installer_template("AssetlyAgent_macOS_postinstall.sh")
+    agent_source = (REPO_ROOT / "inventory_agent.py").read_bytes()
     token = await create_enrollment_token(pool, str(company_id), label="macOS installer")
-    script_text = _render_installer_script(template_text, CHECKIN_API_URL_FOR_DOWNLOAD, token)
+    postinstall = _render_installer_script(
+        postinstall_template, CHECKIN_API_URL_FOR_DOWNLOAD, token
+    )
+    pkg_bytes = build_flat_package(
+        identifier=MACOS_PKG_IDENTIFIER,
+        version=MACOS_PKG_VERSION,
+        title="Assetly Inventory Agent",
+        scripts={
+            "postinstall": postinstall.encode(),
+            "inventory_agent.py": agent_source,
+        },
+        component_name="AssetlyAgent.pkg",
+    )
     return Response(
-        content=script_text,
-        media_type="text/x-shellscript",
-        headers={"Content-Disposition": 'attachment; filename="AssetlyAgent_macOS.sh"'},
+        content=pkg_bytes,
+        media_type="application/octet-stream",
+        headers={"Content-Disposition": 'attachment; filename="AssetlyAgent_macOS.pkg"'},
     )
 
 
@@ -488,6 +533,14 @@ async def download_windows(
     csrf_token: str = Form(...),
     admin_id: str = Depends(require_admin),
 ):
+    """Serves one self-contained .exe instead of an exe plus a config file.
+
+    A zip asked the person deploying it to keep two files together, which is
+    exactly the thing that goes wrong when an installer is emailed around or
+    copied to a share. The config is appended to the executable instead: a PE
+    image declares its own length, so Windows ignores trailing bytes, and the
+    agent reads them back out of its own file (see Get-CheckinConfig).
+    """
     _check_csrf(request, csrf_token)
     # Checked before any DB work / token minting below -- same validate-before-
     # mutate ordering as _load_installer_template for macos/linux, so a
@@ -498,22 +551,19 @@ async def download_windows(
             status_code=503,
             detail="Windows agent build not yet available. Contact support.",
         )
+    exe_bytes = WINDOWS_EXE_PATH.read_bytes()
     pool = await get_pool()
     await _get_active_company_or_404(pool, company_id)
     token = await create_enrollment_token(pool, str(company_id), label="Windows installer")
 
-    config_bytes = json.dumps({
-        "checkin_api_url": CHECKIN_API_URL_FOR_DOWNLOAD,
-        "enrollment_token": token,
-    }).encode()
-
-    buffer = io.BytesIO()
-    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as zf:
-        zf.write(WINDOWS_EXE_PATH, arcname="AssetlyAgent_Windows.exe")
-        zf.writestr("config.json", config_bytes)
-
     return Response(
-        content=buffer.getvalue(),
-        media_type="application/zip",
-        headers={"Content-Disposition": 'attachment; filename="AssetlyAgent_Windows.zip"'},
+        content=embed_windows_config(
+            exe_bytes,
+            {
+                "checkin_api_url": CHECKIN_API_URL_FOR_DOWNLOAD,
+                "enrollment_token": token,
+            },
+        ),
+        media_type="application/vnd.microsoft.portable-executable",
+        headers={"Content-Disposition": 'attachment; filename="AssetlyAgent_Windows.exe"'},
     )

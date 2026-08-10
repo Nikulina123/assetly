@@ -38,7 +38,13 @@ echo [3/3] Done!
 echo.
 echo   Output: %~dp0AssetlyAgent_Windows.exe
 echo.
-echo   Distribute AssetlyAgent_Windows.exe to employees.
-echo   The EXE contains no readable source code or passwords.
+echo   This EXE is generic and carries no company configuration - do NOT hand it
+echo   to employees directly. Commit it to backend\static\AssetlyAgent_Windows.exe
+echo   (or point the WINDOWS_EXE_PATH environment variable at it) and let the
+echo   admin portal serve it: "Download for Windows" appends this company's
+echo   check-in URL and enrollment token to the end of the file, and hands back a
+echo   single, ready-to-run EXE.
+echo.
+echo   Rebuild and replace it whenever AssetlyAgent_Windows.ps1 changes.
 echo.
 pause

@@ -45,27 +45,79 @@ function Write-Log {
     # Write-Host intentionally omitted — ps2exe -NoConsole turns every Write-Host into a popup dialog
 }
 
-# ── Load checkin_api_url / full config from config.json next to this script/exe ──
-# Returns the parsed config object too (not just checkin_api_url) so Resolve-Credential
-# below can read device_credential / enrollment_token / company_api_key and Save-Config
-# can write back to the same file.
+# ── Read the config block the admin portal appended to this executable ───────
+# Downloads are a single .exe with its config baked onto the end of the PE
+# image, so there is no second file to lose track of. Windows ignores bytes past
+# the length the PE headers declare, so the executable still runs normally.
+function Get-EmbeddedConfig {
+    if (-not $IsExe) { return $null }
+    try {
+        $bytes = [System.IO.File]::ReadAllBytes($ScriptPath)
+        # The block is at the very end; only the tail is decoded so that
+        # arbitrary binary earlier in the image can never look like a marker.
+        $tailLength = [Math]::Min(8192, $bytes.Length)
+        $tail = [System.Text.Encoding]::UTF8.GetString($bytes, $bytes.Length - $tailLength, $tailLength)
+        $match = [regex]::Match($tail, 'ASSETLY-CONFIG-BEGIN:(.*?):ASSETLY-CONFIG-END', 'Singleline')
+        if (-not $match.Success) { return $null }
+        return $match.Groups[1].Value | ConvertFrom-Json
+    } catch {
+        Write-Log "Failed to read the embedded config block from $ScriptPath : $_" "WARN"
+        return $null
+    }
+}
+
+# ── Resolve the running config ───────────────────────────────────────────────
+# Three sources, in decreasing order of how specific they are to this machine:
+#   1. %LOCALAPPDATA%\AssetlyInventory\config.json — written by this agent once
+#      it has enrolled, so it is the only one holding a device credential.
+#   2. the block embedded in the .exe — what a fresh download carries.
+#   3. config.json next to the script/exe — how agents deployed before
+#      single-file downloads were configured, and still how the plain .ps1 is.
+# Returns the parsed config object too (not just checkin_api_url) so
+# Resolve-Credential below can read device_credential / enrollment_token /
+# company_api_key. The write-back path is always the state directory: the
+# embedded block cannot be rewritten in place, and the directory the exe was
+# run from is often read-only (a network share, a USB stick, Downloads under a
+# managed policy).
 function Get-CheckinConfig {
     $ownDir = Split-Path -Path $ScriptPath -Parent
-    $configFile = "$ownDir\config.json"
-    $result = @{ CheckinApiUrl = "https://api.example.com/api/v1/inventory/checkin"; Cfg = $null; ConfigFile = $configFile }
-    if (-not (Test-Path $configFile)) {
-        Write-Log "No config.json found next to script/exe at $configFile — using placeholder checkin URL, all submissions will fail auth." "WARN"
+    $sideCarFile = "$ownDir\config.json"
+    $stateConfigFile = "$StateDir\config.json"
+    $result = @{ CheckinApiUrl = "https://api.example.com/api/v1/inventory/checkin"; Cfg = $null; ConfigFile = $stateConfigFile }
+
+    $cfg = $null
+    $source = $null
+    if (Test-Path $stateConfigFile) {
+        try {
+            $cfg = Get-Content $stateConfigFile -Raw | ConvertFrom-Json
+            $source = $stateConfigFile
+        } catch {
+            Write-Log "Failed to parse $stateConfigFile — falling back to the installer's config: $_" "WARN"
+        }
+    }
+    if (-not $cfg) {
+        $cfg = Get-EmbeddedConfig
+        if ($cfg) { $source = "the config embedded in $ScriptPath" }
+    }
+    if (-not $cfg -and (Test-Path $sideCarFile)) {
+        try {
+            $cfg = Get-Content $sideCarFile -Raw | ConvertFrom-Json
+            $source = $sideCarFile
+        } catch {
+            Write-Log "Failed to parse config.json at $sideCarFile — using placeholder values: $_" "WARN"
+        }
+    }
+
+    if (-not $cfg) {
+        Write-Log "No configuration found (no $stateConfigFile, no embedded config block, no $sideCarFile) — using placeholder checkin URL, all submissions will fail auth." "WARN"
         return $result
     }
-    try {
-        $cfg = Get-Content $configFile -Raw | ConvertFrom-Json
-        if ($cfg.checkin_api_url) { $result.CheckinApiUrl = $cfg.checkin_api_url }
-        $result.Cfg = $cfg
-        if (-not $cfg.checkin_api_url) {
-            Write-Log "config.json at $configFile is missing checkin_api_url — running with a placeholder value." "WARN"
-        }
-    } catch {
-        Write-Log "Failed to parse config.json at $configFile — using placeholder values: $_" "WARN"
+
+    $result.Cfg = $cfg
+    if ($cfg.checkin_api_url) {
+        $result.CheckinApiUrl = $cfg.checkin_api_url
+    } else {
+        Write-Log "Configuration from $source is missing checkin_api_url — running with a placeholder value." "WARN"
     }
     return $result
 }
