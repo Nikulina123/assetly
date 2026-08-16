@@ -11,6 +11,7 @@ from app.field_config import resolve_field_config
 from app.hardware import normalize_os
 from app.models import CheckinRequest, CheckinResponse
 from app.notifications import notify_auth_failure, notify_checkin_success
+from app.schedule import resolve_schedule
 
 router = APIRouter(tags=["checkin"])
 
@@ -50,7 +51,11 @@ async def get_current_company_id(
 @router.get("/api/v1/inventory/config")
 async def get_config(company_id: str = Depends(get_current_company_id)):
     pool = await get_pool()
-    return await resolve_field_config(pool, company_id)
+    config = await resolve_field_config(pool, company_id)
+    # Additive: agents that predate this key ignore it and keep their built-in
+    # interval, so this can ship ahead of any agent release.
+    config["schedule"] = await resolve_schedule(pool, company_id)
+    return config
 
 
 @router.post("/api/v1/inventory/checkin", response_model=CheckinResponse)

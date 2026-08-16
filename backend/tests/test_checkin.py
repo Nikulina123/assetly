@@ -333,3 +333,42 @@ async def test_allow_legacy_company_key_checkin_flag_gates_legacy_path(
         )
     assert legacy_resp.status_code == 401
     assert device_resp.status_code == 200
+
+
+async def test_config_includes_schedule_defaults(company):
+    """Additive to the existing user_fields/hardware_fields response -- an
+    agent that has not self-updated ignores the new key entirely."""
+    _, api_key = company
+    async with await _client() as client:
+        resp = await client.get(
+            "/api/v1/inventory/config",
+            headers={"Authorization": f"Bearer {api_key}"},
+        )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["schedule"] == {
+        "checkin_interval_seconds": 15552000,
+        "cancel_retry_seconds": 86400,
+    }
+    # The pre-existing keys must survive untouched.
+    assert "user_fields" in body
+    assert "hardware_fields" in body
+
+
+async def test_config_reflects_configured_schedule(db_pool, company):
+    import uuid as uuid_module
+
+    company_id, api_key = company
+    async with db_pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE companies SET checkin_interval_seconds = $2, "
+            "cancel_retry_seconds = $3 WHERE id = $1",
+            uuid_module.UUID(company_id), 43200, 3600,
+        )
+    async with await _client() as client:
+        resp = await client.get(
+            "/api/v1/inventory/config",
+            headers={"Authorization": f"Bearer {api_key}"},
+        )
+    assert resp.json()["schedule"]["checkin_interval_seconds"] == 43200
+    assert resp.json()["schedule"]["cancel_retry_seconds"] == 3600
