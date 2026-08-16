@@ -1,6 +1,8 @@
 """Pure-logic tests for app.schedule. No database, no fixtures -- the parsing
 and formatting helpers are deliberately free of I/O so they can be tested
 without a Postgres connection, the same split app/device_status.py uses."""
+import uuid
+
 import pytest
 
 from app.schedule import (
@@ -9,6 +11,7 @@ from app.schedule import (
     RETRY_PRESETS,
     format_interval,
     parse_interval,
+    resolve_schedule,
 )
 
 
@@ -81,3 +84,29 @@ def test_preset_labels_match_their_seconds():
 def test_presets_are_ordered_shortest_first():
     values = [seconds for _, seconds in PRESETS]
     assert values == sorted(values)
+
+
+@pytest.mark.asyncio
+async def test_resolve_schedule_returns_defaults_for_new_company(db_pool, company):
+    """A company nobody has configured must behave exactly as the fleet did
+    before this feature existed: 6 months, 24 h retry."""
+    company_id, _ = company
+    schedule = await resolve_schedule(db_pool, company_id)
+    assert schedule == {
+        "checkin_interval_seconds": 15552000,
+        "cancel_retry_seconds": 86400,
+    }
+
+
+@pytest.mark.asyncio
+async def test_resolve_schedule_reads_configured_values(db_pool, company):
+    company_id, _ = company
+    async with db_pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE companies SET checkin_interval_seconds = $2, "
+            "cancel_retry_seconds = $3 WHERE id = $1",
+            uuid.UUID(company_id), 43200, 14400,
+        )
+    schedule = await resolve_schedule(db_pool, company_id)
+    assert schedule["checkin_interval_seconds"] == 43200
+    assert schedule["cancel_retry_seconds"] == 14400

@@ -11,6 +11,9 @@ regression: the guard this replaces approximated months as (day_delta / 30.0)
 already, so calendar-exact recurrence was never a property of this system.
 """
 
+import asyncpg
+import uuid
+
 # The agent wakes hourly on every platform (see the installers), so an interval
 # shorter than that would be a setting the wake cadence cannot honour.
 MIN_INTERVAL_SECONDS = 3600
@@ -90,3 +93,31 @@ def format_interval(seconds: int) -> str:
             count = seconds // size
             return f"{count} {label}" if count == 1 else f"{count} {label}s"
     return f"{seconds} seconds"
+
+
+async def resolve_schedule(pool: asyncpg.Pool, company_id: str) -> dict:
+    """The agent-facing schedule for one company.
+
+    No set_config('app.company_id') here: unlike device_checkins/devices/
+    company_fields, the companies table has no row-level security policy (admin
+    routes read it directly via _get_company_or_404), so the explicit id filter
+    is the isolation.
+    """
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT checkin_interval_seconds, cancel_retry_seconds "
+            "FROM companies WHERE id = $1",
+            uuid.UUID(company_id),
+        )
+    if row is None:
+        # Only reachable if a company is deleted between authentication and
+        # this call. Falling back to the defaults keeps the agent running on
+        # the historical cadence rather than raising into a 500.
+        return {
+            "checkin_interval_seconds": 15552000,
+            "cancel_retry_seconds": 86400,
+        }
+    return {
+        "checkin_interval_seconds": row["checkin_interval_seconds"],
+        "cancel_retry_seconds": row["cancel_retry_seconds"],
+    }
