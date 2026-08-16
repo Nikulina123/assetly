@@ -1,0 +1,74 @@
+"""Pure-logic tests for app.schedule. No database, no fixtures -- the parsing
+and formatting helpers are deliberately free of I/O so they can be tested
+without a Postgres connection, the same split app/device_status.py uses."""
+import pytest
+
+from app.schedule import (
+    MIN_INTERVAL_SECONDS,
+    PRESETS,
+    RETRY_PRESETS,
+    format_interval,
+    parse_interval,
+)
+
+
+def test_parse_interval_converts_each_unit():
+    assert parse_interval(12, "hours") == 43200
+    assert parse_interval(2, "days") == 172800
+    assert parse_interval(2, "weeks") == 1209600
+    assert parse_interval(1, "months") == 2592000
+    assert parse_interval(1, "years") == 31536000
+
+
+def test_parse_interval_rejects_unknown_unit():
+    with pytest.raises(ValueError):
+        parse_interval(1, "fortnights")
+
+
+def test_parse_interval_rejects_non_positive_count():
+    with pytest.raises(ValueError):
+        parse_interval(0, "days")
+    with pytest.raises(ValueError):
+        parse_interval(-1, "days")
+
+
+def test_parse_interval_rejects_below_floor():
+    """The agent only wakes hourly, so anything shorter is a promise the wake
+    cadence cannot keep."""
+    with pytest.raises(ValueError):
+        parse_interval(30, "minutes")
+
+
+def test_format_interval_picks_largest_exact_unit():
+    assert format_interval(15552000) == "6 months"
+    assert format_interval(43200) == "12 hours"
+    assert format_interval(604800) == "1 week"
+    assert format_interval(31536000) == "1 year"
+
+
+def test_format_interval_singular_and_plural():
+    assert format_interval(3600) == "1 hour"
+    assert format_interval(7200) == "2 hours"
+
+
+def test_format_interval_falls_back_to_hours_for_inexact_values():
+    """A custom value that is not a whole number of any larger unit still has
+    to render as something an admin can read back."""
+    assert format_interval(5400) == "5400 seconds"
+
+
+def test_every_preset_is_at_or_above_the_floor():
+    for label, seconds in PRESETS + RETRY_PRESETS:
+        assert seconds >= MIN_INTERVAL_SECONDS, label
+
+
+def test_preset_labels_match_their_seconds():
+    """Guards against a typo'd table entry offering '2 weeks' that is secretly
+    one week -- the label is what the admin trusts."""
+    for label, seconds in PRESETS + RETRY_PRESETS:
+        assert format_interval(seconds) == label
+
+
+def test_presets_are_ordered_shortest_first():
+    values = [seconds for _, seconds in PRESETS]
+    assert values == sorted(values)
