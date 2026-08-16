@@ -16,6 +16,7 @@ from collections import Counter
 import asyncpg
 
 from app.device_status import derive_status
+from app.schedule import resolve_schedule
 
 _DEVICE_COLUMNS = (
     "serial_number, last_seen_at, hostname, brand, model, cpu, ram, storage, "
@@ -36,9 +37,9 @@ async def _fetch(pool: asyncpg.Pool, company_id: str, query: str, *args) -> list
             return await conn.fetch(query, uuid.UUID(company_id), *args)
 
 
-def _with_status(row: asyncpg.Record, now: datetime.datetime) -> dict:
+def _with_status(row: asyncpg.Record, now: datetime.datetime, interval_seconds: int) -> dict:
     device = dict(row)
-    device["status"] = derive_status(device["last_seen_at"], now)
+    device["status"] = derive_status(device["last_seen_at"], now, interval_seconds)
     return device
 
 
@@ -61,8 +62,12 @@ async def list_devices(pool: asyncpg.Pool, company_id: str) -> list[dict]:
         f"SELECT {_DEVICE_COLUMNS} FROM devices WHERE company_id = $1 "
         "ORDER BY last_seen_at DESC NULLS LAST",
     )
+    # Resolved once per call, not once per row. dashboard_stats needs no
+    # change of its own -- it counts the statuses this function already
+    # returned.
+    interval = (await resolve_schedule(pool, company_id))["checkin_interval_seconds"]
     now = _now()
-    return [_with_status(row, now) for row in rows]
+    return [_with_status(row, now, interval) for row in rows]
 
 
 async def get_device(pool: asyncpg.Pool, company_id: str, serial_number: str) -> dict | None:
@@ -71,7 +76,10 @@ async def get_device(pool: asyncpg.Pool, company_id: str, serial_number: str) ->
         f"SELECT {_DEVICE_COLUMNS} FROM devices WHERE company_id = $1 AND serial_number = $2",
         serial_number,
     )
-    return _with_status(rows[0], _now()) if rows else None
+    if not rows:
+        return None
+    interval = (await resolve_schedule(pool, company_id))["checkin_interval_seconds"]
+    return _with_status(rows[0], _now(), interval)
 
 
 async def get_checkin_history(pool: asyncpg.Pool, company_id: str, serial_number: str) -> list[dict]:

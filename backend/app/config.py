@@ -40,13 +40,17 @@ SENDLY_API_KEY = os.environ.get("SENDLY_API_KEY", "")
 NOTIFICATION_FROM_EMAIL = os.environ.get("NOTIFICATION_FROM_EMAIL", "noreply@assetly.ge")
 OPS_ALERT_EMAIL = os.environ.get("OPS_ALERT_EMAIL", "")
 
-# Device staleness bands, in days. These track inventory_agent.py's
-# INTERVAL_MONTHS = 6: should_show_form() refuses to display the check-in form
-# if the last run was under that, so a healthy device reports twice a year.
-# "online" therefore means "within its 6-month window", not "recently active".
-# If INTERVAL_MONTHS changes, change these with it.
-DEVICE_ONLINE_MAX_AGE_DAYS = int(os.environ.get("DEVICE_ONLINE_MAX_AGE_DAYS", "180"))
-DEVICE_PENDING_MAX_AGE_DAYS = int(os.environ.get("DEVICE_PENDING_MAX_AGE_DAYS", "270"))
+# Fallback interval for a company row that cannot be read, and the source of
+# the historic 180-day band. Per-company values live on companies.
+# checkin_interval_seconds (migration 010) and are what actually drive status.
+DEFAULT_CHECKIN_INTERVAL_SECONDS = int(
+    os.environ.get("DEFAULT_CHECKIN_INTERVAL_SECONDS", "15552000")
+)
+# How far past its own interval a device drifts before it stops being merely
+# "pending" and is written off. 1.5 reproduces the previous fixed 270-day
+# pending boundary at the default 180-day interval, which is what makes this
+# change behaviour-preserving for every existing company.
+PENDING_GRACE_MULTIPLIER = float(os.environ.get("PENDING_GRACE_MULTIPLIER", "1.5"))
 
 # Enrollment tokens are reusable within a window rather than single-use:
 # installers are bulk-pushed via GPO/MDM to whole sites, so a single-use token
