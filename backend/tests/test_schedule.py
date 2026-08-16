@@ -32,10 +32,19 @@ def test_parse_interval_rejects_non_positive_count():
         parse_interval(-1, "days")
 
 
-def test_parse_interval_rejects_below_floor():
+def test_parse_interval_rejects_below_floor(monkeypatch):
     """The agent only wakes hourly, so anything shorter is a promise the wake
-    cadence cannot keep."""
-    with pytest.raises(ValueError):
+    cadence cannot keep.
+
+    UNIT_SECONDS has no sub-hour unit today, so a sub-hour one is patched in
+    here. Without that, parse_interval(30, "minutes") raises on the
+    unknown-unit branch and the floor guard goes completely untested -- the
+    match= is what pins which branch actually fired.
+    """
+    import app.schedule as schedule_module
+
+    monkeypatch.setitem(schedule_module.UNIT_SECONDS, "minutes", 60)
+    with pytest.raises(ValueError, match="at least 1 hour"):
         parse_interval(30, "minutes")
 
 
