@@ -55,8 +55,13 @@ GITHUB_RAW_URL   = _cfg.get("github_raw_url", "")
 # which predates the `str | None` union syntax used elsewhere in this codebase.)
 _credential = None
 
-INTERVAL_MONTHS  = 6
-CANCEL_RETRY_H   = (2/60)   # TEST: 2 minutes — change back to 24 for production
+# Used only when the server cannot be reached and nothing is cached in
+# state.json. These reproduce the cadence this agent had when the interval was
+# hardcoded, so an agent that can never reach the server behaves as before.
+DEFAULT_SCHEDULE = {
+    "checkin_interval_seconds": 15552000,   # 180 days
+    "cancel_retry_seconds":     86400,      # 24 hours
+}
 
 # Only used when the server cannot be reached. The live list arrives per
 # company on the department entry of GET /api/v1/inventory/config, and an admin
@@ -154,25 +159,55 @@ def resolve_credential(cfg: dict) -> str:
     _credential = credential
     return credential
 
-# ─── 6-month + 24 h guard ─────────────────────────────────────────────────────
-def _months_diff(d1: datetime.datetime, d2: datetime.datetime) -> float:
-    return (d2.year - d1.year) * 12 + d2.month - d1.month + (d2.day - d1.day) / 30.0
+# ─── Due-check guard ──────────────────────────────────────────────────────────
+def _is_valid_schedule(schedule) -> bool:
+    """Guards against a malformed-but-200-OK schedule reaching the guard, where
+    a string or a negative would make the comparison below either raise or
+    silently never fire."""
+    if not isinstance(schedule, dict):
+        return False
+    interval = schedule.get("checkin_interval_seconds")
+    retry = schedule.get("cancel_retry_seconds")
+    for value in (interval, retry):
+        # bool is a subclass of int; True would otherwise pass as 1 second.
+        if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+            return False
+    return retry <= interval
 
-def should_show_form(state: dict) -> bool:
+
+def resolve_schedule_from(config: dict, state: dict) -> dict:
+    """Fresh server value, else the last known good one, else the built-in
+    default. The cache matters: a laptop offline for a week keeps its
+    configured cadence instead of silently reverting to 6 months."""
+    fresh = (config or {}).get("schedule")
+    if _is_valid_schedule(fresh):
+        return fresh
+    cached = (state or {}).get("schedule")
+    if _is_valid_schedule(cached):
+        log.warning("Using cached check-in schedule — server value missing or malformed.")
+        return cached
+    log.warning("No usable check-in schedule — falling back to built-in defaults.")
+    return dict(DEFAULT_SCHEDULE)
+
+
+def should_show_form(state: dict, schedule: dict) -> bool:
     now = datetime.datetime.now()
 
     last_run = state.get("last_run")
     if last_run:
-        diff = _months_diff(datetime.datetime.fromisoformat(last_run), now)
-        if diff < INTERVAL_MONTHS:
-            log.info(f"Last check-in {diff:.1f} months ago — not due yet. Exiting.")
+        elapsed = (now - datetime.datetime.fromisoformat(last_run)).total_seconds()
+        # A negative elapsed means the clock moved backwards since the last
+        # run. Treating that as due is the safe direction -- the alternative
+        # parks the machine until its clock catches up, silently.
+        if 0 <= elapsed < schedule["checkin_interval_seconds"]:
+            log.info(f"Last check-in {elapsed/3600:.1f} h ago — not due yet. Exiting.")
             return False
 
     cancelled_at = state.get("cancelled_at")
     if cancelled_at:
-        diff_h = (now - datetime.datetime.fromisoformat(cancelled_at)).total_seconds() / 3600
-        if diff_h < CANCEL_RETRY_H:
-            log.info(f"Cancelled {diff_h:.1f} h ago — retry window not reached. Exiting.")
+        elapsed = (now - datetime.datetime.fromisoformat(cancelled_at)).total_seconds()
+        if 0 <= elapsed < schedule["cancel_retry_seconds"]:
+            log.info(f"Cancelled {elapsed/3600:.1f} h ago — retry window not reached. Exiting.")
             return False
 
     return True
@@ -383,10 +418,14 @@ def _is_valid_field_config(config) -> bool:
     return all(isinstance(key, str) for key in hardware_fields)
 
 
-def fetch_field_config() -> dict:
-    """Fetches this company's field config; falls back to DEFAULT_FIELD_CONFIG
-    on any failure (network/auth/parse/malformed-shape) so a config-fetch
-    problem never blocks check-in entirely."""
+def fetch_config() -> dict:
+    """Fetches this company's field config AND schedule in one call; falls back
+    to DEFAULT_FIELD_CONFIG on any failure (network/auth/parse/malformed-shape)
+    so a config-fetch problem never blocks check-in entirely.
+
+    Called before the due-check guard, so its response is what tells the guard
+    which interval to use -- and the same response is reused to build the form,
+    so this is one call, not two."""
     try:
         req = urllib.request.Request(
             CONFIG_API_URL,
@@ -633,7 +672,7 @@ class InventoryForm(tk.Tk):
 def main():
     parser = argparse.ArgumentParser(description="Assetly Inventory Agent")
     parser.add_argument("--force", action="store_true",
-                        help="Bypass the 6-month interval guard and show the form immediately.")
+                        help="Bypass the check-in interval guard and show the form immediately.")
     args = parser.parse_args()
 
     log.info("=== Assetly Inventory Agent v2.0 started ===")
@@ -655,20 +694,28 @@ def main():
     # 2. Flush any offline-queued submissions
     flush_queue()
 
-    # 3. Guard: exit early if not due (skipped when --force is passed)
+    # 3. Fetch this company's config (fields + schedule) BEFORE the guard --
+    #    the guard needs the server's interval to decide. Falls back to
+    #    defaults on failure. One call: the same response builds the form below.
     state = load_state()
-    if not args.force and not should_show_form(state):
+    config = fetch_config()
+    schedule = resolve_schedule_from(config, state)
+    if schedule != state.get("schedule"):
+        state["schedule"] = schedule
+        save_state(state)
+
+    # 4. Guard: exit early if not due (skipped when --force is passed)
+    if not args.force and not should_show_form(state, schedule):
         sys.exit(0)
 
-    # 4. Collect hardware
+    # 5. Collect hardware
     log.info("Collecting hardware information…")
     hw = collect_hardware()
     log.info(json.dumps(hw, indent=2))
 
-    # 4b. Fetch per-company field config (falls back to defaults on failure)
-    field_config = fetch_field_config()
+    field_config = config
 
-    # 5. Show GUI
+    # 6. Show GUI
     app = InventoryForm(hw, field_config)
     app.mainloop()
 
@@ -676,7 +723,7 @@ def main():
     if not app.submitted:
         state["cancelled_at"] = datetime.datetime.now().isoformat()
         save_state(state)
-        log.warning(f"Form cancelled. Will retry in {CANCEL_RETRY_H}h.")
+        log.warning(f"Form cancelled. Will retry in {schedule['cancel_retry_seconds']/3600:.0f} h.")
         sys.exit(0)
 
     # ── Submitted ─────────────────────────────────────────────────────────────
