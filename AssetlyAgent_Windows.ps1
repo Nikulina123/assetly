@@ -934,8 +934,8 @@ function Register-StartupTask {
 
     # Hourly trigger so the 24-h cancel retry fires even when the user stays logged in
     $triggerHourly = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(2) `
-        -RepetitionInterval (New-TimeSpan -Minutes 2) `
-        -RepetitionDuration (New-TimeSpan -Days 9999)   # TEST: 2 min — change back to Hours 1 for production
+        -RepetitionInterval (New-TimeSpan -Hours 1) `
+        -RepetitionDuration (New-TimeSpan -Days 9999)
 
     $settings = New-ScheduledTaskSettingsSet `
         -ExecutionTimeLimit (New-TimeSpan -Hours 1) `
@@ -953,7 +953,7 @@ function Register-StartupTask {
     Register-ScheduledTask -TaskName $TaskName -Action $action `
         -Trigger @($triggerLogon, $triggerHourly) `
         -Settings $settings -Principal $principal `
-        -Description "Assetly Inventory Agent — checks in every 6 months" | Out-Null
+        -Description "Assetly Inventory Agent — checks in on the schedule configured in the portal" | Out-Null
 
     Write-Log "Task Scheduler task '$TaskName' registered."
 }

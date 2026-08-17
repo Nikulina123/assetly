@@ -210,9 +210,12 @@ cat > "$PLIST_FILE" <<PLIST
     <key>RunAtLoad</key>
     <true/>
 
-    <!-- TEST: 120 s — change back to 3600 for production -->
+    <!-- Hourly. This is the wake cadence, not the prompt cadence: the agent
+         exits immediately unless the company's configured interval has
+         elapsed. It also sets the floor on how short that interval can
+         usefully be (see MIN_INTERVAL_SECONDS in backend/app/schedule.py). -->
     <key>StartInterval</key>
-    <integer>120</integer>
+    <integer>3600</integer>
 
     <key>StandardOutPath</key>
     <string>/tmp/assetly-agent.out.log</string>

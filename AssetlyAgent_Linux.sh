@@ -194,14 +194,18 @@ StandardError=journal
 WantedBy=graphical-session.target
 EOF
 
-# Timer: fires at login + re-checks once daily (agent exits immediately if < 6 months)
+# Timer: fires at login + re-checks hourly. The agent exits immediately unless
+# the company's configured interval has elapsed, so this is the wake cadence,
+# not the prompt cadence. Hourly (not daily) because an admin can set an
+# interval as short as 12 h in the portal, and a daily timer would silently
+# stretch that to 24 h. Matches macOS StartInterval and the Windows task.
 cat > "$UNIT_DIR/${SERVICE_NAME}.timer" <<EOF
 [Unit]
-Description=Assetly Inventory Agent – 6-month check-in timer
+Description=Assetly Inventory Agent – check-in timer
 
 [Timer]
 OnBootSec=2min
-OnUnitActiveSec=1d
+OnUnitActiveSec=1h
 Persistent=true
 
 [Install]
@@ -228,7 +232,7 @@ echo ""
 echo "✔  Installation complete."
 echo ""
 echo "   The agent runs at every login via systemd timer."
-echo "   It shows the form only when 6 months have passed since the last check-in."
+echo "   It shows the form only when the interval configured in the portal has passed."
 echo ""
 echo "   Useful commands:"
 echo "   systemctl --user status  ${SERVICE_NAME}.timer    # check timer status"
