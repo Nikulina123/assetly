@@ -13,6 +13,7 @@ from app.db import get_pool
 from app.devices import dashboard_stats, get_checkin_history, get_device, list_devices
 from app.enrollment import list_device_credentials
 from app.routers.admin import _all_companies, _get_company_or_404, _new_csrf_token, require_admin
+from app.schedule import format_interval, resolve_schedule
 
 router = APIRouter(prefix="/admin/companies")
 templates = Jinja2Templates(
@@ -41,8 +42,15 @@ async def dashboard(
     pool, context = await _shell(request, company_id)
     context["stats"] = await dashboard_stats(pool, str(company_id))
     context["devices"] = await list_devices(pool, str(company_id))
+    # The "Online" band is proportional to this company's interval (see
+    # device_status.py), so the stat card's caption has to name that interval
+    # rather than the 6 months that used to be hardcoded fleet-wide.
+    schedule = await resolve_schedule(pool, str(company_id))
+    context["checkin_interval_label"] = format_interval(
+        schedule["checkin_interval_seconds"]
+    )
     context["nav_active"] = "dashboard"
-    return templates.TemplateResponse("portal_dashboard.html", context)
+    return templates.TemplateResponse(request, "portal_dashboard.html", context)
 
 
 @router.get("/{company_id}/computers")
@@ -52,7 +60,7 @@ async def computers(
     pool, context = await _shell(request, company_id)
     context["devices"] = await list_devices(pool, str(company_id))
     context["nav_active"] = "computers"
-    return templates.TemplateResponse("portal_computers.html", context)
+    return templates.TemplateResponse(request, "portal_computers.html", context)
 
 
 @router.get("/{company_id}/computers/{serial_number}")
@@ -76,4 +84,4 @@ async def device_detail(
         (c for c in credentials if c["serial_number"] == serial_number), None
     )
     context["nav_active"] = "computers"
-    return templates.TemplateResponse("portal_device.html", context)
+    return templates.TemplateResponse(request, "portal_device.html", context)

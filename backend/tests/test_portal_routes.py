@@ -77,6 +77,32 @@ async def test_dashboard_renders_for_admin(db_pool, company, admin):
     assert "Total Devices" in resp.text
 
 
+async def test_dashboard_online_label_reflects_the_configured_interval(
+    db_pool, company, admin
+):
+    """The "Online" count is proportional to this company's interval (see
+    device_status.py), so its caption must name that interval. It read
+    "checked in within 6 months" for every company, which is actively wrong
+    for anyone who changed the setting -- a 24-hour count under a 6-month label.
+    """
+    company_id, api_key = company
+    _, email, password = admin
+    async with db_pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE companies SET checkin_interval_seconds = $2, "
+            "cancel_retry_seconds = $3 WHERE id = $1",
+            uuid.UUID(company_id), 604800, 3600,   # 1 week
+        )
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test", follow_redirects=True) as client:
+        await _submit(client, api_key, "SN-001", "host-1")
+        await _login(client, email, password)
+        resp = await client.get(f"/admin/companies/{company_id}/dashboard")
+    assert resp.status_code == 200
+    assert "checked in within 1 week" in resp.text
+    assert "6 months" not in resp.text
+
+
 async def test_computers_page_does_not_leak_other_company_devices(db_pool, company, admin):
     """RLS must scope every portal read to the company in the URL. This is the
     first place a path segment picks a tenant, so a regression here is a

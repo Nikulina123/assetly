@@ -35,8 +35,10 @@ from app.field_config import (
 )
 from app.macos_pkg import build_flat_package
 from app.schedule import (
+    MAX_INTERVAL_SECONDS,
     PRESETS,
     RETRY_PRESETS,
+    UNIT_SECONDS,
     format_interval,
     parse_interval,
     resolve_schedule,
@@ -78,7 +80,7 @@ async def _all_companies(pool):
 
 @router.get("/login")
 async def login_form(request: Request):
-    return templates.TemplateResponse("login.html", {"request": request})
+    return templates.TemplateResponse(request, "login.html")
 
 
 @router.post("/login")
@@ -87,7 +89,7 @@ async def login_submit(request: Request, email: str = Form(...), password: str =
     admin_id = await resolve_admin(pool, email, password)
     if admin_id is None:
         return templates.TemplateResponse(
-            "login.html", {"request": request, "error": "Invalid email or password"}
+            request, "login.html", {"error": "Invalid email or password"}
         )
     request.session["admin_id"] = admin_id
     return RedirectResponse("/admin/companies", status_code=303)
@@ -104,8 +106,9 @@ async def companies_list(request: Request, admin_id: str = Depends(require_admin
     pool = await get_pool()
     companies = await _all_companies(pool)
     return templates.TemplateResponse(
+        request,
         "companies_list.html",
-        {"request": request, "companies": companies, "csrf_token": _new_csrf_token(request)},
+        {"companies": companies, "csrf_token": _new_csrf_token(request)},
     )
 
 
@@ -131,9 +134,9 @@ async def companies_create(
 
     companies = await _all_companies(pool)
     return templates.TemplateResponse(
+        request,
         "companies_list.html",
         {
-            "request": request,
             "companies": companies,
             "csrf_token": _new_csrf_token(request),
             "new_api_key": api_key,
@@ -172,13 +175,55 @@ async def _tokens_for_display(pool, company_id: str) -> list[dict]:
     return [_with_token_status(t, now) for t in tokens]
 
 
+def _decompose_interval(seconds: int) -> tuple[str, str]:
+    """Stored seconds -> the (count, unit) that would produce them.
+
+    Largest unit first, so this reports the form an admin would have typed
+    ("5 days", not "120 hours"). The order is derived from UNIT_SECONDS on each
+    call rather than snapshotted at import, so it cannot go stale against the
+    table it is supposed to mirror -- five items, so the sort costs nothing.
+
+    Returns the count as a string because it is rendered straight into the
+    number input's value=, and "" is how that input spells "empty".
+
+    Nothing divides exactly only if the value did not come through
+    parse_interval at all (a direct DB edit such as 3700). Rather than round --
+    which would silently rewrite the admin's interval the next time they saved
+    anything on this form -- the count comes back empty, so the box shows no
+    number and a save has to state an interval explicitly. The summary banner
+    above the form still reports the value actually in force.
+    """
+    for unit, size in sorted(UNIT_SECONDS.items(), key=lambda kv: -kv[1]):
+        if seconds % size == 0:
+            return str(seconds // size), unit
+    return "", "hours"
+
+
 async def _schedule_context(pool, company_id: str) -> dict:
     """Everything company_detail.html needs to render the schedule card."""
     schedule = await resolve_schedule(pool, str(company_id))
+    interval = schedule["checkin_interval_seconds"]
+    # Whether the stored interval is one of the dropdown's presets decides which
+    # option carries `selected`. Without this the template emitted no selected
+    # option at all for a custom interval, and the browser fell back to the
+    # first one -- so the form silently offered to overwrite a custom interval
+    # with 12 hours.
+    interval_is_custom = interval not in [s for _, s in PRESETS]
+    custom_count, custom_unit = (
+        _decompose_interval(interval) if interval_is_custom else ("", "hours")
+    )
     return {
         "schedule": schedule,
         "presets": PRESETS,
         "retry_presets": RETRY_PRESETS,
+        "interval_is_custom": interval_is_custom,
+        "custom_count": custom_count,
+        "custom_unit": custom_unit,
+        # Client-side courtesy only; parse_interval is what actually enforces
+        # the cap. The count is in whichever unit is selected, so the only
+        # bound valid for every unit is the one for the smallest (hours) --
+        # deliberately loose, and never the thing a rejection depends on.
+        "custom_count_max": MAX_INTERVAL_SECONDS // UNIT_SECONDS["hours"],
         "schedule_summary": (
             f"Employees are prompted every "
             f"{format_interval(schedule['checkin_interval_seconds'])}; "
@@ -338,8 +383,13 @@ async def update_schedule(
             interval = int(interval_preset)
         validate_schedule(interval, cancel_retry_seconds)
     except ValueError as exc:
-        # Re-render with the error rather than redirecting, so the admin keeps
-        # their input -- the same pattern add_custom_field_route uses.
+        # Re-render with the error rather than redirecting, so the message is
+        # shown in place -- the same pattern add_custom_field_route uses. Note
+        # the form comes back populated from the STORED schedule, not from the
+        # rejected submission: _schedule_context re-reads the database. That is
+        # the deliberate choice -- a rejected value is by definition one that
+        # cannot be stored, and redisplaying it invites a second save of the
+        # same bad input, while the stored values are what is still in force.
         company = await _get_company_or_404(pool, company_id)
         companies = await _all_companies(pool)
         field_settings = await resolve_field_settings_for_admin(pool, str(company_id))
