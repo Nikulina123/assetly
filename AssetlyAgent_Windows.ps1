@@ -229,7 +229,7 @@ function Resolve-Credential($cfgObj, $path) {
 
 # ════════════════════════════════════════════════════════════════════════════════
 #  FIELD CONFIGURATION
-#  Mirrors inventory_agent.py's fetch_field_config()/DEFAULT_FIELD_CONFIG. This
+#  Mirrors inventory_agent.py's fetch_config()/DEFAULT_FIELD_CONFIG. This
 #  is what makes a portal change reach this agent: the form below is built from
 #  whatever this returns, so enabling, disabling, adding or removing a field in
 #  the portal takes effect on the next run without recompiling anything.
@@ -313,6 +313,24 @@ function Resolve-ScheduleFrom($Config, $State) {
     }
     Write-Log "No usable check-in schedule — falling back to built-in defaults." "WARN"
     return $DefaultSchedule
+}
+
+function Format-Duration([long]$Seconds) {
+    <#  Human-readable duration for the cancel dialog. The agents cannot import
+        backend/app/schedule.py's format_interval, so this is a deliberate small
+        duplicate -- it mirrors _humanize_seconds() in inventory_agent.py rule
+        for rule (whole days when the value divides exactly into days, else
+        hours rounded to at least 1). Keep the two in agreement if either
+        changes. #>
+    if ($Seconds -ge 86400 -and ($Seconds % 86400) -eq 0) {
+        $count = [long]($Seconds / 86400)
+        if ($count -eq 1) { return "$count day" }
+        return "$count days"
+    }
+    $count = [long][Math]::Round($Seconds / 3600)
+    if ($count -lt 1) { $count = 1 }
+    if ($count -eq 1) { return "$count hour" }
+    return "$count hours"
 }
 
 # ════════════════════════════════════════════════════════════════════════════════
@@ -633,13 +651,19 @@ public class WinForeground {
 "@
 
 function Show-InventoryForm {
-    param([hashtable]$HW, $FieldConfig)
+    param([hashtable]$HW, $FieldConfig, $Schedule)
 
     # Everything below is driven by $FieldConfig rather than hardcoded, so the
     # portal's "Check-in fields" settings are what an employee actually sees.
     $userFields  = @($FieldConfig.user_fields)
     $enabledHw   = @($FieldConfig.hardware_fields)
     $builtInKeys = @('first_name','last_name','email','department')
+
+    # Resolved once here rather than inside the two cancel handlers: they are
+    # script blocks that close over this scope, so they see it when they fire.
+    # This is the only thing an employee ever reads about the schedule, so it
+    # has to name this company's actual retry rather than a fixed 24 hours.
+    $retryText = Format-Duration $Schedule.cancel_retry_seconds
 
     # custom_fields is kept separate from user_data because the API takes the
     # built-ins as top-level keys and everything else nested under
@@ -873,7 +897,7 @@ function Show-InventoryForm {
 
     $btnCancel.Add_Click({
         $ans = [System.Windows.Forms.MessageBox]::Show(
-            "Are you sure you want to skip?`n`n• You'll be reminded again in 24 hours",
+            "Are you sure you want to skip?`n`n• You'll be reminded again in $retryText",
             "Cancel check-in",
             [System.Windows.Forms.MessageBoxButtons]::YesNo,
             [System.Windows.Forms.MessageBoxIcon]::Warning
@@ -887,7 +911,7 @@ function Show-InventoryForm {
         if ($result.submitted -or $result.closing) { return }
         # X button — treat same as Cancel
         $ans = [System.Windows.Forms.MessageBox]::Show(
-            "Are you sure you want to skip?`n`n• You'll be reminded again in 24 hours",
+            "Are you sure you want to skip?`n`n• You'll be reminded again in $retryText",
             "Cancel check-in",
             [System.Windows.Forms.MessageBoxButtons]::YesNo,
             [System.Windows.Forms.MessageBoxIcon]::Warning
@@ -1005,7 +1029,7 @@ Write-Log "HW: $($hw | ConvertTo-Json -Compress)"
 $enabledHwFields = @($fieldConfig.hardware_fields)
 
 # Show GUI
-$res = Show-InventoryForm -HW $hw -FieldConfig $fieldConfig
+$res = Show-InventoryForm -HW $hw -FieldConfig $fieldConfig -Schedule $schedule
 
 # ── Cancelled ─────────────────────────────────────────────────────────────────
 if (-not $res.submitted) {

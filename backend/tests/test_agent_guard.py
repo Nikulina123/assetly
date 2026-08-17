@@ -117,6 +117,28 @@ def test_non_positive_schedule_values_are_rejected(agent):
         assert agent.resolve_schedule_from(bad, {}) == agent.DEFAULT_SCHEDULE, (interval, retry)
 
 
+@pytest.mark.parametrize(
+    "seconds,expected",
+    [
+        (3600, "1 hour"),
+        (14400, "4 hours"),
+        (43200, "12 hours"),
+        (86400, "1 day"),
+        (259200, "3 days"),
+        (604800, "7 days"),
+        # Not a whole number of days -> hours, rounded, never below 1.
+        (90000, "25 hours"),
+        (5400, "2 hours"),
+        (60, "1 hour"),
+    ],
+)
+def test_humanize_seconds(agent, seconds, expected):
+    """Pins the wording the cancel dialog shows. Format-Duration in
+    AssetlyAgent_Windows.ps1 implements the same two rules; nothing in this
+    suite can execute the PowerShell, so this is the spec both sides mirror."""
+    assert agent._humanize_seconds(seconds) == expected
+
+
 SERVER_CONFIG = {
     "user_fields": [],
     "hardware_fields": [],
@@ -174,8 +196,9 @@ def test_force_reaches_the_form_with_the_same_fetched_config(agent, monkeypatch)
     seen = {}
 
     class FakeForm:
-        def __init__(self, hw, field_config):
+        def __init__(self, hw, field_config, schedule):
             seen["config"] = field_config
+            seen["schedule"] = schedule
             self.submitted = False
 
         def mainloop(self):
@@ -190,4 +213,7 @@ def test_force_reaches_the_form_with_the_same_fetched_config(agent, monkeypatch)
     assert exc.value.code == 0
     assert calls == ["fetch"]
     assert seen["config"] is SERVER_CONFIG
+    # The form is also handed the resolved schedule, which is what lets the
+    # cancel dialog name this company's retry instead of a hardcoded 24 hours.
+    assert seen["schedule"] == SERVER_CONFIG["schedule"]
     assert "cancelled_at" in state

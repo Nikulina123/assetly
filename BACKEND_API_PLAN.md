@@ -135,7 +135,7 @@ POST /api/v1/inventory/checkin
 | Filter | Use case |
 |---|---|
 | `received_at` range | Devices that checked in within a period |
-| `received_at` — absence | Devices that have NOT checked in for >6 months (overdue) |
+| `received_at` — absence | Devices that have NOT checked in within the company's configured check-in interval (overdue) |
 | `submission_type = queued` | Devices that were offline during check-in |
 
 ### By spec / compliance

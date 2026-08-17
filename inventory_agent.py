@@ -190,6 +190,17 @@ def resolve_schedule_from(config: dict, state: dict) -> dict:
     return dict(DEFAULT_SCHEDULE)
 
 
+def _humanize_seconds(seconds: int) -> str:
+    """Human-readable duration for the cancel dialog. The agents cannot import
+    backend/app/schedule.py's format_interval, so this is a deliberate small
+    duplicate -- keep the two in agreement if either changes."""
+    if seconds >= 86400 and seconds % 86400 == 0:
+        count = seconds // 86400
+        return f"{count} day" if count == 1 else f"{count} days"
+    count = max(1, round(seconds / 3600))
+    return f"{count} hour" if count == 1 else f"{count} hours"
+
+
 def should_show_form(state: dict, schedule: dict) -> bool:
     now = datetime.datetime.now()
 
@@ -468,10 +479,13 @@ def submit_to_sheets(user_data: dict, hw: dict, enabled_hardware_fields: list) -
 
 # ─── GUI ──────────────────────────────────────────────────────────────────────
 class InventoryForm(tk.Tk):
-    def __init__(self, hw: dict, field_config: dict):
+    def __init__(self, hw: dict, field_config: dict, schedule: dict):
         super().__init__()
         self.hw           = hw
         self.field_config = field_config
+        # Only used for the cancel dialog's "reminded again in …" line, which
+        # has to name this company's actual retry rather than a fixed 24 h.
+        self.schedule     = schedule
         self.submitted    = False
         self.user_data: dict = {}
         self._field_widgets: dict = {}   # non-department field key -> tk.Entry
@@ -657,11 +671,12 @@ class InventoryForm(tk.Tk):
         self.destroy()
 
     def _on_cancel(self):
+        retry = _humanize_seconds(self.schedule["cancel_retry_seconds"])
         if messagebox.askyesno(
             "Cancel check-in",
             "Are you sure you want to skip?\n\n"
             "• IT will be notified\n"
-            "• You'll be reminded again in 24 hours",
+            f"• You'll be reminded again in {retry}",
             parent=self,
         ):
             self.submitted = False
@@ -716,7 +731,7 @@ def main():
     field_config = config
 
     # 6. Show GUI
-    app = InventoryForm(hw, field_config)
+    app = InventoryForm(hw, field_config, schedule)
     app.mainloop()
 
     # ── Cancelled ─────────────────────────────────────────────────────────────
