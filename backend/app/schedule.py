@@ -123,3 +123,32 @@ async def resolve_schedule(pool: asyncpg.Pool, company_id: str) -> dict:
         "checkin_interval_seconds": row["checkin_interval_seconds"],
         "cancel_retry_seconds": row["cancel_retry_seconds"],
     }
+
+
+async def set_schedule(
+    pool: asyncpg.Pool,
+    company_id: str,
+    checkin_interval_seconds: int,
+    cancel_retry_seconds: int,
+) -> None:
+    """Writes both values together. Callers must have validated them via
+    validate_schedule first -- the DB CHECK constraint is a backstop against
+    direct edits, not the user-facing error path."""
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE companies SET checkin_interval_seconds = $2, "
+            "cancel_retry_seconds = $3 WHERE id = $1",
+            uuid.UUID(company_id), checkin_interval_seconds, cancel_retry_seconds,
+        )
+
+
+def validate_schedule(checkin_interval_seconds: int, cancel_retry_seconds: int) -> None:
+    """Raises ValueError with a message fit to show an admin."""
+    if checkin_interval_seconds < MIN_INTERVAL_SECONDS:
+        raise ValueError("Interval must be at least 1 hour")
+    if cancel_retry_seconds < MIN_INTERVAL_SECONDS:
+        raise ValueError("Cancel retry must be at least 1 hour")
+    if cancel_retry_seconds > checkin_interval_seconds:
+        raise ValueError(
+            "Cancel retry cannot be longer than the check-in interval"
+        )

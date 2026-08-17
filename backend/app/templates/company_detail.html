@@ -55,6 +55,48 @@
 </div>
 
 <div class="card flush">
+  <div class="card-header"><div class="card-title">{{ icons.icon('settings', 14, extra_class='spec-row-icon') }}&nbsp;Check-in schedule</div></div>
+  <div class="card-body">
+    {% if schedule_error %}
+    <div class="banner banner-error">{{ schedule_error }}</div>
+    {% endif %}
+    <div class="banner">{{ schedule_summary }}</div>
+    <form method="post" action="/admin/companies/{{ company['id'] }}/schedule">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+
+      <label class="muted" style="display:block;margin:12px 0 4px">Prompt employees every</label>
+      <select class="input" name="interval_preset" style="width:100%">
+        {% for label, seconds in presets %}
+        <option value="{{ seconds }}" {% if seconds == schedule['checkin_interval_seconds'] %}selected{% endif %}>{{ label }}</option>
+        {% endfor %}
+        <option value="custom">Custom…</option>
+      </select>
+
+      <label class="muted" style="display:block;margin:12px 0 4px">Custom interval &mdash; used only when &ldquo;Custom…&rdquo; is selected above</label>
+      <div style="display:flex;gap:10px;flex-wrap:wrap">
+        <input class="input" type="number" name="custom_count" min="1" placeholder="e.g. 5" style="flex:1;min-width:120px">
+        <select class="input" name="custom_unit" style="flex:1;min-width:140px">
+          <option value="hours">hours</option>
+          <option value="days">days</option>
+          <option value="weeks">weeks</option>
+          <option value="months">months</option>
+          <option value="years">years</option>
+        </select>
+      </div>
+
+      <label class="muted" style="display:block;margin:12px 0 4px">If they cancel, ask again after</label>
+      <select class="input" name="cancel_retry_seconds" style="width:100%">
+        {% for label, seconds in retry_presets %}
+        <option value="{{ seconds }}" {% if seconds == schedule['cancel_retry_seconds'] %}selected{% endif %}>{{ label }}</option>
+        {% endfor %}
+      </select>
+
+      <button type="submit" class="btn" style="margin-top:12px">Save check-in schedule</button>
+    </form>
+  </div>
+</div>
+
+<div class="card flush">
   <div class="card-header"><div class="card-title">{{ icons.icon('settings', 14, extra_class='spec-row-icon') }}&nbsp;Check-in fields</div></div>
   <div class="card-body">
     <form method="post" action="/admin/companies/{{ company['id'] }}/fields/hardware">

@@ -34,6 +34,15 @@ from app.field_config import (
     set_hardware_field_enabled,
 )
 from app.macos_pkg import build_flat_package
+from app.schedule import (
+    PRESETS,
+    RETRY_PRESETS,
+    format_interval,
+    parse_interval,
+    resolve_schedule,
+    set_schedule,
+    validate_schedule,
+)
 
 router = APIRouter(prefix="/admin")
 templates = Jinja2Templates(directory=str(Path(__file__).resolve().parent.parent / "templates"))
@@ -163,6 +172,22 @@ async def _tokens_for_display(pool, company_id: str) -> list[dict]:
     return [_with_token_status(t, now) for t in tokens]
 
 
+async def _schedule_context(pool, company_id: str) -> dict:
+    """Everything company_detail.html needs to render the schedule card."""
+    schedule = await resolve_schedule(pool, str(company_id))
+    return {
+        "schedule": schedule,
+        "presets": PRESETS,
+        "retry_presets": RETRY_PRESETS,
+        "schedule_summary": (
+            f"Employees are prompted every "
+            f"{format_interval(schedule['checkin_interval_seconds'])}; "
+            f"if they cancel, they are asked again after "
+            f"{format_interval(schedule['cancel_retry_seconds'])}."
+        ),
+    }
+
+
 @router.get("/companies/{company_id}")
 async def company_detail(
     request: Request, company_id: uuid.UUID, admin_id: str = Depends(require_admin)
@@ -171,18 +196,17 @@ async def company_detail(
     company = await _get_company_or_404(pool, company_id)
     field_settings = await resolve_field_settings_for_admin(pool, str(company_id))
     companies = await _all_companies(pool)
-    return templates.TemplateResponse(
-        "company_detail.html",
-        {
-            "request": request,
-            "companies": companies,
-            "company": company,
-            "csrf_token": _new_csrf_token(request),
-            "field_settings": field_settings,
-            "tokens": await _tokens_for_display(pool, str(company_id)),
-            "nav_active": "settings",
-        },
-    )
+    context = {
+        "request": request,
+        "companies": companies,
+        "company": company,
+        "csrf_token": _new_csrf_token(request),
+        "field_settings": field_settings,
+        "tokens": await _tokens_for_display(pool, str(company_id)),
+        "nav_active": "settings",
+    }
+    context.update(await _schedule_context(pool, company_id))
+    return templates.TemplateResponse(request, "company_detail.html", context)
 
 
 @router.post("/companies/{company_id}/rotate-key")
@@ -210,18 +234,17 @@ async def rotate_key(
 
     field_settings = await resolve_field_settings_for_admin(pool, str(company_id))
     companies = await _all_companies(pool)
-    return templates.TemplateResponse(
-        "company_detail.html",
-        {
-            "request": request,
-            "companies": companies,
-            "company": company,
-            "csrf_token": _new_csrf_token(request),
-            "new_api_key": api_key,
-            "field_settings": field_settings,
-            "tokens": await _tokens_for_display(pool, str(company_id)),
-        },
-    )
+    context = {
+        "request": request,
+        "companies": companies,
+        "company": company,
+        "csrf_token": _new_csrf_token(request),
+        "new_api_key": api_key,
+        "field_settings": field_settings,
+        "tokens": await _tokens_for_display(pool, str(company_id)),
+    }
+    context.update(await _schedule_context(pool, company_id))
+    return templates.TemplateResponse(request, "company_detail.html", context)
 
 
 @router.post("/companies/{company_id}/revoke")
@@ -252,17 +275,16 @@ async def revoke_company(
 
     field_settings = await resolve_field_settings_for_admin(pool, str(company_id))
     companies = await _all_companies(pool)
-    return templates.TemplateResponse(
-        "company_detail.html",
-        {
-            "request": request,
-            "companies": companies,
-            "company": company,
-            "csrf_token": _new_csrf_token(request),
-            "field_settings": field_settings,
-            "tokens": await _tokens_for_display(pool, str(company_id)),
-        },
-    )
+    context = {
+        "request": request,
+        "companies": companies,
+        "company": company,
+        "csrf_token": _new_csrf_token(request),
+        "field_settings": field_settings,
+        "tokens": await _tokens_for_display(pool, str(company_id)),
+    }
+    context.update(await _schedule_context(pool, company_id))
+    return templates.TemplateResponse(request, "company_detail.html", context)
 
 
 @router.post("/companies/{company_id}/notification-email")
@@ -281,6 +303,62 @@ async def update_notification_email(
             "UPDATE companies SET notification_email = $1 WHERE id = $2",
             notification_email, company_id,
         )
+    return RedirectResponse(f"/admin/companies/{company_id}", status_code=303)
+
+
+@router.post("/companies/{company_id}/schedule")
+async def update_schedule(
+    request: Request,
+    company_id: uuid.UUID,
+    csrf_token: str = Form(...),
+    interval_preset: str = Form(...),
+    cancel_retry_seconds: int = Form(...),
+    # str, NOT int: the template always submits custom_count, empty when a
+    # preset is selected. An `int | None` annotation would make FastAPI reject
+    # that empty string with a 422 before this handler ever runs -- so every
+    # ordinary preset save would fail.
+    custom_count: str | None = Form(None),
+    custom_unit: str | None = Form(None),
+    admin_id: str = Depends(require_admin),
+):
+    _check_csrf(request, csrf_token)
+    pool = await get_pool()
+    await _get_company_or_404(pool, company_id)
+
+    try:
+        if interval_preset == "custom":
+            if not custom_count or not custom_unit:
+                raise ValueError("Enter a number and a unit for a custom interval")
+            try:
+                count = int(custom_count)
+            except ValueError:
+                raise ValueError("Custom interval must be a whole number")
+            interval = parse_interval(count, custom_unit)
+        else:
+            interval = int(interval_preset)
+        validate_schedule(interval, cancel_retry_seconds)
+    except ValueError as exc:
+        # Re-render with the error rather than redirecting, so the admin keeps
+        # their input -- the same pattern add_custom_field_route uses.
+        company = await _get_company_or_404(pool, company_id)
+        companies = await _all_companies(pool)
+        field_settings = await resolve_field_settings_for_admin(pool, str(company_id))
+        context = {
+            "request": request,
+            "company": company,
+            "companies": companies,
+            "field_settings": field_settings,
+            "tokens": await _tokens_for_display(pool, str(company_id)),
+            "csrf_token": _new_csrf_token(request),
+            "nav_active": "settings",
+            "schedule_error": str(exc),
+        }
+        context.update(await _schedule_context(pool, company_id))
+        return templates.TemplateResponse(
+            request, "company_detail.html", context, status_code=200
+        )
+
+    await set_schedule(pool, str(company_id), interval, cancel_retry_seconds)
     return RedirectResponse(f"/admin/companies/{company_id}", status_code=303)
 
 
@@ -338,18 +416,17 @@ async def add_custom_field_route(
     except ValueError as e:
         field_settings = await resolve_field_settings_for_admin(pool, str(company_id))
         companies = await _all_companies(pool)
-        return templates.TemplateResponse(
-            "company_detail.html",
-            {
-                "request": request,
-                "companies": companies,
-                "company": company,
-                "csrf_token": _new_csrf_token(request),
-                "field_settings": field_settings,
-                "field_error": str(e),
-                "tokens": await _tokens_for_display(pool, str(company_id)),
-            },
-        )
+        context = {
+            "request": request,
+            "companies": companies,
+            "company": company,
+            "csrf_token": _new_csrf_token(request),
+            "field_settings": field_settings,
+            "field_error": str(e),
+            "tokens": await _tokens_for_display(pool, str(company_id)),
+        }
+        context.update(await _schedule_context(pool, company_id))
+        return templates.TemplateResponse(request, "company_detail.html", context)
     return RedirectResponse(f"/admin/companies/{company_id}", status_code=303)
 
 
