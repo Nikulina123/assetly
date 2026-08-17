@@ -6,12 +6,14 @@ import uuid
 import pytest
 
 from app.schedule import (
+    MAX_INTERVAL_SECONDS,
     MIN_INTERVAL_SECONDS,
     PRESETS,
     RETRY_PRESETS,
     format_interval,
     parse_interval,
     resolve_schedule,
+    validate_schedule,
 )
 
 
@@ -49,6 +51,30 @@ def test_parse_interval_rejects_below_floor(monkeypatch):
     monkeypatch.setitem(schedule_module.UNIT_SECONDS, "minutes", 60)
     with pytest.raises(ValueError, match="at least 1 hour"):
         parse_interval(30, "minutes")
+
+
+def test_parse_interval_rejects_above_cap():
+    """Both columns are int4. Without this bound a large custom value made
+    asyncpg raise DataError -- not a ValueError -- so the portal's form-error
+    path never saw it and it surfaced as a 500.
+    """
+    with pytest.raises(ValueError, match="longer than 5 years"):
+        parse_interval(6, "years")
+    # And the cap itself is accepted, so the boundary is inclusive.
+    assert parse_interval(5, "years") == MAX_INTERVAL_SECONDS
+
+
+def test_max_interval_fits_in_int4():
+    """The whole point of the cap. If this ever stops holding, the DataError
+    path it closes is open again."""
+    assert MAX_INTERVAL_SECONDS < 2 ** 31
+
+
+def test_validate_schedule_rejects_values_above_cap():
+    with pytest.raises(ValueError, match="Interval cannot be longer than 5 years"):
+        validate_schedule(MAX_INTERVAL_SECONDS + 1, 3600)
+    with pytest.raises(ValueError, match="Cancel retry cannot be longer than 5 years"):
+        validate_schedule(MAX_INTERVAL_SECONDS, MAX_INTERVAL_SECONDS + 1)
 
 
 def test_format_interval_picks_largest_exact_unit():

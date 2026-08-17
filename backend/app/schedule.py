@@ -20,6 +20,13 @@ from app.config import DEFAULT_CANCEL_RETRY_SECONDS, DEFAULT_CHECKIN_INTERVAL_SE
 # shorter than that would be a setting the wake cadence cannot honour.
 MIN_INTERVAL_SECONDS = 3600
 
+# 5 years. Both columns are INTEGER (int4), so a large custom value -- the
+# custom-interval box accepts any whole number -- would make asyncpg raise
+# DataError: value out of int32 range before Postgres is ever reached, escaping
+# the ValueError path the portal reports form errors through and surfacing as a
+# 500. A cap well inside int4 keeps that an ordinary, readable form error.
+MAX_INTERVAL_SECONDS = 157680000
+
 UNIT_SECONDS = {
     "hours": 3600,
     "days": 86400,
@@ -76,6 +83,8 @@ def parse_interval(count: int, unit: str) -> int:
     seconds = count * UNIT_SECONDS[unit]
     if seconds < MIN_INTERVAL_SECONDS:
         raise ValueError("Interval must be at least 1 hour")
+    if seconds > MAX_INTERVAL_SECONDS:
+        raise ValueError("Interval cannot be longer than 5 years")
     return seconds
 
 
@@ -146,8 +155,12 @@ def validate_schedule(checkin_interval_seconds: int, cancel_retry_seconds: int) 
     """Raises ValueError with a message fit to show an admin."""
     if checkin_interval_seconds < MIN_INTERVAL_SECONDS:
         raise ValueError("Interval must be at least 1 hour")
+    if checkin_interval_seconds > MAX_INTERVAL_SECONDS:
+        raise ValueError("Interval cannot be longer than 5 years")
     if cancel_retry_seconds < MIN_INTERVAL_SECONDS:
         raise ValueError("Cancel retry must be at least 1 hour")
+    if cancel_retry_seconds > MAX_INTERVAL_SECONDS:
+        raise ValueError("Cancel retry cannot be longer than 5 years")
     if cancel_retry_seconds > checkin_interval_seconds:
         raise ValueError(
             "Cancel retry cannot be longer than the check-in interval"
