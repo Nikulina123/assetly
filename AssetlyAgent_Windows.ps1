@@ -4,7 +4,7 @@
     Assetly Inventory Agent for Windows — self-contained, no Python needed.
     First run: Right-click → Run with PowerShell  (or run as any user).
     After that: registered in Task Scheduler, runs silently at every login,
-                shows the form only when 6 months have elapsed.
+                shows the form only when the company's configured interval has elapsed.
 #>
 
 # ════════════════════════════════════════════════════════════════════════════════
@@ -32,8 +32,13 @@ try {
         [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
 } catch {}
 
-$IntervalMonths   = 6
-$CancelRetryHours = (2/60)   # TEST: 2 minutes — change back to 24 for production
+# Used only when the server cannot be reached and nothing is cached in
+# state.json. Reproduces the cadence this agent had when the interval was
+# hardcoded. Kept in sync with DEFAULT_SCHEDULE in inventory_agent.py.
+$DefaultSchedule = [PSCustomObject]@{
+    checkin_interval_seconds = 15552000   # 180 days
+    cancel_retry_seconds     = 86400      # 24 hours
+}
 $TaskName         = "AssetlyInventoryAgent"
 $AgentVersion     = "2.0"
 # Fallback only — the live per-company list arrives on the department entry of
@@ -279,6 +284,37 @@ function Get-FieldConfig {
     }
 }
 
+function Test-Schedule($Schedule) {
+    <#  Guards against a malformed-but-200-OK schedule reaching the guard,
+        where a string or a negative would make the comparison either throw or
+        silently never fire. Mirrors _is_valid_schedule in inventory_agent.py. #>
+    if ($null -eq $Schedule) { return $false }
+    foreach ($prop in @('checkin_interval_seconds','cancel_retry_seconds')) {
+        if ($Schedule.PSObject.Properties.Match($prop).Count -eq 0) { return $false }
+        $value = $Schedule.$prop
+        if ($value -isnot [int] -and $value -isnot [long]) { return $false }
+        if ($value -le 0) { return $false }
+    }
+    return $Schedule.cancel_retry_seconds -le $Schedule.checkin_interval_seconds
+}
+
+function Resolve-ScheduleFrom($Config, $State) {
+    <# Fresh server value, else last known good, else built-in default. The
+       cache matters: a laptop offline for a week keeps its configured cadence
+       instead of silently reverting to 6 months. #>
+    if ($null -ne $Config -and $Config.PSObject.Properties.Match('schedule').Count -gt 0) {
+        if (Test-Schedule $Config.schedule) { return $Config.schedule }
+    }
+    if ($null -ne $State -and $State.PSObject.Properties.Match('schedule').Count -gt 0) {
+        if (Test-Schedule $State.schedule) {
+            Write-Log "Using cached check-in schedule — server value missing or malformed." "WARN"
+            return $State.schedule
+        }
+    }
+    Write-Log "No usable check-in schedule — falling back to built-in defaults." "WARN"
+    return $DefaultSchedule
+}
+
 # ════════════════════════════════════════════════════════════════════════════════
 #  SELF-UPDATE
 # ════════════════════════════════════════════════════════════════════════════════
@@ -423,7 +459,7 @@ function Invoke-SelfUpdate {
 }
 
 # ════════════════════════════════════════════════════════════════════════════════
-#  6-MONTH + 24 H GUARD
+#  DUE-CHECK GUARD
 # ════════════════════════════════════════════════════════════════════════════════
 function Get-State {
     if (Test-Path $StateFile) {
@@ -437,24 +473,27 @@ function Save-State($state) {
     $state | ConvertTo-Json | Set-Content -Path $StateFile -Encoding UTF8
 }
 
-function Test-ShouldRun {
+function Test-ShouldRun($Schedule) {
     $state = Get-State
     $now   = Get-Date
 
     if ($state.last_run) {
         $last    = [datetime]$state.last_run
-        $months  = ($now.Year - $last.Year) * 12 + $now.Month - $last.Month + ($now.Day - $last.Day) / 30.0
-        if ($months -lt $IntervalMonths) {
-            Write-Log ("Last check-in {0:F1} months ago — not due yet. Exiting." -f $months)
+        $elapsed = ($now - $last).TotalSeconds
+        # Negative means the clock moved backwards since the last run. Treating
+        # that as due is the safe direction -- the alternative parks the machine
+        # until its clock catches up, silently.
+        if ($elapsed -ge 0 -and $elapsed -lt $Schedule.checkin_interval_seconds) {
+            Write-Log ("Last check-in {0:F1} h ago — not due yet. Exiting." -f ($elapsed / 3600))
             return $false
         }
     }
 
     if ($state.cancelled_at) {
         $cancelled = [datetime]$state.cancelled_at
-        $diffH     = ($now - $cancelled).TotalHours
-        if ($diffH -lt $CancelRetryHours) {
-            Write-Log ("Cancelled {0:F1} h ago — retry window not reached. Exiting." -f $diffH)
+        $elapsed   = ($now - $cancelled).TotalSeconds
+        if ($elapsed -ge 0 -and $elapsed -lt $Schedule.cancel_retry_seconds) {
+            Write-Log ("Cancelled {0:F1} h ago — retry window not reached. Exiting." -f ($elapsed / 3600))
             return $false
         }
     }
@@ -941,16 +980,28 @@ Invoke-SelfUpdate
 # Flush offline queue
 Flush-Queue
 
+# Fetch this company's config (fields + schedule) BEFORE the guard -- the guard
+# needs the server's interval to decide. One call: the same response builds the
+# form below.
+$state       = Get-State
+$fieldConfig = Get-FieldConfig
+$schedule    = Resolve-ScheduleFrom $fieldConfig $state
+
+if (-not (Test-Schedule $state.schedule) -or
+    $state.schedule.checkin_interval_seconds -ne $schedule.checkin_interval_seconds -or
+    $state.schedule.cancel_retry_seconds     -ne $schedule.cancel_retry_seconds) {
+    $state | Add-Member -NotePropertyName schedule -NotePropertyValue $schedule -Force
+    Save-State $state
+}
+
 # Guard: exit if not due
-if (-not (Test-ShouldRun)) { exit 0 }
+if (-not (Test-ShouldRun $schedule)) { exit 0 }
 
 # Collect hardware
 Write-Log "Collecting hardware information…"
 $hw = Get-Hardware
 Write-Log "HW: $($hw | ConvertTo-Json -Compress)"
 
-# Fetch this company's field config (falls back to defaults on failure)
-$fieldConfig = Get-FieldConfig
 $enabledHwFields = @($fieldConfig.hardware_fields)
 
 # Show GUI
@@ -962,7 +1013,7 @@ if (-not $res.submitted) {
     $state | Add-Member -NotePropertyName cancelled_at -NotePropertyValue (Get-Date -Format "o") -Force
     Save-State $state
 
-    Write-Log "Form cancelled. Will retry in $CancelRetryHours h."
+    Write-Log ("Form cancelled. Will retry in {0:F0} h." -f ($schedule.cancel_retry_seconds / 3600))
     exit 0
 }
 
