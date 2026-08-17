@@ -110,3 +110,25 @@ async def test_resolve_schedule_reads_configured_values(db_pool, company):
     schedule = await resolve_schedule(db_pool, company_id)
     assert schedule["checkin_interval_seconds"] == 43200
     assert schedule["cancel_retry_seconds"] == 14400
+
+
+@pytest.mark.asyncio
+async def test_resolve_schedule_falls_back_to_config_defaults_for_missing_company(
+    db_pool, monkeypatch
+):
+    """The row-is-None branch, only reachable if a company is deleted between
+    authentication and this call.
+
+    The sentinels are the point: asserting the real default values could not
+    tell a wired-up constant apart from a literal that happens to match. These
+    prove the fallback actually reads the config constants.
+    """
+    import app.schedule as schedule_module
+
+    monkeypatch.setattr(schedule_module, "DEFAULT_CHECKIN_INTERVAL_SECONDS", 111)
+    monkeypatch.setattr(schedule_module, "DEFAULT_CANCEL_RETRY_SECONDS", 222)
+    schedule = await resolve_schedule(db_pool, str(uuid.uuid4()))
+    assert schedule == {
+        "checkin_interval_seconds": 111,
+        "cancel_retry_seconds": 222,
+    }

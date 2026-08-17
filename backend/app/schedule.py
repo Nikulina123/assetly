@@ -14,6 +14,8 @@ already, so calendar-exact recurrence was never a property of this system.
 import asyncpg
 import uuid
 
+from app.config import DEFAULT_CANCEL_RETRY_SECONDS, DEFAULT_CHECKIN_INTERVAL_SECONDS
+
 # The agent wakes hourly on every platform (see the installers), so an interval
 # shorter than that would be a setting the wake cadence cannot honour.
 MIN_INTERVAL_SECONDS = 3600
@@ -111,11 +113,11 @@ async def resolve_schedule(pool: asyncpg.Pool, company_id: str) -> dict:
         )
     if row is None:
         # Only reachable if a company is deleted between authentication and
-        # this call. Falling back to the defaults keeps the agent running on
-        # the historical cadence rather than raising into a 500.
+        # this call. Falling back to the configured defaults keeps the agent
+        # running on the historical cadence rather than raising into a 500.
         return {
-            "checkin_interval_seconds": 15552000,
-            "cancel_retry_seconds": 86400,
+            "checkin_interval_seconds": DEFAULT_CHECKIN_INTERVAL_SECONDS,
+            "cancel_retry_seconds": DEFAULT_CANCEL_RETRY_SECONDS,
         }
     return {
         "checkin_interval_seconds": row["checkin_interval_seconds"],

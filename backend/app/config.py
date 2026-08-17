@@ -40,11 +40,15 @@ SENDLY_API_KEY = os.environ.get("SENDLY_API_KEY", "")
 NOTIFICATION_FROM_EMAIL = os.environ.get("NOTIFICATION_FROM_EMAIL", "noreply@assetly.ge")
 OPS_ALERT_EMAIL = os.environ.get("OPS_ALERT_EMAIL", "")
 
-# Fallback interval for a company row that cannot be read, and the source of
-# the historic 180-day band. Per-company values live on companies.
-# checkin_interval_seconds (migration 010) and are what actually drive status.
+# Fallbacks used by resolve_schedule when a company row cannot be read, and the
+# source of the historic 180-day band. Per-company values live on
+# companies.checkin_interval_seconds / .cancel_retry_seconds (migration 010)
+# and are what actually drive both status and the agents.
 DEFAULT_CHECKIN_INTERVAL_SECONDS = int(
     os.environ.get("DEFAULT_CHECKIN_INTERVAL_SECONDS", "15552000")
+)
+DEFAULT_CANCEL_RETRY_SECONDS = int(
+    os.environ.get("DEFAULT_CANCEL_RETRY_SECONDS", "86400")
 )
 # How far past its own interval a device drifts before it stops being merely
 # "pending" and is written off. 1.5 reproduces the previous fixed 270-day
