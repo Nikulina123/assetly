@@ -9,7 +9,7 @@ import os, sys, json, platform, subprocess, datetime, hashlib, socket, re, time,
 import urllib.request, urllib.error
 from pathlib import Path
 import tkinter as tk
-from tkinter import ttk, messagebox
+from tkinter import ttk, messagebox, font as tkfont
 import logging
 
 # ─── Paths ────────────────────────────────────────────────────────────────────
@@ -529,26 +529,56 @@ class InventoryForm(tk.Tk):
         y = (self.winfo_screenheight() - h) // 2
         self.geometry(f"{w}x{h}+{x}+{y}")
 
+    def _draw_logo(self, parent):
+        """Paint assetly_logo.svg into the header.
+
+        Tk has no SVG support and PhotoImage only reads GIF/PNG, so the logo is
+        drawn from the SVG's own geometry on a Canvas. That keeps the agent a
+        single file — there is no image shipped alongside it on a checked-in
+        machine — and keeps it sharp at any window scale.
+        """
+        s = 0.4                       # SVG is 400x180; the header gets 160x72
+        c = tk.Canvas(parent, width=160, height=72, bg=BRAND_COLOR,
+                      highlightthickness=0, bd=0)
+        c.pack(side="left", padx=22, pady=4)
+
+        # backdrop: rect 400x180 rx=18, as two rects plus four corner arcs
+        bg, r = "#0D1119", 18 * s
+        c.create_rectangle(r, 0, 160 - r, 72, fill=bg, outline=bg)
+        c.create_rectangle(0, r, 160, 72 - r, fill=bg, outline=bg)
+        for x, y, start in ((0, 0, 90), (160 - 2*r, 0, 0),
+                            (160 - 2*r, 72 - 2*r, 270), (0, 72 - 2*r, 180)):
+            c.create_arc(x, y, x + 2*r, y + 2*r, start=start, extent=90,
+                         fill=bg, outline=bg)
+
+        # node-graph mark. The SVG runs a #5FD8BE -> #3AA98F gradient along the
+        # edges; a Canvas line takes one colour, so each edge gets its own stop.
+        p1, p2, p3 = (70*s, 57*s), (36*s, 123*s), (104*s, 123*s)
+        for (a, b), colour in (((p1, p2), "#5FD8BE"),
+                               ((p1, p3), "#4CC3A6"),
+                               ((p2, p3), "#3AA98F")):
+            c.create_line(*a, *b, fill=colour, width=3.5 * s, capstyle="round")
+
+        nr = 7.5 * s
+        for (x, y), colour in ((p1, "#F2F5F7"), (p2, "#4ECDB4"), (p3, "#4ECDB4")):
+            c.create_oval(x - nr, y - nr, x + nr, y + nr, fill=colour, outline=colour)
+
+        # wordmark: "asset" white + "ly" teal, on the SVG's y=113 baseline
+        px = int(round(64 * s))
+        f = tkfont.Font(family="Helvetica", size=-px, weight="bold")
+        baseline = 113 * s + f.metrics("descent")
+        c.create_text(150 * s, baseline, text="asset", font=f,
+                      fill="#FFFFFF", anchor="sw")
+        c.create_text(150 * s + f.measure("asset"), baseline, text="ly", font=f,
+                      fill="#4ECDB4", anchor="sw")
+
     def _build(self):
         # ── Header bar ────────────────────────────────────────────────────────
         hdr = tk.Frame(self, bg=BRAND_COLOR, height=80)
         hdr.pack(fill="x")
         hdr.pack_propagate(False)
 
-        logo_shown = False
-        logo_file = Path(__file__).parent / "assetly_logo.png"
-        if logo_file.exists():
-            try:
-                self._logo_img = tk.PhotoImage(file=str(logo_file))
-                tk.Label(hdr, image=self._logo_img, bg=BRAND_COLOR).pack(
-                    side="left", padx=22, pady=14)
-                logo_shown = True
-            except Exception:
-                pass
-
-        if not logo_shown:
-            tk.Label(hdr, text="ASSETLY", fg="white", bg=BRAND_COLOR,
-                     font=("Helvetica", 30, "bold")).pack(side="left", padx=22, pady=16)
+        self._draw_logo(hdr)
 
         # Red accent line
         tk.Frame(self, bg=ACCENT_COLOR, height=4).pack(fill="x")

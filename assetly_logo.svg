@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="400" height="180" viewBox="0 0 400 180" role="img" aria-label="assetly">
+  <title>assetly</title>
+
+  <defs>
+    <linearGradient id="edge" gradientUnits="userSpaceOnUse" x1="36" y1="57" x2="104" y2="123">
+      <stop offset="0" stop-color="#5FD8BE"/>
+      <stop offset="1" stop-color="#3AA98F"/>
+    </linearGradient>
+  </defs>
+
+  <!-- backdrop -->
+  <rect width="400" height="180" rx="18" fill="#0D1119"/>
+
+  <!-- node-graph mark -->
+  <g stroke="url(#edge)" stroke-width="3.5" stroke-linecap="round" fill="none">
+    <line x1="70" y1="57" x2="36" y2="123"/>
+    <line x1="70" y1="57" x2="104" y2="123"/>
+    <line x1="36" y1="123" x2="104" y2="123"/>
+  </g>
+  <circle cx="70"  cy="57"  r="7.5" fill="#F2F5F7"/>
+  <circle cx="36"  cy="123" r="7.5" fill="#4ECDB4"/>
+  <circle cx="104" cy="123" r="7.5" fill="#4ECDB4"/>
+
+  <!-- wordmark -->
+  <text x="150" y="113"
+        font-family="Inter, 'SF Pro Display', 'Helvetica Neue', Helvetica, Arial, sans-serif"
+        font-size="64" font-weight="800" letter-spacing="-1.5">
+    <tspan fill="#FFFFFF">asset</tspan><tspan fill="#4ECDB4">ly</tspan>
+  </text>
+</svg>

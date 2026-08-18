@@ -687,29 +687,72 @@ function Show-InventoryForm {
     $hdr.Size      = New-Object System.Drawing.Size(520, 80)
     $hdr.BackColor = [System.Drawing.Color]::FromArgb(26, 43, 90)
 
-    $logoLbl           = New-Object System.Windows.Forms.Label
-    $logoLbl.Text      = "ASSETLY"
-    $logoLbl.Font      = New-Object System.Drawing.Font("Segoe UI", 28, [System.Drawing.FontStyle]::Bold)
-    $logoLbl.ForeColor = [System.Drawing.Color]::White
-    $logoLbl.Location  = New-Object System.Drawing.Point(22, 14)
-    $logoLbl.AutoSize  = $true
-    $hdr.Controls.Add($logoLbl)
+    # ── Logo ──────────────────────────────────────────────────────────────────
+    # assetly_logo.svg, drawn with GDI+ rather than loaded: WinForms has no SVG
+    # decoder, and painting the shapes keeps the agent a single self-contained
+    # file (the .exe build has no sibling image to read). Every coordinate below
+    # is the SVG's own, mapped through $s onto the header.
+    $logoBox          = New-Object System.Windows.Forms.Panel
+    $logoBox.Location = New-Object System.Drawing.Point(16, 4)
+    $logoBox.Size     = New-Object System.Drawing.Size(160, 72)   # 400x180 * 0.4
+    $logoBox.BackColor = [System.Drawing.Color]::FromArgb(26, 43, 90)
+    $logoBox.Add_Paint({
+        param($sender, $e)
+        $g = $e.Graphics
+        $g.SmoothingMode     = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
+        $g.TextRenderingHint = [System.Drawing.Text.TextRenderingHint]::AntiAlias
+        $s = 160 / 400                                  # SVG user units -> pixels
 
-    # Logo image override (place assetly_logo.png next to this script)
-    $logoFile = Join-Path (Split-Path $ScriptPath) "assetly_logo.png"
-    if (Test-Path $logoFile) {
-        try {
-            $img           = [System.Drawing.Image]::FromFile($logoFile)
-            $pb            = New-Object System.Windows.Forms.PictureBox
-            $pb.Image      = $img
-            $pb.SizeMode   = "Zoom"
-            $pb.Location   = New-Object System.Drawing.Point(16, 10)
-            $pb.Size       = New-Object System.Drawing.Size(160, 60)
-            $pb.BackColor  = [System.Drawing.Color]::FromArgb(26, 43, 90)
-            $hdr.Controls.Remove($logoLbl)
-            $hdr.Controls.Add($pb)
-        } catch {}
-    }
+        $teal  = [System.Drawing.Color]::FromArgb(78, 205, 180)   # #4ECDB4
+        $node  = [System.Drawing.Color]::FromArgb(242, 245, 247)  # #F2F5F7
+
+        # backdrop: rect 400x180 rx=18
+        $r  = 18 * $s
+        $bg = New-Object System.Drawing.Drawing2D.GraphicsPath
+        $bg.AddArc(0, 0, 2*$r, 2*$r, 180, 90)
+        $bg.AddArc(160 - 2*$r, 0, 2*$r, 2*$r, 270, 90)
+        $bg.AddArc(160 - 2*$r, 72 - 2*$r, 2*$r, 2*$r, 0, 90)
+        $bg.AddArc(0, 72 - 2*$r, 2*$r, 2*$r, 90, 90)
+        $bg.CloseFigure()
+        $bgBrush = New-Object System.Drawing.SolidBrush ([System.Drawing.Color]::FromArgb(13, 17, 25))
+        $g.FillPath($bgBrush, $bg)
+
+        # node-graph mark: three edges under a 5FD8BE -> 3AA98F gradient
+        $p1 = New-Object System.Drawing.PointF (70 * $s), (57 * $s)
+        $p2 = New-Object System.Drawing.PointF (36 * $s), (123 * $s)
+        $p3 = New-Object System.Drawing.PointF (104 * $s), (123 * $s)
+        $grad = New-Object System.Drawing.Drawing2D.LinearGradientBrush `
+                    $p1, $p3, `
+                    ([System.Drawing.Color]::FromArgb(95, 216, 190)), `
+                    ([System.Drawing.Color]::FromArgb(58, 169, 143))
+        $pen = New-Object System.Drawing.Pen $grad, (3.5 * $s)
+        $pen.StartCap = [System.Drawing.Drawing2D.LineCap]::Round
+        $pen.EndCap   = [System.Drawing.Drawing2D.LineCap]::Round
+        $g.DrawLine($pen, $p1, $p2)
+        $g.DrawLine($pen, $p1, $p3)
+        $g.DrawLine($pen, $p2, $p3)
+
+        # the three nodes (r = 7.5)
+        $nr = 7.5 * $s
+        $g.FillEllipse((New-Object System.Drawing.SolidBrush $node), ($p1.X - $nr), ($p1.Y - $nr), (2*$nr), (2*$nr))
+        $tealBrush = New-Object System.Drawing.SolidBrush $teal
+        $g.FillEllipse($tealBrush, ($p2.X - $nr), ($p2.Y - $nr), (2*$nr), (2*$nr))
+        $g.FillEllipse($tealBrush, ($p3.X - $nr), ($p3.Y - $nr), (2*$nr), (2*$nr))
+
+        # wordmark: "asset" white + "ly" teal, sitting on the SVG's y=113 baseline
+        $fontPx = 64 * $s
+        $fam    = New-Object System.Drawing.FontFamily "Segoe UI"
+        $font   = New-Object System.Drawing.Font $fam, $fontPx, `
+                      ([System.Drawing.FontStyle]::Bold), ([System.Drawing.GraphicsUnit]::Pixel)
+        $ascent = $fontPx * $fam.GetCellAscent([System.Drawing.FontStyle]::Bold) / $fam.GetEmHeight([System.Drawing.FontStyle]::Bold)
+        $top    = (113 * $s) - $ascent
+        $left   = 150 * $s
+        $fmt    = [System.Drawing.StringFormat]::GenericTypographic
+        $g.DrawString("asset", $font, [System.Drawing.Brushes]::White, $left, $top, $fmt)
+        $left  += $g.MeasureString("asset", $font, [System.Drawing.PointF]::Empty, $fmt).Width
+        $g.DrawString("ly", $font, $tealBrush, $left, $top, $fmt)
+    })
+    $hdr.Controls.Add($logoBox)
 
     $form.Controls.Add($hdr)
 
