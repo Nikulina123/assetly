@@ -5,6 +5,7 @@ import asyncpg
 from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Request
 from fastapi.responses import JSONResponse
 
+from app.agent_ui import resolve_agent_ui
 from app.auth import resolve_credential
 from app.db import get_pool
 from app.field_config import resolve_field_config
@@ -55,6 +56,9 @@ async def get_config(company_id: str = Depends(get_current_company_id)):
     # Additive: agents that predate this key ignore it and keep their built-in
     # interval, so this can ship ahead of any agent release.
     config["schedule"] = await resolve_schedule(pool, company_id)
+    # Same additive contract as schedule above: an agent built before this key
+    # existed ignores it and keeps its built-in appearance.
+    config["ui"] = await resolve_agent_ui(pool, company_id)
     return config
 
 

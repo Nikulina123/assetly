@@ -334,6 +334,119 @@ function Format-Duration([long]$Seconds) {
 }
 
 # ════════════════════════════════════════════════════════════════════════════════
+#  AGENT WINDOW APPEARANCE
+#  Copy and colours arrive on the `ui` key of the same GET /config response that
+#  carries the fields and the schedule, so an admin editing them in the portal
+#  reaches this agent on its next run with no rebuild and no re-download --
+#  exactly as a field toggle does.
+#
+#  Contrast is NOT re-checked here. The server refuses to store an unreadable
+#  combination (see _CONTRAST_PAIRS in backend/app/agent_ui.py), and it is the
+#  only layer that can report the failure to the admin who caused it; repeating
+#  the WCAG maths in each agent would mean three places to keep in agreement
+#  and a silent fallback where the portal already showed a clear error.
+#  Validation here is strictly "will this crash or render as garbage".
+# ════════════════════════════════════════════════════════════════════════════════
+
+# Fallback for when /config cannot be reached and nothing is cached. Kept in
+# sync with DEFAULT_AGENT_UI in backend/app/agent_ui.py and inventory_agent.py.
+$DefaultAgentUi = [PSCustomObject]@{
+    window_title    = "Assetly Inventory Agent"
+    heading         = "Who's using this computer?"
+    subheading      = "{count} fields, then you're done."
+    subheading_one  = "{count} field, then you're done."
+    rail_title      = "THIS DEVICE"
+    rail_footnote   = "Sent to your IT team along with the answers on the right."
+    submit_label    = "Send check-in"
+    cancel_label    = "Cancel"
+    success_message = "Thank you, {first_name}!`n`nYour device has been registered."
+    navy            = "#0B1120"
+    navy_sidebar    = "#080E1A"
+    navy_mid        = "#0F1829"
+    blue            = "#1866F2"
+    blue_hover      = "#1560E6"
+    teal            = "#00C2A8"
+    slate           = "#A4B3CC"
+    label           = "#92A3BE"
+    white           = "#F4F7FF"
+    border_md       = "#5A6E99"
+    border_input    = "#526691"
+}
+
+# Which keys are colours; everything else on $DefaultAgentUi is copy.
+$AgentUiColorKeys = @('navy','navy_sidebar','navy_mid','blue','blue_hover','teal',
+                      'slate','label','white','border_md','border_input')
+
+function ConvertFrom-HexColor([string]$Hex) {
+    <# Assumes Test-AgentUi has already matched the ^#RRGGBB shape. #>
+    $raw = $Hex.TrimStart('#')
+    return [System.Drawing.Color]::FromArgb(
+        [Convert]::ToInt32($raw.Substring(0, 2), 16),
+        [Convert]::ToInt32($raw.Substring(2, 2), 16),
+        [Convert]::ToInt32($raw.Substring(4, 2), 16))
+}
+
+function Test-AgentUi($Ui) {
+    <#  Guards against a malformed-but-200-OK response reaching the window,
+        where a missing key would surface as a blank heading or an unlabelled
+        button and a bad colour would throw mid-paint, leaving a half-drawn
+        form the employee cannot use. Mirrors _is_valid_agent_ui in
+        inventory_agent.py. #>
+    if ($null -eq $Ui) { return $false }
+    foreach ($prop in $DefaultAgentUi.PSObject.Properties.Name) {
+        if ($Ui.PSObject.Properties.Match($prop).Count -eq 0) { return $false }
+        $value = $Ui.$prop
+        if ($value -isnot [string] -or $value.Length -eq 0) { return $false }
+        if ($AgentUiColorKeys -contains $prop) {
+            if ($value -notmatch '^#[0-9A-Fa-f]{6}$') { return $false }
+        }
+    }
+    # Only the two placeholders the substitutions below actually replace. Any
+    # other braced token would reach the employee as a literal "{whatever}",
+    # which looks like a bug in the agent rather than a typo in the portal.
+    foreach ($pair in @(@('subheading','count'), @('subheading_one','count'),
+                        @('success_message','first_name'))) {
+        $text = $Ui.($pair[0]) -replace [regex]::Escape('{' + $pair[1] + '}'), ''
+        if ($text -match '[{}]') { return $false }
+    }
+    foreach ($prop in @('window_title','heading','rail_title','rail_footnote',
+                        'submit_label','cancel_label')) {
+        if ($Ui.$prop -match '[{}]') { return $false }
+    }
+    return $true
+}
+
+function Resolve-AgentUiFrom($Config, $State) {
+    <# Fresh server value, else last known good, else built-in. The cache is
+       what keeps a laptop that is offline for a week looking like its
+       company's agent instead of reverting to stock styling mid-rollout --
+       the same reason Resolve-ScheduleFrom caches. #>
+    if ($null -ne $Config -and $Config.PSObject.Properties.Match('ui').Count -gt 0) {
+        if (Test-AgentUi $Config.ui) { return $Config.ui }
+        if ($null -ne $Config.ui) {
+            Write-Log "Server sent an unusable window appearance — ignoring it." "WARN"
+        }
+    }
+    if ($null -ne $State -and $State.PSObject.Properties.Match('ui').Count -gt 0) {
+        if (Test-AgentUi $State.ui) {
+            Write-Log "Using cached window appearance — server value missing or malformed." "WARN"
+            return $State.ui
+        }
+    }
+    return $DefaultAgentUi
+}
+
+function Expand-UiText([string]$Text, [hashtable]$Values) {
+    <#  Literal replace, not -f: the copy is admin-authored, and -f would treat
+        every brace in it as a format specifier and throw on the first stray
+        one. Test-AgentUi has already rejected unknown placeholders. #>
+    foreach ($key in $Values.Keys) {
+        $Text = $Text.Replace('{' + $key + '}', [string]$Values[$key])
+    }
+    return $Text
+}
+
+# ════════════════════════════════════════════════════════════════════════════════
 #  SELF-UPDATE
 # ════════════════════════════════════════════════════════════════════════════════
 function Get-Sha256([byte[]]$Bytes) {
@@ -647,11 +760,21 @@ public class WinForeground {
     [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
     [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
     [DllImport("user32.dll")] public static extern void SwitchToThisWindow(IntPtr hWnd, bool altTab);
+    [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
 }
 "@
 
+# Without this the process is DPI-unaware, so on any display scaled above 100%
+# (the default on most modern laptops) Windows renders the window at 96 DPI and
+# bitmap-stretches the result. That blur is what makes the GDI+ logo below look
+# like pixels even though it is drawn as vectors -- the drawing is fine, the
+# whole window is being scaled up after the fact. Must run before the first
+# window handle is created.
+try { [void][WinForeground]::SetProcessDPIAware() } catch {}
+[System.Windows.Forms.Application]::EnableVisualStyles()
+
 function Show-InventoryForm {
-    param([hashtable]$HW, $FieldConfig, $Schedule)
+    param([hashtable]$HW, $FieldConfig, $Schedule, $Ui)
 
     # Everything below is driven by $FieldConfig rather than hardcoded, so the
     # portal's "Check-in fields" settings are what an employee actually sees.
@@ -671,20 +794,27 @@ function Show-InventoryForm {
     $result   = @{ submitted = $false; user_data = @{}; custom_fields = @{}; closing = $false }
     $controls = @{}   # field key -> the TextBox or ComboBox that collects it
 
-    # ── Portal design tokens ──────────────────────────────────────────────────
-    # Copied from backend/app/static/assetly.css so this window and
-    # app.assetly.ge read as one product. Names match the CSS variables.
-    $cNavy        = [System.Drawing.Color]::FromArgb(11, 17, 32)     # --navy
-    $cNavySidebar = [System.Drawing.Color]::FromArgb(8, 14, 26)      # --navy-sidebar
-    $cNavyMid     = [System.Drawing.Color]::FromArgb(15, 24, 41)     # --navy-mid
-    $cBlue        = [System.Drawing.Color]::FromArgb(26, 110, 255)   # --blue
-    $cBlueHover   = [System.Drawing.Color]::FromArgb(21, 96, 230)
-    $cTeal        = [System.Drawing.Color]::FromArgb(0, 194, 168)    # --teal
-    $cSlate       = [System.Drawing.Color]::FromArgb(138, 155, 181)  # --slate
-    $cSlateDim    = [System.Drawing.Color]::FromArgb(74, 90, 112)    # --slate-dim
-    $cWhite       = [System.Drawing.Color]::FromArgb(244, 247, 255)  # --white
-    $cBorderMd    = [System.Drawing.Color]::FromArgb(40, 52, 74)     # --border-md, flattened
-    $cBorderInput = [System.Drawing.Color]::FromArgb(33, 44, 63)     # --border-input, flattened
+    # ── Design tokens ─────────────────────────────────────────────────────────
+    # Server-driven: these come from the company's appearance settings, falling
+    # back to $DefaultAgentUi (which reproduces backend/app/static/assetly.css,
+    # so an unconfigured window and app.assetly.ge still read as one product).
+    #
+    # The default palette is chosen so that every text pair clears WCAG 4.5:1
+    # and every control outline clears 3:1 against what sits behind it; the
+    # portal holds admin-supplied palettes to the same bar before storing them.
+    # The previous values did not: --slate-dim on navy is roughly 2.5:1, which
+    # is what made the whole form read as a wall of grey.
+    $cNavy        = ConvertFrom-HexColor $Ui.navy
+    $cNavySidebar = ConvertFrom-HexColor $Ui.navy_sidebar
+    $cNavyMid     = ConvertFrom-HexColor $Ui.navy_mid
+    $cBlue        = ConvertFrom-HexColor $Ui.blue
+    $cBlueHover   = ConvertFrom-HexColor $Ui.blue_hover
+    $cTeal        = ConvertFrom-HexColor $Ui.teal
+    $cSlate       = ConvertFrom-HexColor $Ui.slate
+    $cLabel       = ConvertFrom-HexColor $Ui.label
+    $cWhite       = ConvertFrom-HexColor $Ui.white
+    $cBorderMd    = ConvertFrom-HexColor $Ui.border_md
+    $cBorderInput = ConvertFrom-HexColor $Ui.border_input
 
     # ── Layout metrics ────────────────────────────────────────────────────────
     # Device facts live in the left rail, so the form grows only with the fields
@@ -717,12 +847,18 @@ function Show-InventoryForm {
 
     # ── Form ──────────────────────────────────────────────────────────────────
     $form                  = New-Object System.Windows.Forms.Form
-    $form.Text             = "Assetly Inventory Agent"
+    $form.Text             = $Ui.window_title
     $form.StartPosition    = "CenterScreen"
     $form.FormBorderStyle  = "FixedDialog"
     $form.MaximizeBox      = $false
     $form.BackColor        = $cNavy
     $form.Font             = New-Object System.Drawing.Font("Segoe UI", 10)
+    # Every Location/Size below is a literal in 96-DPI pixels, and WinForms only
+    # auto-scales controls that exist when the form is constructed -- these are
+    # all added afterwards, so automatic scaling would catch none of them and
+    # silently double-scale the few it did. Scaling is done explicitly instead,
+    # in one pass just before ShowDialog.
+    $form.AutoScaleMode    = [System.Windows.Forms.AutoScaleMode]::None
 
     # ── Device rail ───────────────────────────────────────────────────────────
     # Only the rows that will actually be submitted: the rail promises this is
@@ -755,7 +891,7 @@ function Show-InventoryForm {
     # decoder, and painting the shapes keeps the agent a single self-contained
     # file (the .exe build has no sibling image to read). Every coordinate below
     # is the SVG's own, mapped through $s onto the panel.
-    $logoW = 144
+    $logoW = 160
     $logoH = [int]($logoW * 0.45)
     $logoBox           = New-Object System.Windows.Forms.Panel
     $logoBox.Location  = New-Object System.Drawing.Point(18, 18)
@@ -764,25 +900,24 @@ function Show-InventoryForm {
     $logoBox.Add_Paint({
         param($sender, $e)
         $g = $e.Graphics
-        $g.SmoothingMode     = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
-        $g.TextRenderingHint = [System.Drawing.Text.TextRenderingHint]::AntiAlias
+        $g.SmoothingMode      = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
+        $g.TextRenderingHint  = [System.Drawing.Text.TextRenderingHint]::AntiAliasGridFit
+        # Without HighQuality pixel offset, GDI+ snaps the sub-pixel edges of the
+        # circles and strokes below to whole pixels, which is what gave the mark
+        # its stair-stepped, "pixelated" look at this size.
+        $g.PixelOffsetMode    = [System.Drawing.Drawing2D.PixelOffsetMode]::HighQuality
+        $g.InterpolationMode  = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
+        $g.CompositingQuality = [System.Drawing.Drawing2D.CompositingQuality]::HighQuality
         $w = $sender.Width
-        $h = $sender.Height
-        $s = $w / 400                                   # SVG user units -> pixels
+        $s = $w / 400                                 # SVG user units -> pixels
 
         $teal  = [System.Drawing.Color]::FromArgb(78, 205, 180)   # #4ECDB4
         $node  = [System.Drawing.Color]::FromArgb(242, 245, 247)  # #F2F5F7
 
-        # backdrop: rect 400x180 rx=18
-        $r  = 18 * $s
-        $bg = New-Object System.Drawing.Drawing2D.GraphicsPath
-        $bg.AddArc(0, 0, 2*$r, 2*$r, 180, 90)
-        $bg.AddArc($w - 2*$r, 0, 2*$r, 2*$r, 270, 90)
-        $bg.AddArc($w - 2*$r, $h - 2*$r, 2*$r, 2*$r, 0, 90)
-        $bg.AddArc(0, $h - 2*$r, 2*$r, 2*$r, 90, 90)
-        $bg.CloseFigure()
-        $bgBrush = New-Object System.Drawing.SolidBrush ([System.Drawing.Color]::FromArgb(13, 17, 25))
-        $g.FillPath($bgBrush, $bg)
+        # The SVG's 400x180 rx=18 backdrop is deliberately not drawn. At #0D1119
+        # against the #080E1A rail it is a near-invisible dark rectangle that
+        # reads as a mis-sized image box framing the mark rather than as part of
+        # the logo. The mark sits directly on the rail instead.
 
         # node-graph mark: three edges under a 5FD8BE -> 3AA98F gradient
         $p1 = New-Object System.Drawing.PointF (70 * $s), (57 * $s)
@@ -822,11 +957,11 @@ function Show-InventoryForm {
     $rail.Controls.Add($logoBox)
 
     $railTitle           = New-Object System.Windows.Forms.Label
-    $railTitle.Text      = "THIS DEVICE"
+    $railTitle.Text      = $Ui.rail_title
     $railTitle.Location  = New-Object System.Drawing.Point(18, ($logoH + 38))
     $railTitle.Size      = New-Object System.Drawing.Size(160, 18)
     $railTitle.Font      = New-Object System.Drawing.Font("Segoe UI", 8, [System.Drawing.FontStyle]::Bold)
-    $railTitle.ForeColor = $cSlateDim
+    $railTitle.ForeColor = $cTeal
     $rail.Controls.Add($railTitle)
 
     $ry = $logoH + 62
@@ -835,8 +970,8 @@ function Show-InventoryForm {
         $kLbl.Text      = $key.ToUpper()
         $kLbl.Location  = New-Object System.Drawing.Point(18, $ry)
         $kLbl.Size      = New-Object System.Drawing.Size(160, 15)
-        $kLbl.Font      = New-Object System.Drawing.Font("Segoe UI", 7.5)
-        $kLbl.ForeColor = $cSlateDim
+        $kLbl.Font      = New-Object System.Drawing.Font("Segoe UI", 8, [System.Drawing.FontStyle]::Bold)
+        $kLbl.ForeColor = $cLabel
         $rail.Controls.Add($kLbl)
 
         $vLbl              = New-Object System.Windows.Forms.Label
@@ -852,16 +987,16 @@ function Show-InventoryForm {
     }
 
     $railFoot           = New-Object System.Windows.Forms.Label
-    $railFoot.Text      = "Sent to your IT team along with the answers on the right."
+    $railFoot.Text      = $Ui.rail_footnote
     $railFoot.Location  = New-Object System.Drawing.Point(18, ($clientH - 62))
     $railFoot.Size      = New-Object System.Drawing.Size(160, 44)
     $railFoot.Font      = New-Object System.Drawing.Font("Segoe UI", 8)
-    $railFoot.ForeColor = $cSlateDim
+    $railFoot.ForeColor = $cSlate
     $rail.Controls.Add($railFoot)
 
     # ── Form pane ─────────────────────────────────────────────────────────────
     $heading           = New-Object System.Windows.Forms.Label
-    $heading.Text      = "Who's using this computer?"
+    $heading.Text      = $Ui.heading
     $heading.Location  = New-Object System.Drawing.Point($paneX, 22)
     $heading.Size      = New-Object System.Drawing.Size($paneW, 28)
     $heading.Font      = New-Object System.Drawing.Font("Segoe UI", 14, [System.Drawing.FontStyle]::Bold)
@@ -869,8 +1004,11 @@ function Show-InventoryForm {
     $form.Controls.Add($heading)
 
     $subHeading           = New-Object System.Windows.Forms.Label
-    $subHeading.Text      = if ($userFields.Count -eq 1) { "1 field, then you're done." }
-                            else { "$($userFields.Count) fields, then you're done." }
+    # Two keys rather than a plural rule the agent applies itself: the rule
+    # differs by language, and this copy is admin-authored.
+    $subHeading.Text      = Expand-UiText (
+        if ($userFields.Count -eq 1) { $Ui.subheading_one } else { $Ui.subheading }
+    ) @{ count = $userFields.Count }
     $subHeading.Location  = New-Object System.Drawing.Point($paneX, 52)
     $subHeading.Size      = New-Object System.Drawing.Size($paneW, 20)
     $subHeading.Font      = New-Object System.Drawing.Font("Segoe UI", 9.5)
@@ -891,8 +1029,8 @@ function Show-InventoryForm {
         $lbl.Text      = $field.label.ToUpper()
         $lbl.Location  = New-Object System.Drawing.Point($x, $y)
         $lbl.Size      = New-Object System.Drawing.Size(($w - 14), 16)
-        $lbl.Font      = New-Object System.Drawing.Font("Segoe UI", 8, [System.Drawing.FontStyle]::Bold)
-        $lbl.ForeColor = $cSlateDim
+        $lbl.Font      = New-Object System.Drawing.Font("Segoe UI", 8.5, [System.Drawing.FontStyle]::Bold)
+        $lbl.ForeColor = $cLabel
         # Labels are admin-authored now, so one can be longer than the column.
         # An ellipsis at least says so, where a plain clip silently cuts a word.
         $lbl.AutoEllipsis = $true
@@ -901,7 +1039,13 @@ function Show-InventoryForm {
         if ($field.required) {
             $star           = New-Object System.Windows.Forms.Label
             $star.Text      = "*"
-            $star.Location  = New-Object System.Drawing.Point(($x + $w - 12), $y)
+            # Pinned to the far edge of the column, the asterisk read as a stray
+            # mark belonging to the *next* field rather than to this label. Sit
+            # it against the end of the label text, falling back to the column
+            # edge when an admin-authored label is long enough to fill the row.
+            $lblTextW = [System.Windows.Forms.TextRenderer]::MeasureText($lbl.Text, $lbl.Font).Width
+            $starX    = [Math]::Min(($x + $lblTextW - 2), ($x + $w - 12))
+            $star.Location  = New-Object System.Drawing.Point($starX, $y)
             $star.Size      = New-Object System.Drawing.Size(12, 16)
             $star.Font      = New-Object System.Drawing.Font("Segoe UI", 8, [System.Drawing.FontStyle]::Bold)
             $star.ForeColor = $cTeal
@@ -909,14 +1053,40 @@ function Show-InventoryForm {
         }
 
         if ($field.key -eq 'department') {
+            # A DropDownList combo paints its text area and its list with the
+            # system window colours no matter what BackColor says -- which is
+            # why this one alone came out white-on-black in the middle of a dark
+            # form. Owner-drawing is the only way to make it match: DrawItem
+            # then owns both the closed control and every row of the open list.
             $ctrl               = New-Object System.Windows.Forms.ComboBox
             $ctrl.DropDownStyle = "DropDownList"
             $ctrl.FlatStyle     = "Flat"
+            $ctrl.DrawMode      = "OwnerDrawFixed"
             $ctrl.BackColor     = $cNavyMid
             $ctrl.ForeColor     = $cWhite
             $ctrl.Location      = New-Object System.Drawing.Point($x, ($y + 20))
-            $ctrl.Size          = New-Object System.Drawing.Size($w, 28)
+            $ctrl.Size          = New-Object System.Drawing.Size($w, 30)
+            $ctrl.ItemHeight    = 22
             $ctrl.Font          = New-Object System.Drawing.Font("Segoe UI", 10)
+            $ctrl.Add_DrawItem({
+                param($sender, $e)
+                # Selected here means "row under the cursor in the open list",
+                # not "the chosen value" -- so it is the hover highlight.
+                $hot = ($e.State -band [System.Windows.Forms.DrawItemState]::Selected) -ne 0
+                $fill = if ($hot) { $cBlue } else { $cNavyMid }
+                $e.Graphics.FillRectangle((New-Object System.Drawing.SolidBrush $fill), $e.Bounds)
+                if ($e.Index -ge 0) {
+                    $e.Graphics.TextRenderingHint =
+                        [System.Drawing.Text.TextRenderingHint]::ClearTypeGridFit
+                    [System.Windows.Forms.TextRenderer]::DrawText(
+                        $e.Graphics, $sender.Items[$e.Index].ToString(), $sender.Font,
+                        (New-Object System.Drawing.Rectangle ($e.Bounds.X + 6), $e.Bounds.Y,
+                                                             ($e.Bounds.Width - 6), $e.Bounds.Height),
+                        $cWhite,
+                        ([System.Windows.Forms.TextFormatFlags]::VerticalCenter -bor
+                         [System.Windows.Forms.TextFormatFlags]::EndEllipsis))
+                }
+            }.GetNewClosure())
             $options = if ($field.PSObject.Properties.Match('options').Count -gt 0 -and $field.options) {
                 @($field.options)
             } else {
@@ -965,7 +1135,7 @@ function Show-InventoryForm {
     $btnY = $clientH - 58
 
     $btnSubmit             = New-Object System.Windows.Forms.Button
-    $btnSubmit.Text        = "Send check-in"
+    $btnSubmit.Text        = $Ui.submit_label
     $btnSubmit.Size        = New-Object System.Drawing.Size(130, 34)
     $btnSubmit.Location    = New-Object System.Drawing.Point(($paneX + $paneW - 130), $btnY)
     $btnSubmit.Font        = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Bold)
@@ -977,12 +1147,12 @@ function Show-InventoryForm {
     $form.Controls.Add($btnSubmit)
 
     $btnCancel             = New-Object System.Windows.Forms.Button
-    $btnCancel.Text        = "Cancel"
+    $btnCancel.Text        = $Ui.cancel_label
     $btnCancel.Size        = New-Object System.Drawing.Size(90, 34)
     $btnCancel.Location    = New-Object System.Drawing.Point(($paneX + $paneW - 230), $btnY)
     $btnCancel.Font        = New-Object System.Drawing.Font("Segoe UI", 10)
-    $btnCancel.BackColor   = $cNavy
-    $btnCancel.ForeColor   = $cSlate
+    $btnCancel.BackColor   = $cNavyMid
+    $btnCancel.ForeColor   = $cWhite
     $btnCancel.FlatStyle   = "Flat"
     $btnCancel.FlatAppearance.BorderSize  = 1
     $btnCancel.FlatAppearance.BorderColor = $cBorderMd
@@ -1065,6 +1235,19 @@ function Show-InventoryForm {
         $form.TopMost = $false   # release TopMost after focus so user can alt-tab away
     })
 
+    # Now that the process is DPI-aware, Windows no longer stretches the window
+    # for us -- so on a 150% display the 96-DPI layout above would come out
+    # crisp but two-thirds the intended physical size. Scale it once, here,
+    # after every control is in place: Control.Scale walks the whole tree and
+    # scales bounds and the explicit fonts with it.
+    try {
+        $gfx = $form.CreateGraphics()
+        try { $dpiFactor = $gfx.DpiX / 96.0 } finally { $gfx.Dispose() }
+        if ($dpiFactor -gt 1.01) { $form.Scale([float]$dpiFactor) }
+    } catch {
+        Write-Log "DPI scaling of the form failed, showing it unscaled: $_" "WARN"
+    }
+
     $form.ShowDialog() | Out-Null
     return $result
 }
@@ -1141,11 +1324,24 @@ Flush-Queue
 $state       = Get-State
 $fieldConfig = Get-FieldConfig
 $schedule    = Resolve-ScheduleFrom $fieldConfig $state
+$agentUi     = Resolve-AgentUiFrom  $fieldConfig $state
 
 if (-not (Test-Schedule $state.schedule) -or
     $state.schedule.checkin_interval_seconds -ne $schedule.checkin_interval_seconds -or
     $state.schedule.cancel_retry_seconds     -ne $schedule.cancel_retry_seconds) {
     $state | Add-Member -NotePropertyName schedule -NotePropertyValue $schedule -Force
+    Save-State $state
+}
+
+# Cached for the same reason the schedule is: the window has to look like this
+# company's agent even on a run where /config could not be reached. Compared as
+# serialized JSON because these are ~20 string properties and there is no
+# cheaper structural equality for a PSCustomObject -- the point of comparing at
+# all is to avoid rewriting state.json on every single run.
+$agentUiJson = $agentUi | ConvertTo-Json -Compress
+if (($state.PSObject.Properties.Match('ui').Count -eq 0) -or
+    (($state.ui | ConvertTo-Json -Compress) -ne $agentUiJson)) {
+    $state | Add-Member -NotePropertyName ui -NotePropertyValue $agentUi -Force
     Save-State $state
 }
 
@@ -1160,7 +1356,7 @@ Write-Log "HW: $($hw | ConvertTo-Json -Compress)"
 $enabledHwFields = @($fieldConfig.hardware_fields)
 
 # Show GUI
-$res = Show-InventoryForm -HW $hw -FieldConfig $fieldConfig -Schedule $schedule
+$res = Show-InventoryForm -HW $hw -FieldConfig $fieldConfig -Schedule $schedule -Ui $agentUi
 
 # ── Cancelled ─────────────────────────────────────────────────────────────────
 if (-not $res.submitted) {
@@ -1216,9 +1412,9 @@ $state | Add-Member -NotePropertyName cancelled_at -NotePropertyValue $null     
 Save-State $state
 
 # Success dialog
-$dialogMsg = "Thank you, $($ud.first_name)!`n`nYour device has been registered."
+$dialogMsg = Expand-UiText $agentUi.success_message @{ first_name = $ud.first_name }
 if (-not $immediate) { $dialogMsg += "`n`n(Offline — data will sync automatically.)" }
-[System.Windows.Forms.MessageBox]::Show($dialogMsg, "Assetly Inventory – Done",
+[System.Windows.Forms.MessageBox]::Show($dialogMsg, $agentUi.window_title,
     [System.Windows.Forms.MessageBoxButtons]::OK,
     [System.Windows.Forms.MessageBoxIcon]::Information) | Out-Null
 

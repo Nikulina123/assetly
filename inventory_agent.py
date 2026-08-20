@@ -69,20 +69,146 @@ DEFAULT_SCHEDULE = {
 # backend/app/field_config.py and $DefaultDepartments in AssetlyAgent_Windows.ps1.
 DEFAULT_DEPARTMENT_OPTIONS = ["Webiz ERP", "Fundbox", "Playtika", "Artlist", "The5%ers", "Other"]
 
-# Portal design tokens, copied from backend/app/static/assetly.css so the agent
-# window and app.assetly.ge read as one product. Names match the CSS variables.
-NAVY         = "#0B1120"   # --navy        window background
-NAVY_SIDEBAR = "#080E1A"   # --navy-sidebar device rail
-NAVY_MID     = "#0F1829"   # --navy-mid    input background
-BLUE         = "#1A6EFF"   # --blue        primary action
-BLUE_HOVER   = "#1560E6"
-TEAL         = "#00C2A8"   # --teal        brand accent / required marker
-SLATE        = "#8A9BB5"   # --slate       secondary text
-SLATE_DIM    = "#4A5A70"   # --slate-dim   labels, captions
-WHITE        = "#F4F7FF"   # --white       primary text
-BORDER       = "#1B2536"   # --border, flattened: Tk has no alpha compositing
-BORDER_MD    = "#28344A"   # --border-md
-BORDER_INPUT = "#212C3F"   # --border-input
+# ─── Agent window appearance ──────────────────────────────────────────────────
+# Copy and colours arrive on the `ui` key of the same GET /config response that
+# carries the fields and the schedule, so an admin editing them in the portal
+# reaches this agent on its next run with no rebuild and no re-download --
+# exactly as a field toggle does. DEFAULT_AGENT_UI is the offline fallback and
+# is kept in sync with DEFAULT_AGENT_UI in backend/app/agent_ui.py (the
+# authority) and $DefaultAgentUi in AssetlyAgent_Windows.ps1.
+#
+# The palette still derives from backend/app/static/assetly.css so that an
+# unconfigured window and app.assetly.ge read as one product, but the text
+# tokens are lifted from their CSS values: --slate-dim on --navy is roughly
+# 2.5:1, well under WCAG's 4.5:1 for body text, which made the form read as a
+# wall of grey. The portal holds admin-supplied palettes to the same bar
+# (_CONTRAST_PAIRS in backend/app/agent_ui.py) before storing them.
+DEFAULT_AGENT_UI = {
+    "window_title": "Assetly Inventory Agent",
+    "heading": "Who's using this computer?",
+    "subheading": "{count} fields, then you're done.",
+    "subheading_one": "{count} field, then you're done.",
+    "rail_title": "THIS DEVICE",
+    "rail_footnote": "Sent to your IT team along with the answers on the right.",
+    "submit_label": "Send check-in",
+    "cancel_label": "Cancel",
+    "success_message": "Thank you, {first_name}!\n\nYour device has been registered.",
+    "navy": "#0B1120",           # window background
+    "navy_sidebar": "#080E1A",   # device rail
+    "navy_mid": "#0F1829",       # input background
+    "blue": "#1866F2",           # primary action, focus ring
+    "blue_hover": "#1560E6",
+    "teal": "#00C2A8",           # brand accent / required marker
+    "slate": "#A4B3CC",          # secondary text
+    "label": "#92A3BE",          # field labels, rail keys
+    "white": "#F4F7FF",          # primary text
+    "border_md": "#5A6E99",      # cancel button outline
+    "border_input": "#526691",   # input outline at rest
+}
+
+AGENT_UI_COLOR_KEYS = [
+    k for k in DEFAULT_AGENT_UI
+    if k.startswith(("navy", "blue", "border")) or k in ("teal", "slate", "label", "white")
+]
+
+# Only the placeholders _expand_ui_text actually substitutes. Anything else in
+# braces would reach the employee as a literal "{whatever}", which reads as a
+# bug in the agent rather than a typo in the portal.
+AGENT_UI_PLACEHOLDERS = {
+    "subheading": {"count"},
+    "subheading_one": {"count"},
+    "success_message": {"first_name"},
+}
+
+_HEX_RE = re.compile(r"^#[0-9A-Fa-f]{6}$")
+_BRACE_RE = re.compile(r"\{([^{}]*)\}")
+
+# The live palette. Module-level names because the ~45 references across
+# InventoryForm read far better as NAVY than as self._ui["navy"], and
+# apply_agent_ui below rebinds them once, before any widget exists. That is
+# safe here in a way it would not be in a long-lived service: this process
+# builds exactly one window from one config fetch and then exits.
+NAVY = NAVY_SIDEBAR = NAVY_MID = BLUE = BLUE_HOVER = TEAL = ""
+SLATE = SLATE_DIM = WHITE = BORDER = BORDER_MD = BORDER_INPUT = ""
+
+
+def apply_agent_ui(ui: dict) -> None:
+    """Binds the resolved palette to the module-level colour names."""
+    globals().update({
+        "NAVY": ui["navy"],
+        "NAVY_SIDEBAR": ui["navy_sidebar"],
+        "NAVY_MID": ui["navy_mid"],
+        "BLUE": ui["blue"],
+        "BLUE_HOVER": ui["blue_hover"],
+        "TEAL": ui["teal"],
+        "SLATE": ui["slate"],
+        # SLATE_DIM is retained as a name because existing call sites use it,
+        # but it now resolves to the readable label colour. Nothing in the
+        # window is allowed to sit at the old 2.5:1 any more.
+        "SLATE_DIM": ui["label"],
+        "WHITE": ui["white"],
+        "BORDER": ui["border_input"],
+        "BORDER_MD": ui["border_md"],
+        "BORDER_INPUT": ui["border_input"],
+    })
+
+
+apply_agent_ui(DEFAULT_AGENT_UI)
+
+
+def _is_valid_agent_ui(ui) -> bool:
+    """Guards against a malformed-but-200-OK response reaching InventoryForm,
+    where a missing key raises inside Tkinter's constructor and a bad colour
+    string raises TclError mid-build, in both cases with no surrounding
+    try/except in main(). Mirrors Test-AgentUi in AssetlyAgent_Windows.ps1.
+
+    Contrast is deliberately not re-checked: the server refuses to store an
+    unreadable combination and is the only layer that can report that to the
+    admin who caused it."""
+    if not isinstance(ui, dict):
+        return False
+    for key in DEFAULT_AGENT_UI:
+        value = ui.get(key)
+        if not isinstance(value, str) or not value:
+            return False
+        if key in AGENT_UI_COLOR_KEYS and not _HEX_RE.match(value):
+            return False
+    for key in DEFAULT_AGENT_UI:
+        if key in AGENT_UI_COLOR_KEYS:
+            continue
+        allowed = AGENT_UI_PLACEHOLDERS.get(key, set())
+        text = ui[key]
+        if set(_BRACE_RE.findall(text)) - allowed:
+            return False
+        if "{" in _BRACE_RE.sub("", text) or "}" in _BRACE_RE.sub("", text):
+            return False
+    return True
+
+
+def resolve_agent_ui_from(config: dict, state: dict) -> dict:
+    """Fresh server value, else the last known good one, else the built-in.
+    The cache is what keeps a laptop that is offline for a week looking like
+    its company's agent instead of reverting to stock styling mid-rollout --
+    the same reason resolve_schedule_from caches."""
+    fresh = (config or {}).get("ui")
+    if _is_valid_agent_ui(fresh):
+        return fresh
+    if fresh is not None:
+        log.warning("Server sent an unusable window appearance — ignoring it.")
+    cached = (state or {}).get("ui")
+    if _is_valid_agent_ui(cached):
+        log.warning("Using cached window appearance — server value missing or malformed.")
+        return cached
+    return dict(DEFAULT_AGENT_UI)
+
+
+def _expand_ui_text(text: str, **values) -> str:
+    """Literal replace, not str.format: the copy is admin-authored, and format
+    raises on any brace it does not recognise. _is_valid_agent_ui has already
+    rejected unknown placeholders, so this only has to be total."""
+    for key, value in values.items():
+        text = text.replace("{" + key + "}", str(value))
+    return text
 
 # ─── State ────────────────────────────────────────────────────────────────────
 def load_state() -> dict:
@@ -490,10 +616,13 @@ def submit_to_sheets(user_data: dict, hw: dict, enabled_hardware_fields: list) -
 
 # ─── GUI ──────────────────────────────────────────────────────────────────────
 class InventoryForm(tk.Tk):
-    def __init__(self, hw: dict, field_config: dict, schedule: dict):
+    def __init__(self, hw: dict, field_config: dict, schedule: dict, ui: dict):
         super().__init__()
         self.hw           = hw
         self.field_config = field_config
+        # Copy only. The colours from the same dict were bound to the
+        # module-level tokens by apply_agent_ui before this window was built.
+        self.ui           = ui
         # Only used for the cancel dialog's "reminded again in …" line, which
         # has to name this company's actual retry rather than a fixed 24 h.
         self.schedule     = schedule
@@ -501,7 +630,7 @@ class InventoryForm(tk.Tk):
         self.user_data: dict = {}
         self._field_widgets: dict = {}   # non-department field key -> tk.Entry
 
-        self.title("Assetly Inventory Agent")
+        self.title(self.ui["window_title"])
         self.configure(bg=NAVY)
         self.resizable(False, False)
         self._center()
@@ -627,8 +756,8 @@ class InventoryForm(tk.Tk):
         rail_inner.pack(fill="both", expand=True, padx=18, pady=18)
         self._draw_logo(rail_inner)
 
-        tk.Label(rail_inner, text="THIS DEVICE", font=("Helvetica", 9, "bold"),
-                 fg=SLATE_DIM, bg=NAVY_SIDEBAR).pack(anchor="w", pady=(20, 8))
+        tk.Label(rail_inner, text=self.ui["rail_title"], font=("Helvetica", 9, "bold"),
+                 fg=TEAL, bg=NAVY_SIDEBAR).pack(anchor="w", pady=(20, 8))
 
         for label, value in self._device_rows():
             tk.Label(rail_inner, text=label.upper(), font=("Helvetica", 9),
@@ -637,19 +766,24 @@ class InventoryForm(tk.Tk):
                      fg=WHITE, bg=NAVY_SIDEBAR, anchor="w",
                      wraplength=160, justify="left").pack(anchor="w")
 
-        tk.Label(rail_inner, text="Sent to your IT team along with\nthe answers on the right.",
-                 font=("Helvetica", 9), fg=SLATE_DIM, bg=NAVY_SIDEBAR,
-                 justify="left").pack(anchor="w", side="bottom", pady=(16, 0))
+        # SLATE, not SLATE_DIM: the footnote is prose, not a field label, and
+        # the Windows agent paints it with the same token. Both are contrast-
+        # checked against the rail, so this is about the two agents matching.
+        tk.Label(rail_inner, text=self.ui["rail_footnote"],
+                 font=("Helvetica", 9), fg=SLATE, bg=NAVY_SIDEBAR,
+                 wraplength=160, justify="left").pack(anchor="w", side="bottom", pady=(16, 0))
 
         # ── Form pane ─────────────────────────────────────────────────────────
         pane = tk.Frame(self, bg=NAVY)
         pane.pack(side="left", fill="both", expand=True, padx=24, pady=20)
 
-        tk.Label(pane, text="Who's using this Mac?" if sys.platform == "darwin"
-                            else "Who's using this computer?",
+        tk.Label(pane, text=self._heading(),
                  font=("Helvetica", 16, "bold"), fg=WHITE, bg=NAVY).pack(anchor="w")
+        # Two keys rather than a plural rule the agent applies itself: the rule
+        # differs by language, and this copy is admin-authored.
         count = len(self.field_config["user_fields"])
-        tk.Label(pane, text=f"{count} field{'s' if count != 1 else ''}, then you're done.",
+        subheading = self.ui["subheading_one"] if count == 1 else self.ui["subheading"]
+        tk.Label(pane, text=_expand_ui_text(subheading, count=count),
                  font=("Helvetica", 11), fg=SLATE, bg=NAVY).pack(anchor="w", pady=(3, 0))
 
         form = tk.Frame(pane, bg=NAVY)
@@ -678,11 +812,27 @@ class InventoryForm(tk.Tk):
         # ── Actions ───────────────────────────────────────────────────────────
         actions = tk.Frame(pane, bg=NAVY)
         actions.pack(fill="x", side="bottom")
-        self._button(actions, "Send check-in", self._on_submit,
+        self._button(actions, self.ui["submit_label"], self._on_submit,
                      fg="#FFFFFF", bg=BLUE, hover=BLUE_HOVER).pack(side="right")
-        self._button(actions, "Cancel", self._on_cancel,
+        self._button(actions, self.ui["cancel_label"], self._on_cancel,
                      fg=SLATE, bg=NAVY, hover="#16243A",
                      border=BORDER_MD).pack(side="right", padx=(0, 10))
+
+    def _heading(self) -> str:
+        """The company's heading, or platform-native wording if they have not
+        set one.
+
+        This agent said "Who's using this Mac?" on macOS long before the
+        heading was configurable, and losing that to a generic default would be
+        a visible regression for every company that never touches the setting.
+        An admin who does set a heading gets exactly what they typed -- second-
+        guessing their wording per platform would be worse than the small
+        asymmetry here.
+        """
+        heading = self.ui["heading"]
+        if heading == DEFAULT_AGENT_UI["heading"] and sys.platform == "darwin":
+            return "Who's using this Mac?"
+        return heading
 
     def _device_rows(self):
         """The hardware facts for the rail, as (label, value) pairs.
@@ -859,6 +1009,17 @@ def main():
         state["schedule"] = schedule
         save_state(state)
 
+    # Appearance rides on the same response. Cached for the same reason the
+    # schedule is: the window has to look like this company's agent even on a
+    # run where /config could not be reached.
+    ui = resolve_agent_ui_from(config, state)
+    if ui != state.get("ui"):
+        state["ui"] = ui
+        save_state(state)
+    # Must happen before InventoryForm is constructed: the module-level colour
+    # tokens are read throughout _build().
+    apply_agent_ui(ui)
+
     # 4. Guard: exit early if not due (skipped when --force is passed)
     if not args.force and not should_show_form(state, schedule):
         sys.exit(0)
@@ -871,7 +1032,7 @@ def main():
     field_config = config
 
     # 6. Show GUI
-    app = InventoryForm(hw, field_config, schedule)
+    app = InventoryForm(hw, field_config, schedule, ui)
     app.mainloop()
 
     # ── Cancelled ─────────────────────────────────────────────────────────────
@@ -890,7 +1051,7 @@ def main():
     save_state(state)
 
     # Success dialog
-    dialog_msg = f"Thank you, {app.user_data['first_name']}!\n\nYour device has been registered."
+    dialog_msg = _expand_ui_text(ui["success_message"], first_name=app.user_data["first_name"])
     if not immediate:
         dialog_msg += "\n\n(Offline — data will sync automatically.)"
     messagebox.showinfo("Assetly Inventory – Done", dialog_msg)

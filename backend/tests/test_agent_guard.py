@@ -196,9 +196,10 @@ def test_force_reaches_the_form_with_the_same_fetched_config(agent, monkeypatch)
     seen = {}
 
     class FakeForm:
-        def __init__(self, hw, field_config, schedule):
+        def __init__(self, hw, field_config, schedule, ui):
             seen["config"] = field_config
             seen["schedule"] = schedule
+            seen["ui"] = ui
             self.submitted = False
 
         def mainloop(self):
@@ -216,4 +217,9 @@ def test_force_reaches_the_form_with_the_same_fetched_config(agent, monkeypatch)
     # The form is also handed the resolved schedule, which is what lets the
     # cancel dialog name this company's retry instead of a hardcoded 24 hours.
     assert seen["schedule"] == SERVER_CONFIG["schedule"]
+    # Same for the appearance: it rides on the same response, so a company that
+    # customised its window gets that window on this run rather than one run
+    # late. SERVER_CONFIG carries no "ui" key, which is the pre-appearance
+    # server's response -- the built-in defaults are the correct outcome.
+    assert seen["ui"] == agent.DEFAULT_AGENT_UI
     assert "cancelled_at" in state

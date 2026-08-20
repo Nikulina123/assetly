@@ -151,6 +151,76 @@
   </div>
 </div>
 
+{# Appearance of the agent's check-in window. Like the field settings above,
+   this reaches every already-installed agent on its next run -- nobody has to
+   re-download anything. Values are echoed from `agent_ui_form` when a save was
+   rejected, so a bad colour can be corrected without retyping the rest. #}
+{% set ui_value = agent_ui_form if agent_ui_form else agent_ui['effective'] %}
+<div class="card flush">
+  <div class="card-header"><div class="card-title">{{ icons.icon('settings', 14, extra_class='spec-row-icon') }}&nbsp;Agent window appearance</div></div>
+  <div class="card-body">
+    {% if agent_ui_error %}
+    <div class="banner banner-error" style="white-space:pre-line">{{ agent_ui_error }}</div>
+    {% endif %}
+    <div class="banner">
+      Changes reach every installed agent on its next check-in — no new download needed.
+      {% if agent_ui['customised'] %}
+      {{ agent_ui['customised'] | length }} of {{ agent_ui['labels'] | length }} settings are customised.
+      {% else %}
+      Everything is currently at its built-in default.
+      {% endif %}
+    </div>
+    <form method="post" action="/admin/companies/{{ company['id'] }}/appearance">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+
+      {% for key, max_length in agent_ui['copy_keys'].items() %}
+      <label class="muted" style="display:block;margin:12px 0 4px">
+        {{ agent_ui['labels'][key] }}
+        {% if agent_ui['placeholders'].get(key) %}
+          &mdash; may use
+          {% for p in agent_ui['placeholders'][key] %}<code>{{ '{' }}{{ p }}{{ '}' }}</code>{% if not loop.last %}, {% endif %}{% endfor %}
+        {% endif %}
+      </label>
+      {% if key == 'success_message' %}
+      {# The only multi-line value: it is shown in a dialog, not on one row. #}
+      <textarea class="input" name="{{ key }}" rows="3" maxlength="{{ max_length }}"
+                style="width:100%;resize:vertical"
+                placeholder="{{ agent_ui['defaults'][key] }}">{{ ui_value[key] }}</textarea>
+      {% else %}
+      <input class="input" type="text" name="{{ key }}" value="{{ ui_value[key] }}"
+             maxlength="{{ max_length }}" style="width:100%"
+             placeholder="{{ agent_ui['defaults'][key] }}">
+      {% endif %}
+      {% endfor %}
+
+      <label class="muted" style="display:block;margin:18px 0 4px">
+        Colours &mdash; six hex digits, e.g. <code>#1866F2</code>. Combinations that would be
+        unreadable on an employee&rsquo;s screen are rejected when you save.
+      </label>
+      {% for key in agent_ui['color_keys'] %}
+      <div style="display:flex;gap:10px;align-items:center;margin:8px 0">
+        {# Shows the value currently in force, not the one being typed: the
+           portal ships no JavaScript, so this cannot track the input live. #}
+        <span title="{{ agent_ui['effective'][key] }}"
+              style="width:26px;height:26px;flex:none;border-radius:5px;
+                     border:1px solid rgba(255,255,255,.25);
+                     background:{{ agent_ui['effective'][key] }}"></span>
+        <span class="muted" style="flex:1;min-width:160px">{{ agent_ui['labels'][key] }}</span>
+        <input class="input" type="text" name="{{ key }}" value="{{ ui_value[key] }}"
+               pattern="#[0-9A-Fa-f]{6}" maxlength="7" spellcheck="false"
+               style="flex:none;width:110px;font-family:ui-monospace,Consolas,monospace"
+               placeholder="{{ agent_ui['defaults'][key] }}">
+      </div>
+      {% endfor %}
+
+      <button type="submit" class="btn" style="margin-top:12px">Save appearance</button>
+      <div class="muted" style="margin-top:8px">
+        Clear any box and save to put that one setting back to its built-in default.
+      </div>
+    </form>
+  </div>
+</div>
+
 <div class="card flush">
   <div class="card-header"><div class="card-title">{{ icons.icon('download', 14, extra_class='spec-row-icon') }}&nbsp;Download agent</div></div>
   <div class="card-body">

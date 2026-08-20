@@ -26,6 +26,11 @@ from app.enrollment import (
     revoke_device_credential,
     revoke_token,
 )
+from app.agent_ui import (
+    DEFAULT_AGENT_UI,
+    resolve_agent_ui_for_admin,
+    set_agent_ui,
+)
 from app.field_config import (
     add_custom_field,
     remove_custom_field,
@@ -233,6 +238,17 @@ async def _schedule_context(pool, company_id: str) -> dict:
     }
 
 
+async def _agent_ui_context(pool, company_id: uuid.UUID) -> dict:
+    """Everything company_detail.html needs to render the appearance card.
+
+    Called alongside _schedule_context at every site that renders that
+    template, including the error re-renders -- a handler that skipped it would
+    drop the whole card off the page as a side effect of an unrelated
+    validation failure.
+    """
+    return {"agent_ui": await resolve_agent_ui_for_admin(pool, str(company_id))}
+
+
 @router.get("/companies/{company_id}")
 async def company_detail(
     request: Request, company_id: uuid.UUID, admin_id: str = Depends(require_admin)
@@ -251,6 +267,7 @@ async def company_detail(
         "nav_active": "settings",
     }
     context.update(await _schedule_context(pool, company_id))
+    context.update(await _agent_ui_context(pool, company_id))
     return templates.TemplateResponse(request, "company_detail.html", context)
 
 
@@ -289,6 +306,7 @@ async def rotate_key(
         "tokens": await _tokens_for_display(pool, str(company_id)),
     }
     context.update(await _schedule_context(pool, company_id))
+    context.update(await _agent_ui_context(pool, company_id))
     return templates.TemplateResponse(request, "company_detail.html", context)
 
 
@@ -329,6 +347,7 @@ async def revoke_company(
         "tokens": await _tokens_for_display(pool, str(company_id)),
     }
     context.update(await _schedule_context(pool, company_id))
+    context.update(await _agent_ui_context(pool, company_id))
     return templates.TemplateResponse(request, "company_detail.html", context)
 
 
@@ -404,11 +423,66 @@ async def update_schedule(
             "schedule_error": str(exc),
         }
         context.update(await _schedule_context(pool, company_id))
+        context.update(await _agent_ui_context(pool, company_id))
         return templates.TemplateResponse(
             request, "company_detail.html", context, status_code=200
         )
 
     await set_schedule(pool, str(company_id), interval, cancel_retry_seconds)
+    return RedirectResponse(f"/admin/companies/{company_id}", status_code=303)
+
+
+@router.post("/companies/{company_id}/appearance")
+async def update_agent_ui(
+    request: Request,
+    company_id: uuid.UUID,
+    admin_id: str = Depends(require_admin),
+):
+    """Saves the agent window's copy and colours.
+
+    Reads the raw form rather than declaring ~20 Form(...) parameters: the set
+    of keys is DEFAULT_AGENT_UI, and restating it here would be a second list
+    to keep in sync -- one that fails by silently ignoring a field rather than
+    by raising.
+    """
+    form = await request.form()
+    _check_csrf(request, str(form.get("csrf_token", "")))
+    pool = await get_pool()
+    await _get_company_or_404(pool, company_id)
+
+    # Absent keys mean "leave at default"; the template posts every key, so in
+    # practice absence only happens for a form from an older page load.
+    submitted = {key: str(form[key]) for key in DEFAULT_AGENT_UI if key in form}
+
+    try:
+        await set_agent_ui(pool, str(company_id), submitted)
+    except ValueError as exc:
+        # Re-render in place with the message, as update_schedule does. The
+        # rejected values ARE echoed back here, unlike the schedule form: a
+        # colour submission is ~20 interdependent values an admin has just
+        # hand-picked, and re-reading the stored palette would throw all of
+        # that away to show the failure. The card renders from `agent_ui_form`
+        # when present, so the admin can fix the one bad value in place.
+        company = await _get_company_or_404(pool, company_id)
+        companies = await _all_companies(pool)
+        field_settings = await resolve_field_settings_for_admin(pool, str(company_id))
+        context = {
+            "request": request,
+            "company": company,
+            "companies": companies,
+            "field_settings": field_settings,
+            "tokens": await _tokens_for_display(pool, str(company_id)),
+            "csrf_token": _new_csrf_token(request),
+            "nav_active": "settings",
+            "agent_ui_error": str(exc),
+            "agent_ui_form": submitted,
+        }
+        context.update(await _schedule_context(pool, company_id))
+        context.update(await _agent_ui_context(pool, company_id))
+        return templates.TemplateResponse(
+            request, "company_detail.html", context, status_code=200
+        )
+
     return RedirectResponse(f"/admin/companies/{company_id}", status_code=303)
 
 
@@ -476,6 +550,7 @@ async def add_custom_field_route(
             "tokens": await _tokens_for_display(pool, str(company_id)),
         }
         context.update(await _schedule_context(pool, company_id))
+        context.update(await _agent_ui_context(pool, company_id))
         return templates.TemplateResponse(request, "company_detail.html", context)
     return RedirectResponse(f"/admin/companies/{company_id}", status_code=303)
 
