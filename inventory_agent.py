@@ -69,9 +69,20 @@ DEFAULT_SCHEDULE = {
 # backend/app/field_config.py and $DefaultDepartments in AssetlyAgent_Windows.ps1.
 DEFAULT_DEPARTMENT_OPTIONS = ["Webiz ERP", "Fundbox", "Playtika", "Artlist", "The5%ers", "Other"]
 
-BRAND_COLOR  = "#1A2B5A"
-ACCENT_COLOR = "#E8303A"
-BG_COLOR     = "#F5F7FA"
+# Portal design tokens, copied from backend/app/static/assetly.css so the agent
+# window and app.assetly.ge read as one product. Names match the CSS variables.
+NAVY         = "#0B1120"   # --navy        window background
+NAVY_SIDEBAR = "#080E1A"   # --navy-sidebar device rail
+NAVY_MID     = "#0F1829"   # --navy-mid    input background
+BLUE         = "#1A6EFF"   # --blue        primary action
+BLUE_HOVER   = "#1560E6"
+TEAL         = "#00C2A8"   # --teal        brand accent / required marker
+SLATE        = "#8A9BB5"   # --slate       secondary text
+SLATE_DIM    = "#4A5A70"   # --slate-dim   labels, captions
+WHITE        = "#F4F7FF"   # --white       primary text
+BORDER       = "#1B2536"   # --border, flattened: Tk has no alpha compositing
+BORDER_MD    = "#28344A"   # --border-md
+BORDER_INPUT = "#212C3F"   # --border-input
 
 # ─── State ────────────────────────────────────────────────────────────────────
 def load_state() -> dict:
@@ -491,7 +502,7 @@ class InventoryForm(tk.Tk):
         self._field_widgets: dict = {}   # non-department field key -> tk.Entry
 
         self.title("Assetly Inventory Agent")
-        self.configure(bg=BG_COLOR)
+        self.configure(bg=NAVY)
         self.resizable(False, False)
         self._center()
         self._build()
@@ -519,37 +530,67 @@ class InventoryForm(tk.Tk):
         self.focus_force()
 
     def _center(self):
-        # 644 was sized for the four built-in rows. The row count is now
-        # whatever the company configured, so the window has to grow with it
-        # or added custom fields push the Submit button off-screen.
-        w = 520
-        h = 644 + 42 * (len(self.field_config["user_fields"]) - 4)
+        # Device facts sit in the left rail rather than under the form, so the
+        # window grows only with the fields themselves — and two short fields
+        # share a row, so it grows half as fast as the field count.
+        w = 760
+        h = 384 + 62 * self._form_rows()
         self.update_idletasks()
         x = (self.winfo_screenwidth()  - w) // 2
         y = (self.winfo_screenheight() - h) // 2
         self.geometry(f"{w}x{h}+{x}+{y}")
 
-    def _draw_logo(self, parent):
-        """Paint assetly_logo.svg into the header.
+    # Fields whose value is long enough that halving the row would truncate it
+    # on screen. Everything else pairs up two-to-a-row.
+    FULL_WIDTH_KEYS = {"email"}
+
+    def _layout_slots(self):
+        """Assign every configured field a (row, column, columnspan) slot.
+
+        Two short fields share a row; an email — or any field named in
+        FULL_WIDTH_KEYS — takes the whole row to itself.
+        """
+        slots, row, col = [], 0, 0
+        for f in self.field_config["user_fields"]:
+            if f["key"] in self.FULL_WIDTH_KEYS:
+                if col == 1:
+                    row, col = row + 1, 0
+                slots.append((f, row, 0, 2))
+                row += 1
+            else:
+                slots.append((f, row, col, 1))
+                if col == 1:
+                    row, col = row + 1, 0
+                else:
+                    col = 1
+        return slots
+
+    def _form_rows(self) -> int:
+        slots = self._layout_slots()
+        return (slots[-1][1] + 1) if slots else 0
+
+    def _draw_logo(self, parent, width=144, bg=NAVY_SIDEBAR):
+        """Paint assetly_logo.svg at `width` pixels wide.
 
         Tk has no SVG support and PhotoImage only reads GIF/PNG, so the logo is
         drawn from the SVG's own geometry on a Canvas. That keeps the agent a
         single file — there is no image shipped alongside it on a checked-in
         machine — and keeps it sharp at any window scale.
         """
-        s = 0.4                       # SVG is 400x180; the header gets 160x72
-        c = tk.Canvas(parent, width=160, height=72, bg=BRAND_COLOR,
+        s = width / 400.0             # the SVG is 400x180 user units
+        h = width * 0.45
+        c = tk.Canvas(parent, width=width, height=h, bg=bg,
                       highlightthickness=0, bd=0)
-        c.pack(side="left", padx=22, pady=4)
+        c.pack(anchor="w")
 
         # backdrop: rect 400x180 rx=18, as two rects plus four corner arcs
-        bg, r = "#0D1119", 18 * s
-        c.create_rectangle(r, 0, 160 - r, 72, fill=bg, outline=bg)
-        c.create_rectangle(0, r, 160, 72 - r, fill=bg, outline=bg)
-        for x, y, start in ((0, 0, 90), (160 - 2*r, 0, 0),
-                            (160 - 2*r, 72 - 2*r, 270), (0, 72 - 2*r, 180)):
+        card, r = "#0D1119", 18 * s
+        c.create_rectangle(r, 0, width - r, h, fill=card, outline=card)
+        c.create_rectangle(0, r, width, h - r, fill=card, outline=card)
+        for x, y, start in ((0, 0, 90), (width - 2*r, 0, 0),
+                            (width - 2*r, h - 2*r, 270), (0, h - 2*r, 180)):
             c.create_arc(x, y, x + 2*r, y + 2*r, start=start, extent=90,
-                         fill=bg, outline=bg)
+                         fill=card, outline=card)
 
         # node-graph mark. The SVG runs a #5FD8BE -> #3AA98F gradient along the
         # edges; a Canvas line takes one colour, so each edge gets its own stop.
@@ -573,96 +614,165 @@ class InventoryForm(tk.Tk):
                       fill="#4ECDB4", anchor="sw")
 
     def _build(self):
-        # ── Header bar ────────────────────────────────────────────────────────
-        hdr = tk.Frame(self, bg=BRAND_COLOR, height=80)
-        hdr.pack(fill="x")
-        hdr.pack_propagate(False)
+        self._style_comboboxes()
 
-        self._draw_logo(hdr)
+        # ── Device rail ───────────────────────────────────────────────────────
+        # Everything the machine reports about itself lives here, so the form on
+        # the right keeps a fixed height however many fields a company adds.
+        rail = tk.Frame(self, bg=NAVY_SIDEBAR, width=196)
+        rail.pack(side="left", fill="y")
+        rail.pack_propagate(False)
 
-        # Red accent line
-        tk.Frame(self, bg=ACCENT_COLOR, height=4).pack(fill="x")
+        rail_inner = tk.Frame(rail, bg=NAVY_SIDEBAR)
+        rail_inner.pack(fill="both", expand=True, padx=18, pady=18)
+        self._draw_logo(rail_inner)
 
-        # ── Welcome text ──────────────────────────────────────────────────────
-        wf = tk.Frame(self, bg=BG_COLOR)
-        wf.pack(fill="x", padx=26, pady=(18, 4))
-        tk.Label(
-            wf,
-            text="Hello, I am Inventory Agent of Assetly and I need following information",
-            wraplength=468, justify="left",
-            font=("Helvetica", 12), fg="#1C1C1E", bg=BG_COLOR,
-        ).pack(anchor="w")
+        tk.Label(rail_inner, text="THIS DEVICE", font=("Helvetica", 9, "bold"),
+                 fg=SLATE_DIM, bg=NAVY_SIDEBAR).pack(anchor="w", pady=(20, 8))
 
-        # ── Form ──────────────────────────────────────────────────────────────
-        form = tk.Frame(self, bg=BG_COLOR)
-        form.pack(fill="both", expand=True, padx=26, pady=4)
-        form.columnconfigure(1, weight=1)
+        for label, value in self._device_rows():
+            tk.Label(rail_inner, text=label.upper(), font=("Helvetica", 9),
+                     fg=SLATE_DIM, bg=NAVY_SIDEBAR).pack(anchor="w", pady=(6, 0))
+            tk.Label(rail_inner, text=value, font=("Menlo", 10),
+                     fg=WHITE, bg=NAVY_SIDEBAR, anchor="w",
+                     wraplength=160, justify="left").pack(anchor="w")
+
+        tk.Label(rail_inner, text="Sent to your IT team along with\nthe answers on the right.",
+                 font=("Helvetica", 9), fg=SLATE_DIM, bg=NAVY_SIDEBAR,
+                 justify="left").pack(anchor="w", side="bottom", pady=(16, 0))
+
+        # ── Form pane ─────────────────────────────────────────────────────────
+        pane = tk.Frame(self, bg=NAVY)
+        pane.pack(side="left", fill="both", expand=True, padx=24, pady=20)
+
+        tk.Label(pane, text="Who's using this Mac?" if sys.platform == "darwin"
+                            else "Who's using this computer?",
+                 font=("Helvetica", 16, "bold"), fg=WHITE, bg=NAVY).pack(anchor="w")
+        count = len(self.field_config["user_fields"])
+        tk.Label(pane, text=f"{count} field{'s' if count != 1 else ''}, then you're done.",
+                 font=("Helvetica", 11), fg=SLATE, bg=NAVY).pack(anchor="w", pady=(3, 0))
+
+        form = tk.Frame(pane, bg=NAVY)
+        form.pack(fill="both", expand=True, pady=(18, 0))
+        form.columnconfigure(0, weight=1, uniform="col")
+        form.columnconfigure(1, weight=1, uniform="col")
 
         self._v_department = None
-        row = 0
-        for f in self.field_config["user_fields"]:
-            suffix = " *" if f["required"] else ""
+        for f, row, col, span in self._layout_slots():
+            cell = tk.Frame(form, bg=NAVY)
+            cell.grid(row=row, column=col, columnspan=span, sticky="ew",
+                      padx=(0, 12) if span == 1 and col == 0 else 0, pady=(0, 14))
+
+            self._label(cell, f["label"], f["required"])
             if f["key"] == "department":
-                tk.Label(form, text=f["label"] + suffix, font=("Helvetica", 11, "bold"),
-                         bg=BG_COLOR, anchor="w").grid(row=row, column=0, sticky="w", pady=(10, 2))
                 options = f.get("options") or DEFAULT_DEPARTMENT_OPTIONS
                 self._v_department = tk.StringVar(value=options[0])
                 ttk.Combobox(
-                    form, textvariable=self._v_department, values=options,
-                    state="readonly", font=("Helvetica", 11), width=36,
-                ).grid(row=row, column=1, sticky="ew", padx=(8, 0), pady=(10, 2))
+                    cell, textvariable=self._v_department, values=options,
+                    state="readonly", font=("Helvetica", 11),
+                    style="Assetly.TCombobox",
+                ).pack(fill="x")
             else:
-                widget = self._field(form, f["label"] + suffix, row)
-                self._field_widgets[f["key"]] = widget
-            row += 1
+                self._field_widgets[f["key"]] = self._entry(cell)
 
-        # ── Device info preview ───────────────────────────────────────────────
-        tk.Frame(self, bg="#D0D5DD", height=1).pack(fill="x", padx=26, pady=(12, 6))
-        pf = tk.Frame(self, bg=BG_COLOR)
-        pf.pack(fill="x", padx=26)
-        tk.Label(pf, text="Device information that will be recorded:",
-                 font=("Helvetica", 9, "italic"), fg="#6B7280", bg=BG_COLOR).pack(anchor="w")
+        # ── Actions ───────────────────────────────────────────────────────────
+        actions = tk.Frame(pane, bg=NAVY)
+        actions.pack(fill="x", side="bottom")
+        self._button(actions, "Send check-in", self._on_submit,
+                     fg="#FFFFFF", bg=BLUE, hover=BLUE_HOVER).pack(side="right")
+        self._button(actions, "Cancel", self._on_cancel,
+                     fg=SLATE, bg=NAVY, hover="#16243A",
+                     border=BORDER_MD).pack(side="right", padx=(0, 10))
+
+    def _device_rows(self):
+        """The hardware facts for the rail, as (label, value) pairs.
+
+        Only what will actually be submitted: the rail promises this is what
+        gets sent, and submit_to_sheets() drops every hardware key the company
+        has switched off.
+        """
         hw = self.hw
-        # Only what will actually be submitted: the label above promises
-        # "information that will be recorded", and submit_to_sheets() drops
-        # every hardware key the company has switched off.
-        enabled_hw = set(self.field_config["hardware_fields"])
-        lines = [f"  {hw['brand']} {hw['model']}  •  SN: {hw.get('serial_number','?')}  •  {hw['os']}"]
-        specs = [
-            f"{label}: {hw[key]}"
-            for key, label in (("cpu", "CPU"), ("ram", "RAM"), ("storage", "Storage"))
-            if key in enabled_hw
+        enabled = set(self.field_config["hardware_fields"])
+        rows = [
+            ("Model",  f"{hw['brand']} {hw['model']}"),
+            ("Serial", hw.get("serial_number", "?")),
         ]
-        if specs:
-            lines.append("  " + "  •  ".join(specs))
-        host_line = f"  Host: {hw['hostname']}"
-        if "ip_address" in enabled_hw:
-            host_line += f"  •  IP: {hw['ip_address']}"
-        lines.append(host_line)
-        preview = "\n".join(lines)
-        tk.Label(pf, text=preview, font=("Helvetica", 9), fg="#374151",
-                 bg=BG_COLOR, justify="left", wraplength=468).pack(anchor="w")
+        rows += [(label, hw[key])
+                 for key, label in (("cpu", "Processor"), ("ram", "Memory"),
+                                    ("storage", "Storage"))
+                 if key in enabled]
+        rows.append(("System", hw["os"]))
+        rows.append(("Host", hw["hostname"]))
+        if "ip_address" in enabled:
+            rows.append(("IP address", hw["ip_address"]))
+        return rows
 
-        # ── Buttons ───────────────────────────────────────────────────────────
-        bf = tk.Frame(self, bg=BG_COLOR)
-        bf.pack(fill="x", padx=26, pady=(10, 20))
-        tk.Button(
-            bf, text="Cancel", command=self._on_cancel,
-            font=("Helvetica", 11), fg="#6B7280", bg="#E5E7EB",
-            relief="flat", padx=18, pady=7, cursor="hand2", activebackground="#D1D5DB",
-        ).pack(side="right", padx=(8, 0))
-        tk.Button(
-            bf, text="Submit →", command=self._on_submit,
-            font=("Helvetica", 11, "bold"), fg="white", bg=ACCENT_COLOR,
-            relief="flat", padx=18, pady=7, cursor="hand2", activebackground="#C0252E",
-        ).pack(side="right")
+    # ── Portal-styled controls ────────────────────────────────────────────────
+    def _style_comboboxes(self):
+        """Repaint ttk's combobox in the portal's colours.
 
-    def _field(self, parent: tk.Frame, label: str, row: int) -> tk.Entry:
-        tk.Label(parent, text=label, font=("Helvetica", 11, "bold"),
-                 bg=BG_COLOR, anchor="w").grid(row=row, column=0, sticky="w", pady=(10, 2))
-        e = tk.Entry(parent, font=("Helvetica", 11), relief="solid", bd=1, width=38)
-        e.grid(row=row, column=1, sticky="ew", padx=(8, 0), pady=(10, 2))
+        Only the 'clam' theme honours these options; the native aqua and vista
+        themes draw the widget themselves and ignore every colour set here.
+        """
+        style = ttk.Style()
+        try:
+            style.theme_use("clam")
+        except tk.TclError:
+            return
+        style.configure(
+            "Assetly.TCombobox",
+            fieldbackground=NAVY_MID, background=NAVY_MID, foreground=WHITE,
+            arrowcolor=SLATE, bordercolor=BORDER_INPUT, lightcolor=NAVY_MID,
+            darkcolor=NAVY_MID, padding=6, relief="flat",
+        )
+        style.map("Assetly.TCombobox",
+                  fieldbackground=[("readonly", NAVY_MID)],
+                  foreground=[("readonly", WHITE)],
+                  bordercolor=[("focus", BLUE)])
+        # The dropdown list is a Tk listbox owned by Tk, not by ttk, so it is
+        # reachable only through the option database.
+        self.option_add("*TCombobox*Listbox.background", NAVY_MID)
+        self.option_add("*TCombobox*Listbox.foreground", WHITE)
+        self.option_add("*TCombobox*Listbox.selectBackground", BLUE)
+        self.option_add("*TCombobox*Listbox.selectForeground", "#FFFFFF")
+
+    def _label(self, parent: tk.Frame, text: str, required: bool):
+        wrap = tk.Frame(parent, bg=NAVY)
+        wrap.pack(anchor="w", pady=(0, 5))
+        tk.Label(wrap, text=text.upper(), font=("Helvetica", 9, "bold"),
+                 fg=SLATE_DIM, bg=NAVY).pack(side="left")
+        if required:
+            tk.Label(wrap, text=" *", font=("Helvetica", 9, "bold"),
+                     fg=TEAL, bg=NAVY).pack(side="left")
+
+    def _entry(self, parent: tk.Frame) -> tk.Entry:
+        # highlightthickness is the border here rather than bd/relief: it is the
+        # one border Tk will recolour on focus, which is how the portal marks the
+        # focused input.
+        e = tk.Entry(parent, font=("Helvetica", 12), bg=NAVY_MID, fg=WHITE,
+                     insertbackground=BLUE, relief="flat", bd=0,
+                     highlightthickness=1, highlightbackground=BORDER_INPUT,
+                     highlightcolor=BLUE, disabledbackground=NAVY_MID)
+        e.pack(fill="x", ipady=6, ipadx=8)
         return e
+
+    def _button(self, parent: tk.Frame, text: str, command,
+                fg: str, bg: str, hover: str, border: str = None) -> tk.Label:
+        """A button drawn as a Label.
+
+        tk.Button ignores bg on macOS — it is drawn by Aqua — which is why the
+        old red Submit button rendered as a stock grey one. A Label takes its
+        colours everywhere, so the same code gives the same button on every
+        platform.
+        """
+        b = tk.Label(parent, text=text, font=("Helvetica", 12, "bold"),
+                     fg=fg, bg=bg, padx=18, pady=9, cursor="hand2",
+                     highlightthickness=1, highlightbackground=border or bg,
+                     highlightcolor=border or bg)
+        b.bind("<Enter>", lambda _e: b.configure(bg=hover))
+        b.bind("<Leave>", lambda _e: b.configure(bg=bg))
+        b.bind("<Button-1>", lambda _e: command())
+        return b
 
     # ── Validation ────────────────────────────────────────────────────────────
     def _validate(self) -> bool:

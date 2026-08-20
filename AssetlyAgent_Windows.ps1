@@ -671,37 +671,104 @@ function Show-InventoryForm {
     $result   = @{ submitted = $false; user_data = @{}; custom_fields = @{}; closing = $false }
     $controls = @{}   # field key -> the TextBox or ComboBox that collects it
 
+    # ── Portal design tokens ──────────────────────────────────────────────────
+    # Copied from backend/app/static/assetly.css so this window and
+    # app.assetly.ge read as one product. Names match the CSS variables.
+    $cNavy        = [System.Drawing.Color]::FromArgb(11, 17, 32)     # --navy
+    $cNavySidebar = [System.Drawing.Color]::FromArgb(8, 14, 26)      # --navy-sidebar
+    $cNavyMid     = [System.Drawing.Color]::FromArgb(15, 24, 41)     # --navy-mid
+    $cBlue        = [System.Drawing.Color]::FromArgb(26, 110, 255)   # --blue
+    $cBlueHover   = [System.Drawing.Color]::FromArgb(21, 96, 230)
+    $cTeal        = [System.Drawing.Color]::FromArgb(0, 194, 168)    # --teal
+    $cSlate       = [System.Drawing.Color]::FromArgb(138, 155, 181)  # --slate
+    $cSlateDim    = [System.Drawing.Color]::FromArgb(74, 90, 112)    # --slate-dim
+    $cWhite       = [System.Drawing.Color]::FromArgb(244, 247, 255)  # --white
+    $cBorderMd    = [System.Drawing.Color]::FromArgb(40, 52, 74)     # --border-md, flattened
+    $cBorderInput = [System.Drawing.Color]::FromArgb(33, 44, 63)     # --border-input, flattened
+
+    # ── Layout metrics ────────────────────────────────────────────────────────
+    # Device facts live in the left rail, so the form grows only with the fields
+    # themselves -- and two short fields share a row, so it grows half as fast
+    # as the field count.
+    $railW   = 196
+    $pad     = 24
+    $paneX   = $railW + $pad
+    $paneW   = 516
+    $colW    = 252
+    $colGapX = $paneX + $colW + 12
+    $rowH    = 62
+    $fullWidthKeys = @('email')
+
+    # Assign every field a row and column up front: the window has to be sized
+    # before any control is placed.
+    $slots = New-Object System.Collections.ArrayList
+    $row = 0; $col = 0
+    foreach ($field in $userFields) {
+        if ($fullWidthKeys -contains $field.key) {
+            if ($col -eq 1) { $row++; $col = 0 }
+            [void]$slots.Add(@{ field = $field; row = $row; col = 0; full = $true })
+            $row++
+        } else {
+            [void]$slots.Add(@{ field = $field; row = $row; col = $col; full = $false })
+            if ($col -eq 1) { $row++; $col = 0 } else { $col = 1 }
+        }
+    }
+    $rowCount = if ($col -eq 1) { $row + 1 } else { $row }
+
     # ── Form ──────────────────────────────────────────────────────────────────
     $form                  = New-Object System.Windows.Forms.Form
     $form.Text             = "Assetly Inventory Agent"
-    $form.ClientSize       = New-Object System.Drawing.Size(520, 684)
     $form.StartPosition    = "CenterScreen"
     $form.FormBorderStyle  = "FixedDialog"
     $form.MaximizeBox      = $false
-    $form.BackColor        = [System.Drawing.Color]::FromArgb(245, 247, 250)
+    $form.BackColor        = $cNavy
     $form.Font             = New-Object System.Drawing.Font("Segoe UI", 10)
 
-    # ── Header bar ────────────────────────────────────────────────────────────
-    $hdr           = New-Object System.Windows.Forms.Panel
-    $hdr.Location  = New-Object System.Drawing.Point(0, 0)
-    $hdr.Size      = New-Object System.Drawing.Size(520, 80)
-    $hdr.BackColor = [System.Drawing.Color]::FromArgb(26, 43, 90)
+    # ── Device rail ───────────────────────────────────────────────────────────
+    # Only the rows that will actually be submitted: the rail promises this is
+    # what gets sent, and the payload built in MAIN drops every hardware key the
+    # company has switched off.
+    $hwRows = [ordered]@{
+        "Model"  = "$($HW.brand) $($HW.model)"
+        "Serial" = $HW.serial_number
+    }
+    if ($enabledHw -contains 'cpu')     { $hwRows["Processor"] = $HW.cpu }
+    if ($enabledHw -contains 'ram')     { $hwRows["Memory"]    = $HW.ram }
+    if ($enabledHw -contains 'storage') { $hwRows["Storage"]   = $HW.storage }
+    $hwRows["System"] = $HW.os
+    $hwRows["Host"]   = $HW.hostname
+    if ($enabledHw -contains 'ip_address') { $hwRows["IP address"] = $HW.ip_address }
+
+    $railNeeded = 18 + 65 + 26 + 20 + (36 * $hwRows.Count) + 52
+    $paneNeeded = 20 + 52 + ($rowH * $rowCount) + 12 + 36 + 24
+    $clientH    = [Math]::Max($railNeeded, $paneNeeded)
+    $form.ClientSize = New-Object System.Drawing.Size(760, $clientH)
+
+    $rail           = New-Object System.Windows.Forms.Panel
+    $rail.Location  = New-Object System.Drawing.Point(0, 0)
+    $rail.Size      = New-Object System.Drawing.Size($railW, $clientH)
+    $rail.BackColor = $cNavySidebar
+    $form.Controls.Add($rail)
 
     # ── Logo ──────────────────────────────────────────────────────────────────
     # assetly_logo.svg, drawn with GDI+ rather than loaded: WinForms has no SVG
     # decoder, and painting the shapes keeps the agent a single self-contained
     # file (the .exe build has no sibling image to read). Every coordinate below
-    # is the SVG's own, mapped through $s onto the header.
-    $logoBox          = New-Object System.Windows.Forms.Panel
-    $logoBox.Location = New-Object System.Drawing.Point(16, 4)
-    $logoBox.Size     = New-Object System.Drawing.Size(160, 72)   # 400x180 * 0.4
-    $logoBox.BackColor = [System.Drawing.Color]::FromArgb(26, 43, 90)
+    # is the SVG's own, mapped through $s onto the panel.
+    $logoW = 144
+    $logoH = [int]($logoW * 0.45)
+    $logoBox           = New-Object System.Windows.Forms.Panel
+    $logoBox.Location  = New-Object System.Drawing.Point(18, 18)
+    $logoBox.Size      = New-Object System.Drawing.Size($logoW, $logoH)
+    $logoBox.BackColor = $cNavySidebar
     $logoBox.Add_Paint({
         param($sender, $e)
         $g = $e.Graphics
         $g.SmoothingMode     = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
         $g.TextRenderingHint = [System.Drawing.Text.TextRenderingHint]::AntiAlias
-        $s = 160 / 400                                  # SVG user units -> pixels
+        $w = $sender.Width
+        $h = $sender.Height
+        $s = $w / 400                                   # SVG user units -> pixels
 
         $teal  = [System.Drawing.Color]::FromArgb(78, 205, 180)   # #4ECDB4
         $node  = [System.Drawing.Color]::FromArgb(242, 245, 247)  # #F2F5F7
@@ -710,9 +777,9 @@ function Show-InventoryForm {
         $r  = 18 * $s
         $bg = New-Object System.Drawing.Drawing2D.GraphicsPath
         $bg.AddArc(0, 0, 2*$r, 2*$r, 180, 90)
-        $bg.AddArc(160 - 2*$r, 0, 2*$r, 2*$r, 270, 90)
-        $bg.AddArc(160 - 2*$r, 72 - 2*$r, 2*$r, 2*$r, 0, 90)
-        $bg.AddArc(0, 72 - 2*$r, 2*$r, 2*$r, 90, 90)
+        $bg.AddArc($w - 2*$r, 0, 2*$r, 2*$r, 270, 90)
+        $bg.AddArc($w - 2*$r, $h - 2*$r, 2*$r, 2*$r, 0, 90)
+        $bg.AddArc(0, $h - 2*$r, 2*$r, 2*$r, 90, 90)
         $bg.CloseFigure()
         $bgBrush = New-Object System.Drawing.SolidBrush ([System.Drawing.Color]::FromArgb(13, 17, 25))
         $g.FillPath($bgBrush, $bg)
@@ -752,44 +819,104 @@ function Show-InventoryForm {
         $left  += $g.MeasureString("asset", $font, [System.Drawing.PointF]::Empty, $fmt).Width
         $g.DrawString("ly", $font, $tealBrush, $left, $top, $fmt)
     })
-    $hdr.Controls.Add($logoBox)
+    $rail.Controls.Add($logoBox)
 
-    $form.Controls.Add($hdr)
+    $railTitle           = New-Object System.Windows.Forms.Label
+    $railTitle.Text      = "THIS DEVICE"
+    $railTitle.Location  = New-Object System.Drawing.Point(18, ($logoH + 38))
+    $railTitle.Size      = New-Object System.Drawing.Size(160, 18)
+    $railTitle.Font      = New-Object System.Drawing.Font("Segoe UI", 8, [System.Drawing.FontStyle]::Bold)
+    $railTitle.ForeColor = $cSlateDim
+    $rail.Controls.Add($railTitle)
 
-    # ── Red accent line ───────────────────────────────────────────────────────
-    $accent           = New-Object System.Windows.Forms.Panel
-    $accent.Location  = New-Object System.Drawing.Point(0, 80)
-    $accent.Size      = New-Object System.Drawing.Size(520, 4)
-    $accent.BackColor = [System.Drawing.Color]::FromArgb(232, 48, 58)
-    $form.Controls.Add($accent)
+    $ry = $logoH + 62
+    foreach ($key in $hwRows.Keys) {
+        $kLbl           = New-Object System.Windows.Forms.Label
+        $kLbl.Text      = $key.ToUpper()
+        $kLbl.Location  = New-Object System.Drawing.Point(18, $ry)
+        $kLbl.Size      = New-Object System.Drawing.Size(160, 15)
+        $kLbl.Font      = New-Object System.Drawing.Font("Segoe UI", 7.5)
+        $kLbl.ForeColor = $cSlateDim
+        $rail.Controls.Add($kLbl)
 
-    # ── Welcome text ──────────────────────────────────────────────────────────
-    $welcome           = New-Object System.Windows.Forms.Label
-    $welcome.Text      = "Hello, I am Inventory Agent of Assetly and I need following information"
-    $welcome.Location  = New-Object System.Drawing.Point(26, 96)
-    $welcome.Size      = New-Object System.Drawing.Size(468, 40)
-    $welcome.Font      = New-Object System.Drawing.Font("Segoe UI", 11)
-    $form.Controls.Add($welcome)
+        $vLbl              = New-Object System.Windows.Forms.Label
+        $vLbl.Text         = $hwRows[$key]
+        $vLbl.Location     = New-Object System.Drawing.Point(18, ($ry + 15))
+        $vLbl.Size         = New-Object System.Drawing.Size(160, 17)
+        $vLbl.Font         = New-Object System.Drawing.Font("Consolas", 9)
+        $vLbl.ForeColor    = $cWhite
+        $vLbl.AutoEllipsis = $true
+        $rail.Controls.Add($vLbl)
+
+        $ry += 36
+    }
+
+    $railFoot           = New-Object System.Windows.Forms.Label
+    $railFoot.Text      = "Sent to your IT team along with the answers on the right."
+    $railFoot.Location  = New-Object System.Drawing.Point(18, ($clientH - 62))
+    $railFoot.Size      = New-Object System.Drawing.Size(160, 44)
+    $railFoot.Font      = New-Object System.Drawing.Font("Segoe UI", 8)
+    $railFoot.ForeColor = $cSlateDim
+    $rail.Controls.Add($railFoot)
+
+    # ── Form pane ─────────────────────────────────────────────────────────────
+    $heading           = New-Object System.Windows.Forms.Label
+    $heading.Text      = "Who's using this computer?"
+    $heading.Location  = New-Object System.Drawing.Point($paneX, 22)
+    $heading.Size      = New-Object System.Drawing.Size($paneW, 28)
+    $heading.Font      = New-Object System.Drawing.Font("Segoe UI", 14, [System.Drawing.FontStyle]::Bold)
+    $heading.ForeColor = $cWhite
+    $form.Controls.Add($heading)
+
+    $subHeading           = New-Object System.Windows.Forms.Label
+    $subHeading.Text      = if ($userFields.Count -eq 1) { "1 field, then you're done." }
+                            else { "$($userFields.Count) fields, then you're done." }
+    $subHeading.Location  = New-Object System.Drawing.Point($paneX, 52)
+    $subHeading.Size      = New-Object System.Drawing.Size($paneW, 20)
+    $subHeading.Font      = New-Object System.Drawing.Font("Segoe UI", 9.5)
+    $subHeading.ForeColor = $cSlate
+    $form.Controls.Add($subHeading)
 
     # ── Input rows ────────────────────────────────────────────────────────────
-    # One row per configured field, in the order the server sent them. Nothing
-    # here knows which fields exist; that is entirely the portal's call.
-    $yPos = 148
+    # Two short fields to a row, an email to itself. Nothing here knows which
+    # fields exist; that is entirely the portal's call.
+    $formTop = 92
+    foreach ($slot in $slots) {
+        $field = $slot.field
+        $x = if ($slot.col -eq 1) { $colGapX } else { $paneX }
+        $w = if ($slot.full) { $paneW } else { $colW }
+        $y = $formTop + ($rowH * $slot.row)
 
-    foreach ($field in $userFields) {
-        $lbl          = New-Object System.Windows.Forms.Label
-        $lbl.Text     = if ($field.required) { "$($field.label) *" } else { $field.label }
-        $lbl.Location = New-Object System.Drawing.Point(26, ($yPos + 4))
-        $lbl.Size     = New-Object System.Drawing.Size(120, 22)
-        $lbl.Font     = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Bold)
+        $lbl           = New-Object System.Windows.Forms.Label
+        $lbl.Text      = $field.label.ToUpper()
+        $lbl.Location  = New-Object System.Drawing.Point($x, $y)
+        $lbl.Size      = New-Object System.Drawing.Size(($w - 14), 16)
+        $lbl.Font      = New-Object System.Drawing.Font("Segoe UI", 8, [System.Drawing.FontStyle]::Bold)
+        $lbl.ForeColor = $cSlateDim
         # Labels are admin-authored now, so one can be longer than the column.
         # An ellipsis at least says so, where a plain clip silently cuts a word.
         $lbl.AutoEllipsis = $true
         $form.Controls.Add($lbl)
 
+        if ($field.required) {
+            $star           = New-Object System.Windows.Forms.Label
+            $star.Text      = "*"
+            $star.Location  = New-Object System.Drawing.Point(($x + $w - 12), $y)
+            $star.Size      = New-Object System.Drawing.Size(12, 16)
+            $star.Font      = New-Object System.Drawing.Font("Segoe UI", 8, [System.Drawing.FontStyle]::Bold)
+            $star.ForeColor = $cTeal
+            $form.Controls.Add($star)
+        }
+
         if ($field.key -eq 'department') {
-            $ctrl                 = New-Object System.Windows.Forms.ComboBox
-            $ctrl.DropDownStyle   = "DropDownList"
+            $ctrl               = New-Object System.Windows.Forms.ComboBox
+            $ctrl.DropDownStyle = "DropDownList"
+            $ctrl.FlatStyle     = "Flat"
+            $ctrl.BackColor     = $cNavyMid
+            $ctrl.ForeColor     = $cWhite
+            $ctrl.Location      = New-Object System.Drawing.Point($x, ($y + 20))
+            $ctrl.Size          = New-Object System.Drawing.Size($w, 28)
+            $ctrl.Font          = New-Object System.Drawing.Font("Segoe UI", 10)
             $options = if ($field.PSObject.Properties.Match('options').Count -gt 0 -and $field.options) {
                 @($field.options)
             } else {
@@ -797,108 +924,69 @@ function Show-InventoryForm {
             }
             $options | ForEach-Object { $ctrl.Items.Add($_) | Out-Null }
             if ($ctrl.Items.Count -gt 0) { $ctrl.SelectedIndex = 0 }
+            $form.Controls.Add($ctrl)
         } else {
-            $ctrl = New-Object System.Windows.Forms.TextBox
+            # A TextBox draws its own border in a system colour that cannot be
+            # set, so it goes borderless inside a panel that is the border --
+            # which also gives us somewhere to show focus, as the portal does.
+            $wrap           = New-Object System.Windows.Forms.Panel
+            $wrap.Location  = New-Object System.Drawing.Point($x, ($y + 20))
+            $wrap.Size      = New-Object System.Drawing.Size($w, 30)
+            $wrap.BackColor = $cBorderInput
+
+            $inner           = New-Object System.Windows.Forms.Panel
+            $inner.Location  = New-Object System.Drawing.Point(1, 1)
+            $inner.Size      = New-Object System.Drawing.Size(($w - 2), 28)
+            $inner.BackColor = $cNavyMid
+            $wrap.Controls.Add($inner)
+
+            $ctrl             = New-Object System.Windows.Forms.TextBox
+            $ctrl.BorderStyle = "None"
+            $ctrl.BackColor   = $cNavyMid
+            $ctrl.ForeColor   = $cWhite
+            $ctrl.Font        = New-Object System.Drawing.Font("Segoe UI", 10)
+            $ctrl.Location    = New-Object System.Drawing.Point(8, 5)
+            $ctrl.Width       = $w - 18
+            $inner.Controls.Add($ctrl)
+
+            # GotFocus/LostFocus fire on the TextBox; the border they recolour
+            # is the wrapper, captured here so the handlers can reach it.
+            $wrapRef = $wrap
+            $ctrl.Add_GotFocus({ $wrapRef.BackColor = $cBlue }.GetNewClosure())
+            $ctrl.Add_LostFocus({ $wrapRef.BackColor = $cBorderInput }.GetNewClosure())
+
+            $form.Controls.Add($wrap)
         }
-        $ctrl.Location = New-Object System.Drawing.Point(152, $yPos)
-        $ctrl.Size     = New-Object System.Drawing.Size(342, 28)
-        $ctrl.Font     = New-Object System.Drawing.Font("Segoe UI", 10)
-        $form.Controls.Add($ctrl)
 
         $controls[$field.key] = $ctrl
-        $yPos += 44
     }
-
-    # ── Separator ─────────────────────────────────────────────────────────────
-    $sep           = New-Object System.Windows.Forms.Panel
-    $sep.Location  = New-Object System.Drawing.Point(26, ($yPos + 10))
-    $sep.Size      = New-Object System.Drawing.Size(468, 1)
-    $sep.BackColor = [System.Drawing.Color]::FromArgb(208, 213, 221)
-    $form.Controls.Add($sep)
-    $yPos += 22
-
-    # ── Device info preview ───────────────────────────────────────────────────
-    $lblHint           = New-Object System.Windows.Forms.Label
-    $lblHint.Text      = "Device information that will be recorded:"
-    $lblHint.Location  = New-Object System.Drawing.Point(26, $yPos)
-    $lblHint.Size      = New-Object System.Drawing.Size(468, 20)
-    $lblHint.Font      = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
-    $lblHint.ForeColor = [System.Drawing.Color]::FromArgb(55, 65, 81)
-    $form.Controls.Add($lblHint)
-    $yPos += 24
-
-    # Only the rows that will actually be submitted: the label above promises
-    # "information that will be recorded", and the payload built in MAIN drops
-    # every hardware key the company has switched off.
-    $hwRows = [ordered]@{
-        "Device" = "$($HW.brand) $($HW.model)"
-        "Serial" = $HW.serial_number
-        "OS"     = $HW.os
-    }
-    if ($enabledHw -contains 'cpu')     { $hwRows["CPU"]     = $HW.cpu }
-    if ($enabledHw -contains 'ram')     { $hwRows["RAM"]     = $HW.ram }
-    if ($enabledHw -contains 'storage') { $hwRows["Storage"] = $HW.storage }
-    $hwRows["Hostname"] = if ($enabledHw -contains 'ip_address') {
-        "$($HW.hostname)  /  $($HW.ip_address)"
-    } else {
-        $HW.hostname
-    }
-    $hwPanelHeight = 16 + (18 * $hwRows.Count)
-
-    $hwPanel           = New-Object System.Windows.Forms.Panel
-    $hwPanel.Location  = New-Object System.Drawing.Point(26, $yPos)
-    $hwPanel.Size      = New-Object System.Drawing.Size(468, $hwPanelHeight)
-    $hwPanel.BackColor = [System.Drawing.Color]::FromArgb(229, 234, 242)
-    $form.Controls.Add($hwPanel)
-
-    $ry = 8
-    foreach ($key in $hwRows.Keys) {
-        $kLbl           = New-Object System.Windows.Forms.Label
-        $kLbl.Text      = "${key}:"
-        $kLbl.Location  = New-Object System.Drawing.Point(10, $ry)
-        $kLbl.Size      = New-Object System.Drawing.Size(72, 18)
-        $kLbl.Font      = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
-        $kLbl.ForeColor = [System.Drawing.Color]::FromArgb(55, 65, 81)
-        $hwPanel.Controls.Add($kLbl)
-
-        $vLbl           = New-Object System.Windows.Forms.Label
-        $vLbl.Text      = $hwRows[$key]
-        $vLbl.Location  = New-Object System.Drawing.Point(86, $ry)
-        $vLbl.Size      = New-Object System.Drawing.Size(374, 18)
-        $vLbl.Font      = New-Object System.Drawing.Font("Segoe UI", 9)
-        $vLbl.ForeColor = [System.Drawing.Color]::FromArgb(31, 41, 55)
-        $hwPanel.Controls.Add($vLbl)
-
-        $ry += 18
-    }
-    $yPos += $hwPanelHeight + 8
 
     # ── Buttons ───────────────────────────────────────────────────────────────
+    $btnY = $clientH - 58
+
     $btnSubmit             = New-Object System.Windows.Forms.Button
-    $btnSubmit.Text        = "Submit"
-    $btnSubmit.Location    = New-Object System.Drawing.Point(330, ($yPos + 8))
-    $btnSubmit.Size        = New-Object System.Drawing.Size(90, 32)
+    $btnSubmit.Text        = "Send check-in"
+    $btnSubmit.Size        = New-Object System.Drawing.Size(130, 34)
+    $btnSubmit.Location    = New-Object System.Drawing.Point(($paneX + $paneW - 130), $btnY)
     $btnSubmit.Font        = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Bold)
-    $btnSubmit.BackColor   = [System.Drawing.Color]::FromArgb(232, 48, 58)
+    $btnSubmit.BackColor   = $cBlue
     $btnSubmit.ForeColor   = [System.Drawing.Color]::White
     $btnSubmit.FlatStyle   = "Flat"
     $btnSubmit.FlatAppearance.BorderSize = 0
+    $btnSubmit.FlatAppearance.MouseOverBackColor = $cBlueHover
     $form.Controls.Add($btnSubmit)
 
     $btnCancel             = New-Object System.Windows.Forms.Button
     $btnCancel.Text        = "Cancel"
-    $btnCancel.Location    = New-Object System.Drawing.Point(430, ($yPos + 8))
-    $btnCancel.Size        = New-Object System.Drawing.Size(76, 32)
+    $btnCancel.Size        = New-Object System.Drawing.Size(90, 34)
+    $btnCancel.Location    = New-Object System.Drawing.Point(($paneX + $paneW - 230), $btnY)
     $btnCancel.Font        = New-Object System.Drawing.Font("Segoe UI", 10)
-    $btnCancel.BackColor   = [System.Drawing.Color]::FromArgb(229, 231, 235)
+    $btnCancel.BackColor   = $cNavy
+    $btnCancel.ForeColor   = $cSlate
     $btnCancel.FlatStyle   = "Flat"
-    $btnCancel.FlatAppearance.BorderSize = 0
+    $btnCancel.FlatAppearance.BorderSize  = 1
+    $btnCancel.FlatAppearance.BorderColor = $cBorderMd
     $form.Controls.Add($btnCancel)
-
-    # The row count is now whatever the company configured, so the window is
-    # sized to its contents instead of to a fixed guess -- otherwise adding a
-    # couple of custom fields pushes Submit off the bottom edge.
-    $form.ClientSize = New-Object System.Drawing.Size(520, ($yPos + 56))
 
     # ── Event handlers ────────────────────────────────────────────────────────
     $btnSubmit.Add_Click({
