@@ -1006,9 +1006,16 @@ function Show-InventoryForm {
     $subHeading           = New-Object System.Windows.Forms.Label
     # Two keys rather than a plural rule the agent applies itself: the rule
     # differs by language, and this copy is admin-authored.
-    $subHeading.Text      = Expand-UiText (
-        if ($userFields.Count -eq 1) { $Ui.subheading_one } else { $Ui.subheading }
-    ) @{ count = $userFields.Count }
+    #
+    # Picked into a variable first, deliberately. `if` is a statement, not an
+    # expression, so `Expand-UiText ( if ... )` is a parse error in Windows
+    # PowerShell 5.1 -- inside plain parentheses in argument position the
+    # parser expects an expression and reads `if` as a command name, failing at
+    # runtime with "The term 'if' is not recognized as the name of a cmdlet".
+    # `$( ... )` would also work; a named variable is plainer.
+    $subHeadingTemplate = if ($userFields.Count -eq 1) { $Ui.subheading_one }
+                          else { $Ui.subheading }
+    $subHeading.Text      = Expand-UiText $subHeadingTemplate @{ count = $userFields.Count }
     $subHeading.Location  = New-Object System.Drawing.Point($paneX, 52)
     $subHeading.Size      = New-Object System.Drawing.Size($paneW, 20)
     $subHeading.Font      = New-Object System.Drawing.Font("Segoe UI", 9.5)
@@ -1071,20 +1078,34 @@ function Show-InventoryForm {
             $ctrl.Add_DrawItem({
                 param($sender, $e)
                 # Selected here means "row under the cursor in the open list",
-                # not "the chosen value" -- so it is the hover highlight.
-                $hot = ($e.State -band [System.Windows.Forms.DrawItemState]::Selected) -ne 0
+                # not "the chosen value" -- so it is the hover highlight. Cast
+                # to [int] before -band: the operator is defined on integers,
+                # and leaning on PowerShell's enum coercion inside a paint
+                # handler risks an exception on a code path that runs for every
+                # row of every repaint.
+                $hot  = ([int]$e.State -band [int][System.Windows.Forms.DrawItemState]::Selected) -ne 0
                 $fill = if ($hot) { $cBlue } else { $cNavyMid }
-                $e.Graphics.FillRectangle((New-Object System.Drawing.SolidBrush $fill), $e.Bounds)
+                $brush = New-Object System.Drawing.SolidBrush $fill
+                try {
+                    $e.Graphics.FillRectangle($brush, $e.Bounds)
+                } finally {
+                    $brush.Dispose()
+                }
                 if ($e.Index -ge 0) {
                     $e.Graphics.TextRenderingHint =
                         [System.Drawing.Text.TextRenderingHint]::ClearTypeGridFit
+                    # Built up front rather than inline: `New-Object Type a, b`
+                    # takes its arguments as one array, which is easy to break
+                    # by accident when the call is wrapped across lines inside
+                    # another call's argument list.
+                    $textRect = New-Object System.Drawing.Rectangle(
+                        ($e.Bounds.X + 6), $e.Bounds.Y,
+                        ($e.Bounds.Width - 6), $e.Bounds.Height)
+                    $flags = [System.Windows.Forms.TextFormatFlags]::VerticalCenter -bor
+                             [System.Windows.Forms.TextFormatFlags]::EndEllipsis
                     [System.Windows.Forms.TextRenderer]::DrawText(
                         $e.Graphics, $sender.Items[$e.Index].ToString(), $sender.Font,
-                        (New-Object System.Drawing.Rectangle ($e.Bounds.X + 6), $e.Bounds.Y,
-                                                             ($e.Bounds.Width - 6), $e.Bounds.Height),
-                        $cWhite,
-                        ([System.Windows.Forms.TextFormatFlags]::VerticalCenter -bor
-                         [System.Windows.Forms.TextFormatFlags]::EndEllipsis))
+                        $textRect, $cWhite, $flags)
                 }
             }.GetNewClosure())
             $options = if ($field.PSObject.Properties.Match('options').Count -gt 0 -and $field.options) {
