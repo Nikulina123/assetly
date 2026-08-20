@@ -875,8 +875,38 @@ function Show-InventoryForm {
     $hwRows["Host"]   = $HW.hostname
     if ($enabledHw -contains 'ip_address') { $hwRows["IP address"] = $HW.ip_address }
 
-    $railNeeded = 18 + 65 + 26 + 20 + (36 * $hwRows.Count) + 52
-    $paneNeeded = 20 + 52 + ($rowH * $rowCount) + 12 + 36 + 24
+    # ── Rail metrics ──────────────────────────────────────────────────────────
+    # Declared here, above the height arithmetic that depends on them, and
+    # derived rather than written out as a sum of literals. The previous form
+    # (`18 + 65 + 26 + 20 + ...`) carried the logo's height as the constant 65
+    # while the logo itself was sized further down the function -- so widening
+    # the logo silently under-reserved the rail by exactly the difference, and
+    # the footnote came to sit on top of the last device row. A layout constant
+    # that has to be updated in step with a value defined 20 lines later will
+    # eventually be missed; this cannot drift because it reads that value.
+    $logoW       = 160
+    $logoH       = [int]($logoW * 0.45)
+    $railRowsTop = $logoH + 62                             # under logo + "THIS DEVICE"
+    $railRowH    = 36
+    $railRowsEnd = $railRowsTop + ($railRowH * $hwRows.Count)
+    # Four lines at 8pt in a 160px column, for the longest footnote that fits
+    # the 140-character cap the portal enforces on it.
+    $railFootH   = 56
+    $railPadB    = 18
+
+    # ── Pane metrics ──────────────────────────────────────────────────────────
+    # Same treatment, and it exposed an off-by-six that predates this change:
+    # the old sum reserved 144 + rowH*rowCount, while the pane actually needs
+    # $formTop + rowH*rowCount + a gap + the button strip = 162 + rowH*rowCount.
+    # Six pixels short is invisible until the pane is the taller of the two
+    # columns, which takes about seven user fields -- so a company that added
+    # a few custom fields got inputs sitting under the buttons.
+    $formTop    = 92                                       # first field label
+    $btnAreaH   = 58                                       # button strip + margin
+    $paneGap    = 12                                       # fields -> buttons
+
+    $railNeeded = $railRowsEnd + 14 + $railFootH + $railPadB
+    $paneNeeded = $formTop + ($rowH * $rowCount) + $paneGap + $btnAreaH
     $clientH    = [Math]::Max($railNeeded, $paneNeeded)
     $form.ClientSize = New-Object System.Drawing.Size(760, $clientH)
 
@@ -891,8 +921,6 @@ function Show-InventoryForm {
     # decoder, and painting the shapes keeps the agent a single self-contained
     # file (the .exe build has no sibling image to read). Every coordinate below
     # is the SVG's own, mapped through $s onto the panel.
-    $logoW = 160
-    $logoH = [int]($logoW * 0.45)
     $logoBox           = New-Object System.Windows.Forms.Panel
     $logoBox.Location  = New-Object System.Drawing.Point(18, 18)
     $logoBox.Size      = New-Object System.Drawing.Size($logoW, $logoH)
@@ -964,7 +992,7 @@ function Show-InventoryForm {
     $railTitle.ForeColor = $cTeal
     $rail.Controls.Add($railTitle)
 
-    $ry = $logoH + 62
+    $ry = $railRowsTop
     foreach ($key in $hwRows.Keys) {
         $kLbl           = New-Object System.Windows.Forms.Label
         $kLbl.Text      = $key.ToUpper()
@@ -983,13 +1011,15 @@ function Show-InventoryForm {
         $vLbl.AutoEllipsis = $true
         $rail.Controls.Add($vLbl)
 
-        $ry += 36
+        $ry += $railRowH
     }
 
     $railFoot           = New-Object System.Windows.Forms.Label
     $railFoot.Text      = $Ui.rail_footnote
-    $railFoot.Location  = New-Object System.Drawing.Point(18, ($clientH - 62))
-    $railFoot.Size      = New-Object System.Drawing.Size(160, 44)
+    # Anchored to the bottom of the window, which $railNeeded above has already
+    # guaranteed clears the last device row.
+    $railFoot.Location  = New-Object System.Drawing.Point(18, ($clientH - $railPadB - $railFootH))
+    $railFoot.Size      = New-Object System.Drawing.Size(160, $railFootH)
     $railFoot.Font      = New-Object System.Drawing.Font("Segoe UI", 8)
     $railFoot.ForeColor = $cSlate
     $rail.Controls.Add($railFoot)
@@ -1025,7 +1055,6 @@ function Show-InventoryForm {
     # ── Input rows ────────────────────────────────────────────────────────────
     # Two short fields to a row, an email to itself. Nothing here knows which
     # fields exist; that is entirely the portal's call.
-    $formTop = 92
     foreach ($slot in $slots) {
         $field = $slot.field
         $x = if ($slot.col -eq 1) { $colGapX } else { $paneX }
@@ -1153,7 +1182,7 @@ function Show-InventoryForm {
     }
 
     # ── Buttons ───────────────────────────────────────────────────────────────
-    $btnY = $clientH - 58
+    $btnY = $clientH - $btnAreaH
 
     $btnSubmit             = New-Object System.Windows.Forms.Button
     $btnSubmit.Text        = $Ui.submit_label
