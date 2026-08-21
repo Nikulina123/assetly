@@ -497,7 +497,6 @@ async def update_hardware_fields(
     ip_address: str | None = Form(None),
     department_enabled: str | None = Form(None),
     department_required: str | None = Form(None),
-    department_options: str | None = Form(None),
     admin_id: str = Depends(require_admin),
 ):
     _check_csrf(request, csrf_token)
@@ -509,15 +508,22 @@ async def update_hardware_fields(
         ("cpu", cpu), ("ram", ram), ("storage", storage), ("ip_address", ip_address),
     ]:
         await set_hardware_field_enabled(pool, company_id_str, field_key, submitted_value is not None)
+
+    # Check if department_options was submitted in the form. In Starlette 1.6.0, empty form fields
+    # may not appear in the Form() parameters, so we check the raw form data to distinguish
+    # between "not submitted" (None) and "submitted but empty" (list).
+    form_data = await request.form()
+    if "department_options" in form_data:
+        department_options_raw = form_data["department_options"]
+        options = department_options_raw.splitlines() if department_options_raw else []
+    else:
+        options = None
+
     await set_department_config(
         pool, company_id_str,
         enabled=department_enabled is not None,
         required=department_required is not None,
-        # A textarea always posts, so "" here is an admin who cleared the box
-        # (-> restore the built-in list), which set_department_config
-        # distinguishes from None ("this caller isn't editing the options").
-        # None only reaches it if the field is missing from the form entirely.
-        options=department_options.splitlines() if department_options is not None else None,
+        options=options,
     )
 
     return RedirectResponse(f"/admin/companies/{company_id}", status_code=303)
