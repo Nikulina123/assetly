@@ -10,8 +10,12 @@ fastapi==0.115.0
 uvicorn[standard]==0.30.6
 asyncpg==0.29.0
 pydantic==2.9.2
-python-dotenv==1.0.1
+python-dotenv==1.2.2
 bcrypt==4.2.0
-jinja2==3.1.4
-python-multipart==0.0.9
+jinja2==3.1.6
+# 0.0.18 is the CVE-2024-53981 floor (resource exhaustion parsing malformed
+# multipart input). Every admin POST route accepts multipart form data, so
+# this is directly reachable. Do not pin below this.
+# Updated to 0.0.31 to fix PYSEC-2026-3040 and related vulnerabilities
+python-multipart==0.0.31
 itsdangerous==2.2.0
