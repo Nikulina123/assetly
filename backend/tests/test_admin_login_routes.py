@@ -54,3 +54,23 @@ async def test_accessing_companies_without_session_redirects_to_login():
         resp = await client.get("/admin/companies", follow_redirects=False)
     assert resp.status_code == 303
     assert resp.headers["location"] == "/admin/login"
+
+
+async def test_login_rotates_session(admin):
+    """A pre-login session must not survive authentication. Without
+    session.clear(), an attacker who can fixate the victim's session cookie
+    before login still holds a valid cookie after it."""
+    _, email, password = admin
+    async with await _client() as client:
+        # Touch the login form first so a session cookie exists pre-auth.
+        await client.get("/admin/login")
+        before = client.cookies.get("session")
+
+        resp = await client.post(
+            "/admin/login", data={"email": email, "password": password}
+        )
+        assert resp.status_code == 303
+        after = client.cookies.get("session")
+
+    assert after is not None
+    assert after != before

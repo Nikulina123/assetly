@@ -6,7 +6,7 @@ from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.sessions import SessionMiddleware
 
-from app.config import SESSION_COOKIE_SECURE, SESSION_SECRET_KEY
+from app.config import SESSION_COOKIE_SECURE, SESSION_MAX_AGE_SECONDS, SESSION_SECRET_KEY
 from app.db import get_pool
 from app.routers.admin import NotAuthenticated
 from app.routers.admin import router as admin_router
@@ -20,6 +20,7 @@ app.add_middleware(
     secret_key=SESSION_SECRET_KEY,
     https_only=SESSION_COOKIE_SECURE,
     same_site="lax",
+    max_age=SESSION_MAX_AGE_SECONDS,
 )
 app.include_router(checkin_router)
 app.include_router(enroll_router)

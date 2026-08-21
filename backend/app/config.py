@@ -69,3 +69,21 @@ ENROLLMENT_TOKEN_DAYS = int(os.environ.get("ENROLLMENT_TOKEN_DAYS", "90"))
 ALLOW_LEGACY_COMPANY_KEY_CHECKIN = (
     os.environ.get("ALLOW_LEGACY_COMPANY_KEY_CHECKIN", "true").lower() == "true"
 )
+
+# An explicit admin session lifetime. Starlette's SessionMiddleware default is
+# 14 days, which for a console that can mint enrollment tokens and rotate any
+# company's API key is far too long. Eight hours is one working day.
+SESSION_MAX_AGE_SECONDS = int(os.environ.get("SESSION_MAX_AGE_SECONDS", "28800"))
+
+# Drives the startup assertion below. Anything other than "production" is
+# treated as a developer machine, where plain HTTP is normal.
+ENVIRONMENT = os.environ.get("ENVIRONMENT", "development")
+
+# A security-relevant default that fails open silently is exactly the failure
+# mode the pre-launch audit called out: left unset, the admin session cookie
+# is transmittable over plaintext HTTP. Refuse to boot rather than serve
+# insecurely.
+if ENVIRONMENT == "production" and not SESSION_COOKIE_SECURE:
+    raise RuntimeError(
+        "SESSION_COOKIE_SECURE must be true when ENVIRONMENT=production"
+    )

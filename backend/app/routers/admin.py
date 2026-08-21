@@ -96,6 +96,12 @@ async def login_submit(request: Request, email: str = Form(...), password: str =
         return templates.TemplateResponse(
             request, "login.html", {"error": "Invalid email or password"}
         )
+    # Clear before writing admin_id: these are client-side signed cookies, so
+    # the pre-login session is attacker-fixable. Clearing also drops the
+    # pre-auth csrf_token, which _new_csrf_token then re-mints on the next
+    # authenticated render -- so the token an authenticated form carries was
+    # never visible to anyone before authentication.
+    request.session.clear()
     request.session["admin_id"] = admin_id
     return RedirectResponse("/admin/companies", status_code=303)
 
