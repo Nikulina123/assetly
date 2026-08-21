@@ -184,3 +184,8 @@ $payload["agent_version"]   = "1.0"
 $payload["submission_type"] = "online"
 $payload["platform"]        = "windows"
 ```
+
+## Required production environment
+
+Required in production: `ENVIRONMENT=production` and `SESSION_COOKIE_SECURE=true`.
+The application refuses to start without the second when the first is set.
