@@ -545,10 +545,25 @@ function Test-ManifestSignature {
         $rsa = New-Object System.Security.Cryptography.RSACryptoServiceProvider
         try {
             $rsa.ImportParameters($params)
-            return $rsa.VerifyData(
-                $ManifestBytes, $sig,
-                [System.Security.Cryptography.HashAlgorithmName]::SHA256,
-                [System.Security.Cryptography.RSASignaturePadding]::Pkcs1)
+
+            # RSA.VerifyData(data, sig, HashAlgorithmName, RSASignaturePadding)
+            # would be the obvious call, but that 4-arg overload requires .NET
+            # Framework 4.6+, and PowerShell 5.1's stated minimum is 4.5.2 --
+            # installable on Windows 7 SP1 / 2008 R2 / 8.1 / 2012 hosts that
+            # may never have 4.6. Calling it there throws NotImplementedException,
+            # which the catch below swallows, leaving a fleet that silently
+            # never updates. RSAPKCS1SignatureDeformatter has been present
+            # since .NET Framework 1.1, verifies with the public key only
+            # (all we ever import here), and performs the raw RSA operation
+            # itself rather than routing the hash through the CSP -- which
+            # also sidesteps RSACryptoServiceProvider's historical flakiness
+            # hashing SHA-256 under the default PROV_RSA_FULL provider.
+            $sha = [System.Security.Cryptography.SHA256]::Create()
+            try { $hash = $sha.ComputeHash($ManifestBytes) } finally { $sha.Dispose() }
+
+            $deformatter = New-Object System.Security.Cryptography.RSAPKCS1SignatureDeformatter($rsa)
+            $deformatter.SetHashAlgorithm("SHA256")
+            return $deformatter.VerifySignature($hash, $sig)
         } finally { $rsa.Dispose() }
     } catch {
         Write-Log "Signature verification error: $_" "WARN"
@@ -613,6 +628,10 @@ function Invoke-SelfUpdateExe {
     if (-not $CheckinApiUrl) { return }
 
     $tmp = [System.IO.Path]::GetTempFileName() + ".exe"
+    # The eventual hand-off target is a SEPARATE path from $tmp, generated only
+    # after the downloaded bytes have verified -- see below. $staged starts
+    # null so the finally block can tell "never got that far" from "handed off".
+    $staged = $null
     # PowerShell runs `finally` on the way out of `exit`, so the cleanup below
     # would delete the staged executable out from under the cmd.exe that was
     # just scheduled to move it into place -- leaving the old agent running and
@@ -632,6 +651,14 @@ function Invoke-SelfUpdateExe {
         }
 
         $artifact = ($envelope.manifest | ConvertFrom-Json).artifacts.windows_exe
+        if (-not $artifact) {
+            # A signed manifest that simply omits this artifact -- nothing to
+            # apply. Without this, $artifact.sha256 below is $null, the "up
+            # to date" compare is false, and "$base$($artifact.path)" quietly
+            # requests $base itself, which then fails the MZ sniff anyway.
+            # Harmless, but accidental; state the intent instead.
+            return
+        }
 
         # The signed hash covers the BASE image only -- an installed agent
         # carries its own trailing config block, so hashing the whole file
@@ -664,13 +691,21 @@ function Invoke-SelfUpdateExe {
         if ($current.Block.Length -gt 0) {
             [Array]::Copy($current.Block, 0, $combined, $newBytes.Length, $current.Block.Length)
         }
-        [System.IO.File]::WriteAllBytes($tmp, $combined)
+        # $tmp's path was returned by GetTempFileName() before any bytes were
+        # verified, so it is a predictable name in a world-writable directory
+        # that the OS never reserved past its zero-byte creation -- anything
+        # able to write there in the few seconds before cmd.exe's move could
+        # swap in unverified bytes. The verified $combined bytes go to a fresh
+        # GUID-named path instead, generated only now that they've verified,
+        # and that path -- not $tmp -- is what gets handed to cmd.exe.
+        $staged = Join-Path ([System.IO.Path]::GetTempPath()) ([System.Guid]::NewGuid().ToString() + ".exe")
+        [System.IO.File]::WriteAllBytes($staged, $combined)
 
         if ($ScriptPath -eq $ScriptDest) {
             # Windows will not let a running image be overwritten, so hand the
             # swap to a detached cmd.exe that waits for this process to exit.
             Write-Log "Verified update found — scheduling replacement and restart."
-            $cmd = "timeout /t 3 /nobreak >nul & move /Y `"$tmp`" `"$ScriptDest`" & " +
+            $cmd = "timeout /t 3 /nobreak >nul & move /Y `"$staged`" `"$ScriptDest`" & " +
                    "start `"`" `"$ScriptDest`""
             Start-Process "cmd.exe" -ArgumentList "/c $cmd" -WindowStyle Hidden
             $handedOff = $true
@@ -679,11 +714,16 @@ function Invoke-SelfUpdateExe {
         # Running from elsewhere (a fresh download in Downloads, say) — the
         # installed copy is not locked, so update it and carry on with this run.
         Write-Log "Verified update found — updating installed copy. Continuing current run."
-        Copy-Item -Path $tmp -Destination $ScriptDest -Force -ErrorAction SilentlyContinue
+        Copy-Item -Path $staged -Destination $ScriptDest -Force -ErrorAction SilentlyContinue
     } catch {
         Write-Log "Update check failed: $_" "WARN"
     } finally {
-        if (-not $handedOff) { Remove-Item $tmp -Force -ErrorAction SilentlyContinue }
+        # $tmp holds only the not-yet-verified download and is never handed
+        # off, so it is always cleaned up here. $staged holds the verified,
+        # config-recombined bytes and is cleaned up here too, UNLESS it was
+        # handed to cmd.exe above -- see the ownership-transfer comment.
+        Remove-Item $tmp -Force -ErrorAction SilentlyContinue
+        if ($staged -and -not $handedOff) { Remove-Item $staged -Force -ErrorAction SilentlyContinue }
     }
 }
 
