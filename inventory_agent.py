@@ -5,7 +5,7 @@ Cross-platform (macOS + Linux) — zero pip dependencies.
 Config is loaded from  ~/.assetly_inventory/config.json  (written by the installer).
 """
 
-import os, sys, json, platform, subprocess, datetime, hashlib, socket, re, time, argparse
+import os, sys, json, platform, subprocess, datetime, hashlib, hmac, base64, socket, re, time, argparse
 import urllib.request, urllib.error
 from pathlib import Path
 import tkinter as tk
@@ -23,18 +23,28 @@ CONFIG_FILE = STATE_DIR / "config.json"
 STATE_FILE  = STATE_DIR / "state.json"
 QUEUE_FILE  = STATE_DIR / "queue.json"
 LOG_FILE    = STATE_DIR / "agent.log"
-STATE_DIR.mkdir(parents=True, exist_ok=True)
 
 # ─── Logging ──────────────────────────────────────────────────────────────────
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s  %(levelname)-8s  %(message)s",
-    handlers=[
-        logging.FileHandler(LOG_FILE, encoding="utf-8"),
-        logging.StreamHandler(sys.stdout),
-    ]
-)
+# Directory creation and file-backed logging are deliberately deferred to the
+# __main__ guard below: importing this module (as the test suite does, via
+# importlib, to exercise verify_signature) must not perform disk I/O or start
+# a GUI as a side effect of import alone. A plain stream logger exists at
+# import time so every function that logs still has something to call.
 log = logging.getLogger("assetly")
+log.setLevel(logging.INFO)
+if not log.handlers:
+    _stream_handler = logging.StreamHandler(sys.stdout)
+    _stream_handler.setFormatter(logging.Formatter("%(asctime)s  %(levelname)-8s  %(message)s"))
+    log.addHandler(_stream_handler)
+
+
+def _init_file_logging():
+    """Creates STATE_DIR and adds the file handler. Called only for a real run
+    (under the __main__ guard), never on import."""
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    file_handler = logging.FileHandler(LOG_FILE, encoding="utf-8")
+    file_handler.setFormatter(logging.Formatter("%(asctime)s  %(levelname)-8s  %(message)s"))
+    log.addHandler(file_handler)
 
 # ─── Config ───────────────────────────────────────────────────────────────────
 _cfg: dict = {}
@@ -47,7 +57,72 @@ if CONFIG_FILE.exists():
 CHECKIN_API_URL  = _cfg.get("checkin_api_url", "https://api.example.com/api/v1/inventory/checkin")
 CONFIG_API_URL   = CHECKIN_API_URL.rsplit("/checkin", 1)[0] + "/config"
 ENROLL_API_URL   = CHECKIN_API_URL.rsplit("/inventory/checkin", 1)[0] + "/enroll"
-GITHUB_RAW_URL   = _cfg.get("github_raw_url", "")
+
+# github_raw_url is deliberately NOT read, even when present in an existing
+# config file. Honouring it was the second half of the fleet-RCE finding:
+# any local user or process able to write this file could point the agent
+# at a host they control and gain persistent code execution, re-established
+# on every run. The update host is now derived from CHECKIN_API_URL, and the
+# signature is what actually authorises an update -- so a redirected agent
+# simply fails verification instead of installing an attacker's payload.
+
+# ─── Update signing ───────────────────────────────────────────────────────────
+# The release signing PUBLIC key, base64 DER. Compiled in on purpose: this is
+# what the agent trusts, instead of trusting a URL. An attacker who can rewrite
+# this agent's config file -- or who controls the network, or DNS, or the host
+# the artifact is fetched from -- still cannot produce a manifest that verifies
+# against this key, so none of those positions yields code execution any more.
+#
+# Replace with the real key at release time. An empty value disables updating
+# entirely rather than falling back to anything.
+UPDATE_SIGNING_PUBLIC_KEY = ""
+
+_SHA256_DIGEST_INFO = bytes.fromhex("3031300d060960864801650304020105000420")
+
+
+def _parse_public_key_der(der: bytes) -> tuple:
+    """(modulus, exponent) from a SubjectPublicKeyInfo DER blob. Hand-rolled
+    because this agent runs on whatever system Python the endpoint has and
+    cannot take a dependency. Mirrors backend/app/update_manifest.py exactly --
+    if the two diverge, agents silently stop updating."""
+    def read_tlv(data, offset):
+        tag = data[offset]
+        length = data[offset + 1]
+        offset += 2
+        if length & 0x80:
+            n = length & 0x7F
+            length = int.from_bytes(data[offset:offset + n], "big")
+            offset += n
+        return tag, data[offset:offset + length], offset + length
+
+    _, spki, _ = read_tlv(der, 0)
+    _, _algorithm, next_offset = read_tlv(spki, 0)
+    _, bitstring, _ = read_tlv(spki, next_offset)
+    rsa_der = bitstring[1:]
+    _, rsa_seq, _ = read_tlv(rsa_der, 0)
+    _, modulus, after_modulus = read_tlv(rsa_seq, 0)
+    _, exponent, _ = read_tlv(rsa_seq, after_modulus)
+    return int.from_bytes(modulus, "big"), int.from_bytes(exponent, "big")
+
+
+def verify_signature(manifest_bytes: bytes, signature_b64: str, public_key_der_b64: str) -> bool:
+    """RSA PKCS#1 v1.5 SHA-256 verification, stdlib only. Never raises:
+    malformed input is a failed verification, and a failed verification means
+    the agent changes nothing on disk."""
+    try:
+        signature = base64.b64decode(signature_b64)
+        modulus, exponent = _parse_public_key_der(base64.b64decode(public_key_der_b64))
+        key_size = (modulus.bit_length() + 7) // 8
+        if len(signature) != key_size:
+            return False
+        recovered = pow(int.from_bytes(signature, "big"), exponent, modulus)
+        encoded = recovered.to_bytes(key_size, "big")
+        digest = hashlib.sha256(manifest_bytes).digest()
+        suffix = _SHA256_DIGEST_INFO + digest
+        expected = b"\x00\x01" + b"\xff" * (key_size - 3 - len(suffix)) + b"\x00" + suffix
+        return hmac.compare_digest(encoded, expected)
+    except Exception:
+        return False
 
 # Resolved lazily by resolve_credential() before the first authenticated call --
 # never read at import time, because enrollment may need to run first and write
@@ -362,18 +437,65 @@ def should_show_form(state: dict, schedule: dict) -> bool:
 
 # ─── Self-update ──────────────────────────────────────────────────────────────
 def self_update():
-    if not GITHUB_RAW_URL:
+    """Fetches, verifies, and applies a signed update.
+
+    What changed and why: this used to GET a hardcoded GitHub raw URL, compare
+    the downloaded bytes' SHA-256 against its own, and overwrite itself if they
+    differed. That hash comparison was change DETECTION, never an integrity
+    control -- it compared new against old, never against a known-good value.
+    Anyone who could write this file's config, or who held write access to that
+    GitHub repository, had code execution on every endpoint in every fleet.
+
+    Now the agent trusts a compiled-in public key instead of a URL. Nothing is
+    written to disk until a signature made by the holder of the offline release
+    key has been verified over the manifest, and the downloaded bytes have been
+    re-hashed against the SHA-256 that signature covers.
+    """
+    if not UPDATE_SIGNING_PUBLIC_KEY:
+        return
+    if not CHECKIN_API_URL:
         return
     try:
         log.info("Checking for updates…")
-        req  = urllib.request.Request(GITHUB_RAW_URL, headers={"Cache-Control": "no-cache"})
-        resp = urllib.request.urlopen(req, timeout=8)
-        new_bytes = resp.read()
+        base = CHECKIN_API_URL.split("/api/v1/")[0]
+        req = urllib.request.Request(
+            f"{base}/api/v1/agent/manifest",
+            headers={"Cache-Control": "no-cache", "Authorization": f"Bearer {_credential}"},
+        )
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            envelope = json.loads(resp.read())
+
+        manifest_bytes = envelope["manifest"].encode()
+        if not verify_signature(
+            manifest_bytes, envelope["signature"], UPDATE_SIGNING_PUBLIC_KEY
+        ):
+            # Not a warning to shrug at: a failure here means someone served
+            # this agent something the release key did not sign.
+            log.error("Update REJECTED: manifest signature did not verify.")
+            return
+
+        artifact = json.loads(manifest_bytes)["artifacts"]["posix_py"]
         me = Path(sys.argv[0])
-        if hashlib.sha256(new_bytes).hexdigest() != hashlib.sha256(me.read_bytes()).hexdigest():
-            log.info("Update found — applying and restarting.")
-            me.write_bytes(new_bytes)
-            os.execv(sys.executable, [sys.executable] + sys.argv)
+        if hashlib.sha256(me.read_bytes()).hexdigest() == artifact["sha256"]:
+            log.info("Already up to date.")
+            return
+
+        with urllib.request.urlopen(f"{base}{artifact['path']}", timeout=30) as resp:
+            new_bytes = resp.read()
+
+        # Re-hash what actually arrived. This is what makes serving the
+        # artifact itself over an unauthenticated URL safe: its integrity
+        # comes from the signed manifest, not from the transport.
+        if hashlib.sha256(new_bytes).hexdigest() != artifact["sha256"]:
+            log.error("Update REJECTED: artifact hash does not match the signed manifest.")
+            return
+        if len(new_bytes) != artifact["size"]:
+            log.error("Update REJECTED: artifact size does not match the signed manifest.")
+            return
+
+        log.info("Verified update found — applying and restarting.")
+        me.write_bytes(new_bytes)
+        os.execv(sys.executable, [sys.executable] + sys.argv)
     except Exception as e:
         log.warning(f"Update check skipped: {e}")
 
@@ -1060,4 +1182,5 @@ def main():
 
 
 if __name__ == "__main__":
+    _init_file_logging()
     main()
