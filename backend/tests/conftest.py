@@ -44,7 +44,7 @@ async def db_pool():
     admin_conn = await asyncpg.connect(ADMIN_TEST_DATABASE_URL)
     await admin_conn.execute(
         "TRUNCATE device_checkins, devices, companies, admins, company_fields, "
-        "enrollment_tokens, device_credentials CASCADE;"
+        "enrollment_tokens, device_credentials, rate_limit_hits CASCADE;"
     )
     await admin_conn.close()
 
