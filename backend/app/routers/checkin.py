@@ -44,8 +44,9 @@ async def get_current_company_id(
         # deliberately not notified on, to keep this signal meaningful.
         background_tasks.add_task(notify_auth_failure, api_key[:16] + "...")
         raise HTTPException(status_code=401, detail="Invalid or revoked API key")
-    company_id, credential_id = result
+    company_id, credential_id, enrolled_serial = result
     request.state.credential_id = credential_id
+    request.state.enrolled_serial = enrolled_serial
     return company_id
 
 
@@ -70,6 +71,28 @@ async def checkin(
     company_id: str = Depends(get_current_company_id),
 ):
     platform_name, os_version = normalize_os(payload.os)
+
+    # M-1: a credential may only speak for the machine it was enrolled for.
+    # Without this, any one compromised endpoint -- or anyone holding a leaked
+    # enrollment token -- can submit a check-in claiming any serial, and the
+    # ON CONFLICT DO UPDATE below silently overwrites that machine's record.
+    # For an asset-inventory product that is an attack on the integrity of the
+    # thing the product exists to produce.
+    #
+    # enrolled_serial is None only on the legacy company-key path, which is
+    # exempt by design: a company key is not issued for a serial. That
+    # exemption ends when ALLOW_LEGACY_COMPANY_KEY_CHECKIN is flipped to false.
+    enrolled_serial = getattr(request.state, "enrolled_serial", None)
+    if enrolled_serial is not None and payload.serial_number != enrolled_serial:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Payload serial number does not match the serial this credential "
+                "was enrolled for. Re-enroll the device from the admin portal if "
+                "its hardware was replaced."
+            ),
+        )
+
     pool = await get_pool()
 
     async with pool.acquire() as conn:

@@ -27,9 +27,18 @@ async def resolve_company_id(pool: asyncpg.Pool, api_key: str) -> str | None:
     return str(row["id"]) if row else None
 
 
-async def resolve_credential(pool: asyncpg.Pool, bearer: str) -> tuple[str, str | None] | None:
-    """Returns (company_id, device_credential_id) for a device credential, or
-    (company_id, None) for a legacy company key, or None if neither matches.
+async def resolve_credential(
+    pool: asyncpg.Pool, bearer: str
+) -> tuple[str, str | None, str | None] | None:
+    """Returns (company_id, device_credential_id, enrolled_serial) for a device
+    credential, (company_id, None, None) for a legacy company key, or None if
+    neither matches.
+
+    The enrolled serial is returned so the check-in handler can bind a payload
+    to the machine its credential was issued for. It is None on the legacy
+    path because a company key is not issued for any particular machine --
+    that path is exempt from binding until ALLOW_LEGACY_COMPANY_KEY_CHECKIN
+    is flipped to false.
 
     Device credentials are checked first: once a machine has enrolled it should
     never fall through to the shared key path.
@@ -37,16 +46,16 @@ async def resolve_credential(pool: asyncpg.Pool, bearer: str) -> tuple[str, str 
     key_hash = hash_api_key(bearer)
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
-            "SELECT id, company_id FROM device_credentials "
+            "SELECT id, company_id, serial_number FROM device_credentials "
             "WHERE credential_hash = $1 AND revoked_at IS NULL",
             key_hash,
         )
         if row is not None:
-            return str(row["company_id"]), str(row["id"])
+            return str(row["company_id"]), str(row["id"]), row["serial_number"]
         if not ALLOW_LEGACY_COMPANY_KEY_CHECKIN:
             return None
         row = await conn.fetchrow(
             "SELECT id FROM companies WHERE api_key_hash = $1 AND revoked_at IS NULL",
             key_hash,
         )
-        return (str(row["id"]), None) if row else None
+        return (str(row["id"]), None, None) if row else None

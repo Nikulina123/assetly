@@ -70,6 +70,21 @@ async def company(db_pool):
 
 
 @pytest_asyncio.fixture
+async def enrolled_device(db_pool, company):
+    """Enrolls one device via a real enrollment token, returning the plaintext
+    credential and the serial it was enrolled for."""
+    from app.enrollment import create_enrollment_token, enroll_device
+
+    company_id, _api_key = company
+    token = await create_enrollment_token(
+        db_pool, company_id, label="test", max_devices=5
+    )
+    serial = "ENROLLED-SERIAL-1"
+    credential = await enroll_device(db_pool, token, serial, "host-1")
+    return credential, serial
+
+
+@pytest_asyncio.fixture
 async def admin(db_pool):
     """Inserts one admin with a known plaintext password, returns (admin_id, email, password).
 
