@@ -73,6 +73,13 @@ PENDING_GRACE_MULTIPLIER = float(os.environ.get("PENDING_GRACE_MULTIPLIER", "1.5
 # would enroll one machine and silently fail every other one.
 ENROLLMENT_TOKEN_DAYS = int(os.environ.get("ENROLLMENT_TOKEN_DAYS", "90"))
 
+# Installer-minted tokens get a much shorter life than the 90-day default.
+# A token embedded in an installer is distributed by email, file share, GPO,
+# and MDM -- channels with no protection -- so its value to an attacker should
+# expire in days, not a season. 90 stays available as an explicit admin choice.
+INSTALLER_TOKEN_DAYS = int(os.environ.get("INSTALLER_TOKEN_DAYS", "14"))
+INSTALLER_TOKEN_DAY_CHOICES = (7, 14, 30, 90)
+
 # Agents deployed before enrollment existed authenticate with the company key.
 # self_update() rewrites the agent on disk but the running process is old code,
 # so a machine only migrates on its NEXT run -- up to INTERVAL_MONTHS (6) later.

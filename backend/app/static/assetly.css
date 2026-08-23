@@ -333,3 +333,6 @@ input[type="checkbox"] { accent-color: var(--blue); width: 15px; height: 15px; v
 .banner-success { background: rgba(0, 194, 168, 0.08); border: 1px solid rgba(0, 194, 168, 0.25); color: var(--teal); }
 .banner-error { background: rgba(239, 68, 68, 0.08); border: 1px solid rgba(239, 68, 68, 0.25); color: var(--red); }
 .banner-warning { background: rgba(245, 166, 35, 0.08); border: 1px solid rgba(245, 166, 35, 0.25); color: var(--amber); }
+/* A token nearing its device cap -- the only detection that exists today for
+   a leaked installer being used well beyond what was intended. */
+.warn { color: var(--amber); font-weight: 700; }

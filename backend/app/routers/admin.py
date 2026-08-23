@@ -14,6 +14,8 @@ from app.admin_auth import resolve_admin
 from app.auth import generate_api_key, hash_api_key
 from app.config import (
     CHECKIN_API_URL_FOR_DOWNLOAD,
+    INSTALLER_TOKEN_DAY_CHOICES,
+    INSTALLER_TOKEN_DAYS,
     MACOS_PKG_IDENTIFIER,
     MACOS_PKG_VERSION,
     RATE_LIMIT_LOGIN,
@@ -743,11 +745,38 @@ def embed_windows_config(exe_bytes: bytes, config: dict) -> bytes:
     return exe_bytes + WINDOWS_CONFIG_BEGIN + json.dumps(config).encode() + WINDOWS_CONFIG_END
 
 
+def _installer_token_terms(device_count: int, token_days: int) -> tuple[int, datetime.datetime]:
+    """Validated (max_devices, expires_at) for an installer-minted token.
+
+    Rejects rather than clamps, matching agent_ui.py: an admin who typed 5000
+    by accident should see an error, not silently receive a token that lets
+    5000 machines enroll.
+
+    The headroom exists because a device count is an estimate and a re-imaged
+    machine re-enrolls under the same serial (device_credentials is UNIQUE on
+    (company_id, serial_number), so that replaces rather than adds) -- but a
+    genuinely new machine does not, and an installer that stops working
+    mid-rollout is a support call.
+    """
+    if not 1 <= device_count <= 10000:
+        raise HTTPException(status_code=400, detail="Device count must be between 1 and 10000")
+    if token_days not in INSTALLER_TOKEN_DAY_CHOICES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Token lifetime must be one of {INSTALLER_TOKEN_DAY_CHOICES} days",
+        )
+    max_devices = device_count + max(5, device_count // 10)
+    expires_at = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=token_days)
+    return max_devices, expires_at
+
+
 @router.post("/companies/{company_id}/download/macos")
 async def download_macos(
     request: Request,
     company_id: uuid.UUID,
     csrf_token: str = Form(...),
+    device_count: int = Form(...),
+    token_days: int = Form(INSTALLER_TOKEN_DAYS),
     admin_id: str = Depends(require_admin),
 ):
     """Serves a double-clickable installer package rather than a shell script.
@@ -762,7 +791,11 @@ async def download_macos(
     await _get_active_company_or_404(pool, company_id)
     postinstall_template = _load_installer_template("AssetlyAgent_macOS_postinstall.sh")
     agent_source = (REPO_ROOT / "inventory_agent.py").read_bytes()
-    token = await create_enrollment_token(pool, str(company_id), label="macOS installer")
+    max_devices, expires_at = _installer_token_terms(device_count, token_days)
+    token = await create_enrollment_token(
+        pool, str(company_id), label=f"macOS installer ({device_count} devices)",
+        expires_at=expires_at, max_devices=max_devices,
+    )
     postinstall = _render_installer_script(
         postinstall_template, CHECKIN_API_URL_FOR_DOWNLOAD, token
     )
@@ -788,13 +821,19 @@ async def download_linux(
     request: Request,
     company_id: uuid.UUID,
     csrf_token: str = Form(...),
+    device_count: int = Form(...),
+    token_days: int = Form(INSTALLER_TOKEN_DAYS),
     admin_id: str = Depends(require_admin),
 ):
     _check_csrf(request, csrf_token)
     pool = await get_pool()
     await _get_active_company_or_404(pool, company_id)
     template_text = _load_installer_template("AssetlyAgent_Linux.sh")
-    token = await create_enrollment_token(pool, str(company_id), label="Linux installer")
+    max_devices, expires_at = _installer_token_terms(device_count, token_days)
+    token = await create_enrollment_token(
+        pool, str(company_id), label=f"Linux installer ({device_count} devices)",
+        expires_at=expires_at, max_devices=max_devices,
+    )
     script_text = _render_installer_script(template_text, CHECKIN_API_URL_FOR_DOWNLOAD, token)
     return Response(
         content=script_text,
@@ -808,6 +847,8 @@ async def download_windows(
     request: Request,
     company_id: uuid.UUID,
     csrf_token: str = Form(...),
+    device_count: int = Form(...),
+    token_days: int = Form(INSTALLER_TOKEN_DAYS),
     admin_id: str = Depends(require_admin),
 ):
     """Serves one self-contained .exe instead of an exe plus a config file.
@@ -831,7 +872,11 @@ async def download_windows(
     exe_bytes = WINDOWS_EXE_PATH.read_bytes()
     pool = await get_pool()
     await _get_active_company_or_404(pool, company_id)
-    token = await create_enrollment_token(pool, str(company_id), label="Windows installer")
+    max_devices, expires_at = _installer_token_terms(device_count, token_days)
+    token = await create_enrollment_token(
+        pool, str(company_id), label=f"Windows installer ({device_count} devices)",
+        expires_at=expires_at, max_devices=max_devices,
+    )
 
     return Response(
         content=embed_windows_config(
