@@ -127,18 +127,61 @@ say "Using Python: $PYTHON3"
 mkdir -p "$SUPPORT_DIR"
 install -m 644 "$SCRIPT_DIR/inventory_agent.py" "$AGENT_SRC"
 
-# World-readable on purpose: every account on this Mac has to be able to seed
-# its own copy at login. The enrollment token it carries is a company-wide
-# deployment secret rather than a per-user one, and it is exchanged for a
-# per-device credential on first check-in.
-cat > "$SEED_CONFIG" <<JSON
+# Enroll at install time, while we are still root and still hold the
+# company-wide enrollment token. What persists on this machine is then a
+# per-device credential -- individually revocable from the portal, and bound
+# to this machine's serial (see backend/app/auth.py), so a leak of this file
+# exposes one machine rather than the whole fleet.
+#
+# The previous behaviour wrote the shared enrollment token here world-readable
+# (mode 644), "world-readable on purpose" so every account could seed its own copy at
+# login. The requirement was always "each user gets a copy", never "every
+# user can read the master" -- the per-user LaunchAgent above (which copies
+# this file into each user's own home at 600) satisfies the first without
+# the second, as long as the master itself is never world-readable.
+# A previous installer version may have left a world-readable seed config
+# containing the shared token behind. rm it before writing the new one so
+# that file can never linger under the old, less restrictive mode.
+rm -f "$SEED_CONFIG"
+
+# Enroll against POST /api/v1/enroll (see backend/app/routers/enroll.py).
+ENROLL_API_URL="${CHECKIN_API_URL%/inventory/checkin}/enroll"
+SERIAL="$(ioreg -l | awk -F'"' '/IOPlatformSerialNumber/{print $4}')"
+CREDENTIAL="$(curl -fsS --max-time 20 -X POST "$ENROLL_API_URL" \
+  -H "Authorization: Bearer $ENROLLMENT_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d "{\"serial_number\":\"$SERIAL\",\"hostname\":\"$(hostname)\"}" \
+  2>/dev/null | "$PYTHON3" -c 'import json,sys
+try:
+    print(json.load(sys.stdin)["credential"])
+except Exception:
+    pass' 2>/dev/null)"
+
+if [ -n "$CREDENTIAL" ]; then
+    cat > "$SEED_CONFIG" <<JSON
+{
+  "checkin_api_url": "$CHECKIN_API_URL",
+  "device_credential": "$CREDENTIAL",
+  "github_raw_url": "$GITHUB_RAW_URL"
+}
+JSON
+    say "Enrolled at install time; enrollment token discarded."
+else
+    # No network at imaging time is normal. Fall back to storing the token so
+    # each user's agent can enroll itself on first run -- but never
+    # world-readable. 600 root:wheel on every path, no exceptions.
+    cat > "$SEED_CONFIG" <<JSON
 {
   "checkin_api_url": "$CHECKIN_API_URL",
   "enrollment_token": "$ENROLLMENT_TOKEN",
   "github_raw_url": "$GITHUB_RAW_URL"
 }
 JSON
-chmod 644 "$SEED_CONFIG"
+    say "Could not enroll at install time; deferring enrollment to first run."
+fi
+
+chown root:wheel "$SEED_CONFIG"
+chmod 600 "$SEED_CONFIG"
 
 cat > "$LAUNCHER" <<'LAUNCHER_EOF'
 #!/bin/bash

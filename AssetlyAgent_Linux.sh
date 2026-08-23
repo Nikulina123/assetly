@@ -154,13 +154,44 @@ echo "      ✔  Agent saved to: $AGENT_FILE"
 # ── Step 4: Write config ──────────────────────────────────────────────────────
 echo ""
 echo "[4/6] Writing configuration…"
-cat > "$CONFIG_FILE" <<JSON
+# Enroll now, while we still hold the company-wide enrollment token, and
+# discard it on success. What lands in config.json is then a per-device
+# credential -- individually revocable and bound to this machine's serial --
+# instead of a 90-day, unlimited-use, company-wide secret sitting in a plain
+# file on disk. If there's no network right now (offline imaging is normal),
+# fall back to the token so the agent can enroll itself on first run.
+ENROLL_API_URL="${CHECKIN_API_URL%/inventory/checkin}/enroll"
+SERIAL="$(sudo dmidecode -s system-serial-number 2>/dev/null || true)"
+CREDENTIAL="$(curl -fsS --max-time 20 -X POST "$ENROLL_API_URL" \
+  -H "Authorization: Bearer $ENROLLMENT_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d "{\"serial_number\":\"$SERIAL\",\"hostname\":\"$(hostname)\"}" \
+  2>/dev/null | "$PYTHON3" -c 'import json,sys
+try:
+    print(json.load(sys.stdin)["credential"])
+except Exception:
+    pass' 2>/dev/null)"
+
+if [[ -n "$CREDENTIAL" ]]; then
+    cat > "$CONFIG_FILE" <<JSON
+{
+  "checkin_api_url": "$CHECKIN_API_URL",
+  "device_credential": "$CREDENTIAL",
+  "github_raw_url":  "$GITHUB_RAW_URL"
+}
+JSON
+    echo "      Enrolled now; enrollment token discarded."
+else
+    cat > "$CONFIG_FILE" <<JSON
 {
   "checkin_api_url": "$CHECKIN_API_URL",
   "enrollment_token": "$ENROLLMENT_TOKEN",
   "github_raw_url":  "$GITHUB_RAW_URL"
 }
 JSON
+    echo "      Could not enroll now; the agent will enroll itself on first run."
+fi
+chmod 600 "$CONFIG_FILE"
 echo "      Config: $CONFIG_FILE"
 
 # ── Step 5: First manual run ──────────────────────────────────────────────────

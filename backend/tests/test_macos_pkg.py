@@ -9,6 +9,7 @@ cpio it can extract, and a Distribution that names the component it ships.
 import hashlib
 import struct
 import zlib
+from pathlib import Path
 from xml.etree import ElementTree
 
 import pytest
@@ -16,6 +17,8 @@ import pytest
 from app.macos_pkg import build_flat_package
 
 from .pkg_reader import read_flat_package, read_xar
+
+REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 
 SCRIPTS = {
     "postinstall": b"#!/bin/bash\nexit 0\n",
@@ -103,3 +106,23 @@ def test_output_is_reproducible_apart_from_the_creation_timestamp():
 def test_a_package_without_a_postinstall_is_rejected():
     with pytest.raises(ValueError, match="postinstall"):
         _build(scripts={"inventory_agent.py": b""})
+
+
+def test_seed_config_is_not_world_readable():
+    """C-2: chmod 644 on this file exposed a 90-day, unlimited-use,
+    company-wide enrollment credential to every local user, every unprivileged
+    process, and any MDM or backup agent that reads that path."""
+    script = (REPO_ROOT / "AssetlyAgent_macOS_postinstall.sh").read_text()
+    chmod_644_lines = [line.strip() for line in script.splitlines() if "chmod 644" in line]
+    # The LaunchAgent plist is deliberately 644 -- launchd requires it and it
+    # carries no secret. Every other chmod 644 would be a credential file.
+    assert chmod_644_lines == ['chmod 644 "$PLIST_FILE"']
+    assert "chmod 600" in script
+
+
+def test_postinstall_removes_the_enrollment_token_after_enrolling():
+    script = (REPO_ROOT / "AssetlyAgent_macOS_postinstall.sh").read_text()
+    assert "/api/v1/enroll" in script
+    assert "enrollment_token" in script
+    # The token must not survive a successful enrollment.
+    assert "rm -f" in script or "shred" in script
