@@ -1,5 +1,8 @@
 import uuid
 
+import pytest
+from pydantic import ValidationError
+
 from app.models import CheckinRequest
 
 
@@ -56,3 +59,52 @@ def test_department_defaults_to_none_when_absent():
     payload.pop("department", None)
     payload.pop("project", None)
     assert CheckinRequest(**payload).department is None
+
+
+def _valid_payload(**overrides):
+    payload = {
+        "checkin_id": "11111111-1111-1111-1111-111111111111",
+        "timestamp": "2026-08-20T10:00:00Z",
+        "first_name": "Ann",
+        "last_name": "Lee",
+        "email": "ann@example.com",
+        "serial_number": "SER123",
+        "hostname": "host-1",
+        "brand": "Apple",
+        "model": "MacBook Pro",
+        "os": "macOS 15.0",
+    }
+    payload.update(overrides)
+    return payload
+
+
+def test_rejects_oversized_string_field():
+    with pytest.raises(ValidationError):
+        CheckinRequest(**_valid_payload(hostname="h" * 257))
+
+
+def test_accepts_string_field_at_the_limit():
+    model = CheckinRequest(**_valid_payload(hostname="h" * 256))
+    assert len(model.hostname) == 256
+
+
+def test_rejects_too_many_custom_fields():
+    with pytest.raises(ValidationError):
+        CheckinRequest(**_valid_payload(custom_fields={f"k{i}": "v" for i in range(33)}))
+
+
+def test_rejects_oversized_custom_field_value():
+    with pytest.raises(ValidationError):
+        CheckinRequest(**_valid_payload(custom_fields={"k": "v" * 513}))
+
+
+def test_rejects_oversized_custom_field_key():
+    with pytest.raises(ValidationError):
+        CheckinRequest(**_valid_payload(custom_fields={"k" * 65: "v"}))
+
+
+def test_accepts_custom_fields_at_the_limits():
+    model = CheckinRequest(
+        **_valid_payload(custom_fields={f"k{i}": "v" * 512 for i in range(32)})
+    )
+    assert len(model.custom_fields) == 32
