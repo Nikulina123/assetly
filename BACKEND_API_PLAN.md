@@ -189,3 +189,12 @@ $payload["platform"]        = "windows"
 
 Required in production: `ENVIRONMENT=production` and `SESSION_COOKIE_SECURE=true`.
 The application refuses to start without the second when the first is set.
+
+## Device lifecycle
+
+**Hardware replacement.** A device credential is bound to its enrolled serial.
+When a machine's board or chassis is replaced and its serial changes, its
+check-ins will be rejected with 409. The fix is admin-initiated: revoke the old
+credential in the portal, then re-run the installer on the machine. This is
+deliberately not self-service — an endpoint that could rebind its own
+credential would reopen exactly the hole the binding closes.
