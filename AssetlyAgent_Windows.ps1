@@ -19,13 +19,16 @@
 #  and no redeploy. The hardcoded values below are only fallbacks for when that
 #  endpoint cannot be reached.
 # ════════════════════════════════════════════════════════════════════════════════
-$GitHubRawUrl  = "https://raw.githubusercontent.com/Nikulina123/Check-in_agent/refs/heads/main/AssetlyAgent_Windows.ps1"
-# The compiled agent updates itself from the build CI commits to the repository,
-# which is the same artifact the portal serves for "Download for Windows".
-$GitHubExeUrl  = "https://raw.githubusercontent.com/Nikulina123/Check-in_agent/refs/heads/main/backend/static/AssetlyAgent_Windows.exe"
+# github_raw_url / github_exe_url are deliberately gone, not just unread: this
+# agent used to trust whatever bytes came back from a hardcoded GitHub URL, so
+# any local user or process able to rewrite this file's config, or anyone who
+# controlled that network path, had persistent code execution on every machine
+# that ran it. The update host is now derived from $CheckinApiUrl (below), and
+# a compiled-in public key -- not a URL -- is what actually authorises an
+# update. See $UpdateSigningPublicKey and Invoke-SelfUpdateExe.
 
 # Windows PowerShell 5.1 still negotiates TLS 1.0 by default on older builds,
-# which raw.githubusercontent.com refuses outright. Without this the self-update
+# and the backend API refuses that outright. Without this the manifest fetch
 # below fails on exactly the machines most in need of an update.
 try {
     [Net.ServicePointManager]::SecurityProtocol =
@@ -45,6 +48,14 @@ $AgentVersion     = "2.0"
 # the field config. Kept in sync with DEFAULT_DEPARTMENT_OPTIONS in
 # backend/app/field_config.py and inventory_agent.py.
 $DefaultDepartments = @("Webiz ERP","Fundbox","Playtika","Artlist","The5%ers","Other")
+
+# ─── Update signing ───────────────────────────────────────────────────────────
+# The release signing PUBLIC key, base64 DER (SubjectPublicKeyInfo). Compiled
+# in on purpose: the agent trusts this key rather than trusting a URL. Empty
+# disables updating entirely -- it never falls back to an unverified path.
+# Must be byte-identical to UPDATE_SIGNING_PUBLIC_KEY in inventory_agent.py
+# and in the backend environment.
+$UpdateSigningPublicKey = ""
 
 $StateDir   = "$env:LOCALAPPDATA\AssetlyInventory"
 $StateFile  = "$StateDir\state.json"
@@ -450,8 +461,99 @@ function Expand-UiText([string]$Text, [hashtable]$Values) {
 #  SELF-UPDATE
 # ════════════════════════════════════════════════════════════════════════════════
 function Get-Sha256([byte[]]$Bytes) {
+    # Lowercase hex, no separators -- matches Python's hashlib .hexdigest(),
+    # which is the form the signed manifest's artifact hashes are written in.
     $sha = [System.Security.Cryptography.SHA256]::Create()
-    try { return [BitConverter]::ToString($sha.ComputeHash($Bytes)) } finally { $sha.Dispose() }
+    try {
+        $hash = $sha.ComputeHash($Bytes)
+        return -join ($hash | ForEach-Object { $_.ToString("x2") })
+    } finally { $sha.Dispose() }
+}
+
+function Read-DerTlv([byte[]]$Data, [int]$Offset) {
+    <#  Minimal DER tag-length-value reader. Returns @{ Tag; Value (byte[]);
+        NextOffset }. Mirrors read_tlv() in backend/app/update_manifest.py and
+        inventory_agent.py's _parse_public_key_der -- the three must stay
+        algorithmically identical or agents silently stop trusting valid
+        manifests (or worse, start trusting the wrong bytes). #>
+    $tag = $Data[$Offset]
+    $length = $Data[$Offset + 1]
+    $Offset += 2
+    if ($length -band 0x80) {
+        $n = $length -band 0x7F
+        $length = 0
+        for ($i = 0; $i -lt $n; $i++) { $length = ($length -shl 8) -bor $Data[$Offset + $i] }
+        $Offset += $n
+    }
+    $value = New-Object byte[] $length
+    [Array]::Copy($Data, $Offset, $value, 0, $length)
+    return @{ Tag = $tag; Value = $value; NextOffset = $Offset + $length }
+}
+
+function ConvertFrom-DerUnsignedInteger([byte[]]$Der) {
+    <#  DER encodes INTEGER as a signed big-endian two's-complement value, so a
+        positive number whose high bit is set gets a leading 0x00 byte purely
+        to keep it from reading as negative. .NET's RSAParameters.Modulus /
+        .Exponent instead want the raw big-endian MAGNITUDE with no such
+        padding -- passing the DER bytes through unmodified silently produces
+        a key one byte too long, which makes every signature verification
+        fail with no useful error. Strip exactly one leading 0x00 when it is
+        purely this DER sign-padding (length > 1 and first byte is 0x00);
+        never strip a genuine 0x00 that is the only byte, and never strip
+        more than one, since a real key only ever needs the one padding byte. #>
+    if ($Der.Length -gt 1 -and $Der[0] -eq 0x00) {
+        $trimmed = New-Object byte[] ($Der.Length - 1)
+        [Array]::Copy($Der, 1, $trimmed, 0, $trimmed.Length)
+        return $trimmed
+    }
+    return $Der
+}
+
+function Test-ManifestSignature {
+    <#  RSA PKCS#1 v1.5 over SHA-256, via .NET. Targets Windows PowerShell 5.1:
+        RSA.ImportSubjectPublicKeyInfo() is .NET Core 3.0+/.NET 5+ only and
+        does not exist on the .NET Framework CLR that ships PowerShell 5.1, so
+        the SubjectPublicKeyInfo DER is walked by hand into an RSAParameters
+        struct instead (this path also works unchanged on PowerShell 7+, so
+        there is no separate branch to maintain for it).
+        Returns $true only on a verified signature; every failure path,
+        including a malformed key or signature, returns $false. #>
+    param([byte[]]$ManifestBytes, [string]$SignatureB64, [string]$PublicKeyDerB64)
+
+    if (-not $PublicKeyDerB64) { return $false }
+    try {
+        $der = [Convert]::FromBase64String($PublicKeyDerB64)
+        $sig = [Convert]::FromBase64String($SignatureB64)
+
+        # SubjectPublicKeyInfo ::= SEQUENCE { algorithm, subjectPublicKey BIT STRING }
+        $spki = Read-DerTlv $der 0
+        $alg  = Read-DerTlv $spki.Value 0
+        $bitstring = Read-DerTlv $spki.Value $alg.NextOffset
+        # BIT STRING's first content octet is the count of unused trailing bits.
+        $rsaDer = New-Object byte[] ($bitstring.Value.Length - 1)
+        [Array]::Copy($bitstring.Value, 1, $rsaDer, 0, $rsaDer.Length)
+
+        # RSAPublicKey ::= SEQUENCE { modulus INTEGER, publicExponent INTEGER }
+        $rsaSeq   = Read-DerTlv $rsaDer 0
+        $modulusT = Read-DerTlv $rsaSeq.Value 0
+        $exponentT = Read-DerTlv $rsaSeq.Value $modulusT.NextOffset
+
+        $params = New-Object System.Security.Cryptography.RSAParameters
+        $params.Modulus  = ConvertFrom-DerUnsignedInteger $modulusT.Value
+        $params.Exponent = ConvertFrom-DerUnsignedInteger $exponentT.Value
+
+        $rsa = New-Object System.Security.Cryptography.RSACryptoServiceProvider
+        try {
+            $rsa.ImportParameters($params)
+            return $rsa.VerifyData(
+                $ManifestBytes, $sig,
+                [System.Security.Cryptography.HashAlgorithmName]::SHA256,
+                [System.Security.Cryptography.RSASignaturePadding]::Pkcs1)
+        } finally { $rsa.Dispose() }
+    } catch {
+        Write-Log "Signature verification error: $_" "WARN"
+        return $false
+    }
 }
 
 function Find-LastByteSequence([byte[]]$Haystack, [byte[]]$Needle, [int]$SearchFrom) {
@@ -499,12 +601,17 @@ function Split-EmbeddedConfig([byte[]]$Bytes) {
 }
 
 function Invoke-SelfUpdateExe {
-    <#  A compiled agent used to be a dead end: Invoke-SelfUpdate returned
-        immediately for an .exe, so every fix had to be hand-carried to every
-        machine. It now replaces itself from the same artifact the portal
-        serves, carrying its own config block across so an exe that updates
-        before it has ever enrolled still knows its URL and token. #>
-    if (-not $GitHubExeUrl -or $GitHubExeUrl -like "*YOUR_ORG*") { return }
+    <#  Fetches, verifies, and applies a signed update.
+
+        Previously this downloaded a GitHub raw .exe and installed it after a
+        size-and-MZ-header sanity check. That check defends against a captive
+        portal's login page; it does not defend against an attacker-supplied
+        valid PE. Nothing is written now until a signature made with the
+        offline release key verifies over the manifest, and the downloaded
+        bytes re-hash to the value that signature covers. #>
+    if (-not $UpdateSigningPublicKey) { return }
+    if (-not $CheckinApiUrl) { return }
+
     $tmp = [System.IO.Path]::GetTempFileName() + ".exe"
     # PowerShell runs `finally` on the way out of `exit`, so the cleanup below
     # would delete the staged executable out from under the cmd.exe that was
@@ -514,19 +621,43 @@ function Invoke-SelfUpdateExe {
     $handedOff = $false
     try {
         Write-Log "Checking for updates…"
-        Invoke-WebRequest -Uri $GitHubExeUrl -OutFile $tmp -UseBasicParsing -TimeoutSec 60
+        $base = $CheckinApiUrl -split '/api/v1/' | Select-Object -First 1
+        $envelope = Invoke-RestMethod -Uri "$base/api/v1/agent/manifest" `
+            -Headers @{ Authorization = "Bearer $DeviceCredential" } -TimeoutSec 15
+
+        $manifestBytes = [System.Text.Encoding]::UTF8.GetBytes($envelope.manifest)
+        if (-not (Test-ManifestSignature $manifestBytes $envelope.signature $UpdateSigningPublicKey)) {
+            Write-Log "Update REJECTED: manifest signature did not verify." "ERROR"
+            return
+        }
+
+        $artifact = ($envelope.manifest | ConvertFrom-Json).artifacts.windows_exe
+
+        # The signed hash covers the BASE image only -- an installed agent
+        # carries its own trailing config block, so hashing the whole file
+        # would make every machine compute a different hash for one release
+        # and update forever.
+        $current = Split-EmbeddedConfig ([System.IO.File]::ReadAllBytes($ScriptPath))
+        if ((Get-Sha256 $current.Base) -eq $artifact.sha256) {
+            Write-Log "Already up to date."
+            return
+        }
+
+        Invoke-WebRequest -Uri "$base$($artifact.path)" -OutFile $tmp -UseBasicParsing -TimeoutSec 120
         $newBytes = [System.IO.File]::ReadAllBytes($tmp)
 
-        # Same check Build_Windows_EXE.ps1 makes on its own output. A captive
-        # portal's login page is a perfectly successful HTTP response, and
-        # writing one over the agent would brick it on the employee's machine.
+        # Cheap early-out, kept from the previous implementation: a captive
+        # portal's login page is a perfectly successful HTTP response.
         if ($newBytes.Length -lt 10240 -or $newBytes[0] -ne 0x4D -or $newBytes[1] -ne 0x5A) {
             Write-Log "Update rejected: downloaded $($newBytes.Length) bytes that are not a PE image." "WARN"
             return
         }
-
-        $current = Split-EmbeddedConfig ([System.IO.File]::ReadAllBytes($ScriptPath))
-        if ((Get-Sha256 $current.Base) -eq (Get-Sha256 $newBytes)) { return }
+        # The control that actually matters: the bytes must match what the
+        # release key signed for.
+        if ((Get-Sha256 $newBytes) -ne $artifact.sha256) {
+            Write-Log "Update REJECTED: artifact hash does not match the signed manifest." "ERROR"
+            return
+        }
 
         $combined = New-Object byte[] ($newBytes.Length + $current.Block.Length)
         [Array]::Copy($newBytes, 0, $combined, 0, $newBytes.Length)
@@ -538,7 +669,7 @@ function Invoke-SelfUpdateExe {
         if ($ScriptPath -eq $ScriptDest) {
             # Windows will not let a running image be overwritten, so hand the
             # swap to a detached cmd.exe that waits for this process to exit.
-            Write-Log "Update found — scheduling replacement and restart."
+            Write-Log "Verified update found — scheduling replacement and restart."
             $cmd = "timeout /t 3 /nobreak >nul & move /Y `"$tmp`" `"$ScriptDest`" & " +
                    "start `"`" `"$ScriptDest`""
             Start-Process "cmd.exe" -ArgumentList "/c $cmd" -WindowStyle Hidden
@@ -547,7 +678,7 @@ function Invoke-SelfUpdateExe {
         }
         # Running from elsewhere (a fresh download in Downloads, say) — the
         # installed copy is not locked, so update it and carry on with this run.
-        Write-Log "Update found — updating installed copy. Continuing current run."
+        Write-Log "Verified update found — updating installed copy. Continuing current run."
         Copy-Item -Path $tmp -Destination $ScriptDest -Force -ErrorAction SilentlyContinue
     } catch {
         Write-Log "Update check failed: $_" "WARN"
@@ -558,35 +689,12 @@ function Invoke-SelfUpdateExe {
 
 function Invoke-SelfUpdate {
     if ($IsExe) { Invoke-SelfUpdateExe; return }
-    if (-not $GitHubRawUrl -or $GitHubRawUrl -like "*YOUR_ORG*") { return }
-    try {
-        Write-Log "Checking for updates…"
-        $new  = (Invoke-WebRequest -Uri $GitHubRawUrl -UseBasicParsing -TimeoutSec 8).Content
-        $cur  = Get-Content -Path $ScriptPath -Raw -ErrorAction SilentlyContinue
-        # Compare the hash *strings*: -ne between two byte[] operands is
-        # PowerShell's element-wise filter, not an equality test, so the old
-        # form here only worked by accident of an empty array being falsy.
-        $hash = { param($s) Get-Sha256 ([System.Text.Encoding]::UTF8.GetBytes($s)) }
-        if ((&$hash $new) -ne (&$hash $cur)) {
-            $tmp = [System.IO.Path]::GetTempFileName() + ".ps1"
-            $new | Out-File -FilePath $tmp -Encoding UTF8
-            if ($ScriptPath -eq $ScriptDest) {
-                # Running from installed location — replace and restart silently
-                Write-Log "Update found — scheduling replacement and restart."
-                $cmd = "timeout /t 2 /nobreak >nul & copy /Y `"$tmp`" `"$ScriptDest`" & " +
-                       "powershell.exe -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$ScriptDest`""
-                Start-Process "cmd.exe" -ArgumentList "/c $cmd" -WindowStyle Hidden
-                exit 0
-            } else {
-                # Running from another location (e.g. Downloads) — update installed copy silently, keep going
-                Write-Log "Update found — updating installed copy. Continuing current run."
-                Copy-Item -Path $tmp -Destination $ScriptDest -Force -ErrorAction SilentlyContinue
-                Remove-Item $tmp -Force -ErrorAction SilentlyContinue
-            }
-        }
-    } catch {
-        Write-Log "Update check failed: $_" "WARN"
-    }
+    # The .ps1 form is not a signed release artifact: the manifest carries the
+    # compiled exe and the POSIX script only. Rather than keep an unverified
+    # update path alive for it -- which is exactly the finding this change
+    # closes -- a script-form agent does not self-update. Deploy the exe, or
+    # push the .ps1 through GPO/MDM.
+    return
 }
 
 # ════════════════════════════════════════════════════════════════════════════════
