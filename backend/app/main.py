@@ -60,7 +60,8 @@ async def http_exception_handler_with_background_tasks(request, exc):
     # on the normal successful-return path; a dependency (e.g.
     # app.routers.checkin.get_current_company_id) that raises HTTPException
     # bypasses that entirely, so any background tasks it queued (e.g.
-    # notify_auth_failure) would otherwise be silently dropped. That
+    # record_auth_failure and maybe_send_auth_failure_digest) would otherwise
+    # be silently dropped. That
     # dependency stashes its BackgroundTasks instance on request.state
     # specifically so this handler can still run it.
     response = await http_exception_handler(request, exc)

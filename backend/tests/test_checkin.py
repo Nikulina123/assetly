@@ -314,7 +314,8 @@ async def test_allow_legacy_company_key_checkin_flag_gates_legacy_path(
     `from app.config import ALLOW_LEGACY_COMPANY_KEY_CHECKIN`, which binds a
     separate name in app.auth's namespace at import time, so that's the
     reference resolve_credential actually reads. Same pattern documented in
-    tests/conftest.py for notify_checkin_success/notify_auth_failure."""
+    tests/conftest.py for notify_checkin_success/record_auth_failure/
+    maybe_send_auth_failure_digest."""
     import app.auth
     from app.enrollment import create_enrollment_token, enroll_device
 
