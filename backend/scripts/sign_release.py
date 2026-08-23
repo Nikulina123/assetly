@@ -54,18 +54,34 @@ def _windows_base_bytes(data: bytes) -> bytes:
     machine would compute a different hash for the same release and update
     forever.
 
-    The marker matches WINDOWS_CONFIG_BEGIN in backend/app/routers/admin.py
-    (the embedder) and the $begin split in Split-EmbeddedConfig in
-    AssetlyAgent_Windows.ps1 (the reader): b"ASSETLY-CONFIG-BEGIN:". The
-    brief for this task named a different placeholder marker
-    ("### ASSETLY-CONFIG-BEGIN ###"); it does not match either of those two
-    call sites and was not used here -- using it would have made every
-    installed Windows machine compute a different release hash than the one
-    signed here and update forever.
+    This function must stay behaviourally identical to Split-EmbeddedConfig
+    in AssetlyAgent_Windows.ps1 -- they are a matched pair. If they ever
+    diverge on what counts as "the base image", a real installed .exe and
+    this signer will disagree about the hash of the same release, and every
+    machine in the Windows fleet will sit in a permanent "update available"
+    loop, downloading and re-applying forever.
+
+    Split-EmbeddedConfig requires two things before it strips anything, and
+    this mirrors both rather than assuming either:
+      1. The file must literally END with b":ASSETLY-CONFIG-END". If it
+         doesn't, the file is returned unmodified -- Split-EmbeddedConfig
+         never even looks for the begin-marker in that case.
+      2. Only then does it search for b"ASSETLY-CONFIG-BEGIN:", and only in
+         the last 8192 bytes -- because ps2exe embeds this script as plain
+         text, so a decoy copy of the marker sits ~15 KB into a real build,
+         and matching that one would cut the binary in half.
     """
-    marker = b"ASSETLY-CONFIG-BEGIN:"
-    index = data.rfind(marker)
-    return data if index < 0 else data[:index]
+    begin = b"ASSETLY-CONFIG-BEGIN:"
+    end = b":ASSETLY-CONFIG-END"
+
+    if not data.endswith(end):
+        return data
+
+    tail_start = max(0, len(data) - 8192)
+    index = data.rfind(begin, tail_start)
+    if index < 0:
+        return data
+    return data[:index]
 
 
 def main() -> None:
