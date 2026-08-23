@@ -12,8 +12,13 @@ from app.db import get_pool
 from app.field_config import resolve_field_config
 from app.hardware import normalize_os
 from app.models import CheckinRequest, CheckinResponse
-from app.notifications import notify_auth_failure, notify_checkin_success
-from app.rate_limit import enforce_rate_limit, hashed_bucket
+from app.notifications import (
+    maybe_send_auth_failure_digest,
+    notify_checkin_success,
+    record_auth_failure,
+    safe_key_fingerprint,
+)
+from app.rate_limit import client_ip, enforce_rate_limit, hashed_bucket
 from app.schedule import resolve_schedule
 
 router = APIRouter(tags=["checkin"])
@@ -51,8 +56,15 @@ async def get_current_company_id(
         # Only a present-but-invalid key triggers this -- a missing header
         # entirely (the branch above) is far more common (unconfigured
         # devices, generic bot traffic) and much less actionable, so it's
-        # deliberately not notified on, to keep this signal meaningful.
-        background_tasks.add_task(notify_auth_failure, api_key[:16] + "...")
+        # deliberately not recorded, to keep this signal meaningful.
+        #
+        # Recording is a database INSERT, not an email. The digest goes out
+        # opportunistically, at most once an hour: an unauthenticated caller
+        # must not be able to trigger outbound mail.
+        background_tasks.add_task(
+            record_auth_failure, pool, safe_key_fingerprint(api_key), client_ip(request)
+        )
+        background_tasks.add_task(maybe_send_auth_failure_digest, pool)
         raise HTTPException(status_code=401, detail="Invalid or revoked API key")
     company_id, credential_id, enrolled_serial = result
     request.state.credential_id = credential_id

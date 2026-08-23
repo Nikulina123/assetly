@@ -265,10 +265,14 @@ async def test_checkin_auth_failure_triggers_notification(monkeypatch):
 
     calls = []
 
-    def fake_notify(key_prefix):
+    async def fake_record(pool, key_prefix, ip_address):
         calls.append(key_prefix)
 
-    monkeypatch.setattr(checkin_module, "notify_auth_failure", fake_notify)
+    async def fake_digest(pool):
+        return None
+
+    monkeypatch.setattr(checkin_module, "record_auth_failure", fake_record)
+    monkeypatch.setattr(checkin_module, "maybe_send_auth_failure_digest", fake_digest)
     async with await _client() as client:
         resp = await client.post(
             "/api/v1/inventory/checkin",

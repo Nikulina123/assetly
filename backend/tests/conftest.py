@@ -33,7 +33,12 @@ def _stub_checkin_notifications(monkeypatch):
     which simply overrides this default for that one test."""
     import app.routers.checkin as checkin_module
     monkeypatch.setattr(checkin_module, "notify_checkin_success", lambda *a, **kw: None)
-    monkeypatch.setattr(checkin_module, "notify_auth_failure", lambda *a, **kw: None)
+
+    async def _noop(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(checkin_module, "record_auth_failure", _noop)
+    monkeypatch.setattr(checkin_module, "maybe_send_auth_failure_digest", _noop)
 
 
 @pytest_asyncio.fixture
@@ -44,7 +49,12 @@ async def db_pool():
     admin_conn = await asyncpg.connect(ADMIN_TEST_DATABASE_URL)
     await admin_conn.execute(
         "TRUNCATE device_checkins, devices, companies, admins, company_fields, "
-        "enrollment_tokens, device_credentials, rate_limit_hits CASCADE;"
+        "enrollment_tokens, device_credentials, rate_limit_hits, "
+        "auth_failure_events CASCADE;"
+    )
+    await admin_conn.execute(
+        "UPDATE notification_state SET last_digest_sent_at = NULL, "
+        "digests_sent_today = 0, digest_day = NULL"
     )
     await admin_conn.close()
 

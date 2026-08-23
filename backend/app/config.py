@@ -95,3 +95,9 @@ if ENVIRONMENT == "production" and not SESSION_COOKIE_SECURE:
 RATE_LIMIT_LOGIN = (int(os.environ.get("RATE_LIMIT_LOGIN", "10")), 900)
 RATE_LIMIT_ENROLL = (int(os.environ.get("RATE_LIMIT_ENROLL", "30")), 3600)
 RATE_LIMIT_AGENT = (int(os.environ.get("RATE_LIMIT_AGENT", "60")), 3600)
+
+# Auth-failure digesting. At most one digest per interval, with a hard daily
+# cap so that even a pathological failure of the interval logic cannot turn
+# this back into an amplifier.
+AUTH_DIGEST_INTERVAL_SECONDS = int(os.environ.get("AUTH_DIGEST_INTERVAL_SECONDS", "3600"))
+AUTH_DIGEST_DAILY_CAP = int(os.environ.get("AUTH_DIGEST_DAILY_CAP", "24"))
