@@ -38,6 +38,18 @@ CHECKIN_API_URL_FOR_DOWNLOAD = f"{PUBLIC_API_BASE_URL}/api/v1/inventory/checkin"
 
 SENDLY_API_KEY = os.environ.get("SENDLY_API_KEY", "")
 NOTIFICATION_FROM_EMAIL = os.environ.get("NOTIFICATION_FROM_EMAIL", "noreply@assetly.ge")
+
+# Where sign_release.py writes and the manifest endpoint reads.
+UPDATES_DIR = os.environ.get(
+    "UPDATES_DIR", str(REPO_ROOT / "backend" / "static" / "updates")
+)
+
+# The agent-update signing PUBLIC key, base64 DER (SubjectPublicKeyInfo).
+# Public by definition -- committing it is correct and is what lets an agent
+# verify. The PRIVATE key lives offline on a release owner's machine and is
+# never in this repository, in CI, or in an environment variable: that is the
+# entire control. See backend/scripts/sign_release.py.
+UPDATE_SIGNING_PUBLIC_KEY = os.environ.get("UPDATE_SIGNING_PUBLIC_KEY", "")
 OPS_ALERT_EMAIL = os.environ.get("OPS_ALERT_EMAIL", "")
 
 # Fallbacks used by resolve_schedule when a company row cannot be read, and the
