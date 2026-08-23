@@ -1,8 +1,21 @@
 import datetime
 
 import pytest
+from starlette.requests import Request
 
-from app.rate_limit import check_rate_limit
+from app.rate_limit import check_rate_limit, client_ip
+
+
+def _make_request(headers: dict[str, str]) -> Request:
+    encoded_headers = [
+        (k.lower().encode(), v.encode()) for k, v in headers.items()
+    ]
+    scope = {
+        "type": "http",
+        "headers": encoded_headers,
+        "client": ("192.0.2.1", 12345),
+    }
+    return Request(scope)
 
 
 @pytest.mark.asyncio
@@ -51,3 +64,30 @@ async def test_a_new_window_resets_the_count(db_pool):
         db_pool, "test:window", limit=5, window_seconds=900
     )
     assert allowed is True
+
+
+def test_client_ip_rejects_spoofed_leftmost_forwarded_for():
+    """An attacker can send X-Forwarded-For: <victim-ip>, <junk> since the
+    header is appended-to, not replaced, by each proxy hop. Taking the first
+    entry would bucket the attacker's traffic under the victim's IP -- bucket
+    poisoning against a per-IP rate limit. The last entry is the one the
+    nearest trusted proxy appended and is not attacker-controlled."""
+    request = _make_request(
+        {"x-forwarded-for": "198.51.100.7, 203.0.113.9"}
+    )
+    ip = client_ip(request)
+    assert ip != "198.51.100.7"
+    assert ip == "203.0.113.9"
+
+
+def test_client_ip_prefers_platform_header_over_forwarded_for():
+    """x-vercel-forwarded-for is set by the Vercel platform itself and cannot
+    be forged by the client through the proxy, so it must win over
+    x-forwarded-for (whose leftmost entries are client-controlled)."""
+    request = _make_request(
+        {
+            "x-forwarded-for": "198.51.100.7, 203.0.113.9",
+            "x-vercel-forwarded-for": "203.0.113.55",
+        }
+    )
+    assert client_ip(request) == "203.0.113.55"

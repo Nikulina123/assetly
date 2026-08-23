@@ -21,14 +21,38 @@ _PRUNE_AGE = datetime.timedelta(hours=24)
 
 
 def client_ip(request: Request) -> str:
-    """The caller's IP. Vercel terminates TLS and forwards, so the socket peer
-    is the platform's proxy for every request -- x-forwarded-for's FIRST entry
-    is the original client. Later entries are proxies and the header is
-    caller-controlled, so this is a best-effort key for rate limiting and must
-    not be used as an authorisation input."""
+    """The caller's IP, for use as a rate-limit bucket key.
+
+    Deliberately does NOT take x-forwarded-for's first entry. x-forwarded-for
+    is APPENDED to by each proxy, not replaced -- the client sets the header
+    on the initial request, and every hop after that only adds its own entry
+    to the right. That means the leftmost entry is attacker-controlled: a
+    caller can send `X-Forwarded-For: <victim-ip>, <junk>` and have their own
+    traffic bucketed under the victim's IP. Against a per-IP rate limit that
+    is bucket poisoning, not just self-bucketing -- it lets an attacker burn a
+    legitimate user's (e.g. an admin's) request budget from anywhere and lock
+    them out. Do not "fix" this back to split(",")[0] -- that reintroduces the
+    poisoning vector this comment exists to document.
+
+    Preference order:
+    1. x-vercel-forwarded-for / x-real-ip -- set by the Vercel platform itself
+       (this app deploys on Vercel, see vercel.json) and overwritten on the
+       way in, so a client cannot forge them through the proxy.
+    2. The LAST entry of x-forwarded-for -- the nearest trusted proxy is the
+       one that appended it, so it's the only entry in that header a client
+       cannot control. Entries to its left may be attacker-supplied.
+    3. request.client.host -- the raw socket peer.
+
+    Still best-effort, and still must not be used as an authorisation input:
+    it identifies a bucket to rate-limit, not a verified caller identity."""
+    platform_ip = request.headers.get("x-vercel-forwarded-for") or request.headers.get(
+        "x-real-ip"
+    )
+    if platform_ip:
+        return platform_ip.split(",")[0].strip()
     forwarded = request.headers.get("x-forwarded-for")
     if forwarded:
-        return forwarded.split(",")[0].strip()
+        return forwarded.split(",")[-1].strip()
     return request.client.host if request.client else "unknown"
 
 
