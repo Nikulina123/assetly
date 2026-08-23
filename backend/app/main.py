@@ -10,6 +10,7 @@ from app.config import SESSION_COOKIE_SECURE, SESSION_MAX_AGE_SECONDS, SESSION_S
 from app.db import get_pool
 from app.routers.admin import NotAuthenticated
 from app.routers.admin import router as admin_router
+from app.routers.agent_update import router as agent_update_router
 from app.routers.checkin import router as checkin_router
 from app.routers.enroll import router as enroll_router
 from app.routers.portal import router as portal_router
@@ -26,6 +27,7 @@ app.include_router(checkin_router)
 app.include_router(enroll_router)
 app.include_router(admin_router)
 app.include_router(portal_router)
+app.include_router(agent_update_router)
 app.mount(
     "/static",
     StaticFiles(directory=str(Path(__file__).resolve().parent / "static")),
