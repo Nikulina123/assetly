@@ -114,9 +114,13 @@ def test_seed_config_is_not_world_readable():
     process, and any MDM or backup agent that reads that path."""
     script = (REPO_ROOT / "AssetlyAgent_macOS_postinstall.sh").read_text()
     chmod_644_lines = [line.strip() for line in script.splitlines() if "chmod 644" in line]
-    # The LaunchAgent plist is deliberately 644 -- launchd requires it and it
-    # carries no secret. Every other chmod 644 would be a credential file.
-    assert chmod_644_lines == ['chmod 644 "$PLIST_FILE"']
+    # Two plists are deliberately 644 -- launchd requires it to load them at
+    # all, and neither carries a secret (just a path). Every other chmod 644
+    # would be a credential file.
+    assert set(chmod_644_lines) == {
+        'chmod 644 "$PLIST_FILE"',
+        "chmod 644 /Library/LaunchDaemons/com.assetly.seed.plist",
+    }
     assert "chmod 600" in script
 
 
@@ -126,3 +130,18 @@ def test_postinstall_removes_the_enrollment_token_after_enrolling():
     assert "enrollment_token" in script
     # The token must not survive a successful enrollment.
     assert "rm -f" in script or "shred" in script
+
+
+def test_launcher_never_copies_the_root_owned_master_config():
+    """The master config.json is 0600 root:wheel (C-2 fix), so the per-user
+    LaunchAgent launcher -- which runs as the logged-in user, not root --
+    cannot read it. Seeding each user's copy must happen from the root-owned
+    com.assetly.seed LaunchDaemon instead; the launcher must never attempt to
+    `cp` the master config itself, or that copy silently fails on every
+    non-root account and the machine never enrolls or checks in."""
+    script = (REPO_ROOT / "AssetlyAgent_macOS_postinstall.sh").read_text()
+    launcher_start = script.index("cat > \"$LAUNCHER\"")
+    launcher_end = script.index("LAUNCHER_EOF", launcher_start + 1)
+    launcher_body = script[launcher_start:launcher_end]
+    assert "com.assetly.seed" in script
+    assert 'cp "$SUPPORT_DIR/config.json"' not in launcher_body

@@ -183,10 +183,92 @@ fi
 chown root:wheel "$SEED_CONFIG"
 chmod 600 "$SEED_CONFIG"
 
+# ── Root-owned seeding daemon ──────────────────────────────────────────────────
+# $SEED_CONFIG is 0600 root:wheel -- deliberately unreadable by any local user,
+# so a leaked file exposes one machine's credential instead of the whole
+# fleet's. That means the per-user LaunchAgent below (assetly-launch.sh, which
+# runs AS THE LOGGED-IN USER) cannot read it to seed a user's copy -- reading a
+# root-owned 0600 file as a non-root user simply fails. Copying the config into
+# each user's home therefore has to happen from something running as root:
+# this LaunchDaemon. Do not "simplify" this back down to one launcher -- the
+# split exists because the two files have different readers by design:
+#   - com.assetly.seed   (root)      writes each user's copy from the master.
+#   - com.assetly.inventory (user)   reads only its own copy, never the master.
+mkdir -p "$SUPPORT_DIR"
+cat > "$SUPPORT_DIR/seed_user_config.sh" <<'SEED_EOF'
+#!/bin/sh
+# Runs as root from com.assetly.seed. Copies the root-owned master config into
+# every real user's home, chowned to that user at 0600, so each user gets a
+# copy without the master ever being world- or other-user-readable.
+SUPPORT_DIR="/Library/Application Support/Assetly"
+for home in /Users/*; do
+    user="$(basename "$home")"
+    case "$user" in Shared|Guest|.*) continue ;; esac
+    [ -d "$home" ] || continue
+    id "$user" >/dev/null 2>&1 || continue
+    target_dir="$home/Library/Application Support/AssetlyInventory"
+    target="$target_dir/config.json"
+    # The user's own config is never overwritten once it exists: after the
+    # first check-in it holds a device credential that only this machine has,
+    # and the seed copy does not.
+    [ -f "$target" ] && continue
+    mkdir -p "$target_dir"
+    cp "$SUPPORT_DIR/config.json" "$target"
+    chown "$user" "$target_dir" "$target"
+    chmod 700 "$target_dir"
+    chmod 600 "$target"
+done
+SEED_EOF
+chown root:wheel "$SUPPORT_DIR/seed_user_config.sh"
+chmod 755 "$SUPPORT_DIR/seed_user_config.sh"
+
+cat > /Library/LaunchDaemons/com.assetly.seed.plist <<PLIST_SEED
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+    "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.assetly.seed</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>$SUPPORT_DIR/seed_user_config.sh</string>
+    </array>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <!-- Runs every 5 minutes so a user who logs in between installs and the
+         next login still gets seeded promptly, without needing a re-login. -->
+    <key>StartInterval</key>
+    <integer>300</integer>
+</dict>
+</plist>
+PLIST_SEED
+chown root:wheel /Library/LaunchDaemons/com.assetly.seed.plist
+# Same as the LaunchAgent plist below: launchd requires world-readable plists
+# to load them at all, and this one carries no secret -- only a path.
+chmod 644 /Library/LaunchDaemons/com.assetly.seed.plist
+launchctl bootout system/com.assetly.seed 2>/dev/null
+launchctl bootstrap system /Library/LaunchDaemons/com.assetly.seed.plist 2>/dev/null \
+    || say "WARN: could not start the seeding daemon now; it will run at next boot."
+# Also seed synchronously for whoever is about to be started below, so the
+# LaunchAgent started later in this script does not race the daemon's own
+# 300s interval on a fresh install.
+"$SUPPORT_DIR/seed_user_config.sh" 2>/dev/null || true
+
 cat > "$LAUNCHER" <<'LAUNCHER_EOF'
 #!/bin/bash
 # Runs as the logged-in user, once per login (and on the LaunchAgent interval).
 # Seeds this user's own copy of the agent from the shared one, then runs it.
+#
+# This launcher never reads $SUPPORT_DIR/config.json: that master file is
+# 0600 root:wheel on purpose (see AssetlyAgent_macOS_postinstall.sh), so a
+# leaked copy exposes one machine's credential rather than the whole fleet's.
+# It is unreadable to this user by design. The root-owned com.assetly.seed
+# LaunchDaemon is what copies it into this user's own config.json, chowned to
+# them at 0600 -- this script only ever touches its own already-seeded copy.
 set -u
 
 SUPPORT_DIR="/Library/Application Support/Assetly"
@@ -194,15 +276,21 @@ USER_DIR="$HOME/Library/Application Support/AssetlyInventory"
 mkdir -p "$USER_DIR"
 
 # Refresh the agent whenever the shared copy is newer -- reinstalling the
-# package is how an admin pushes a new agent build to a fleet.
+# package is how an admin pushes a new agent build to a fleet. inventory_agent.py
+# is not a secret and stays world-readable, unlike config.json.
 if [ ! -f "$USER_DIR/inventory_agent.py" ] || [ "$SUPPORT_DIR/inventory_agent.py" -nt "$USER_DIR/inventory_agent.py" ]; then
     cp "$SUPPORT_DIR/inventory_agent.py" "$USER_DIR/inventory_agent.py"
 fi
-# The user's config is never overwritten: after the first check-in it holds a
-# device credential that only this machine has, and the seed does not.
+
+# The seeding daemon may not have run yet (e.g. this is the very first login
+# right after install, before its next 300s tick). If this user's config
+# hasn't been seeded, there is nothing to run yet -- exit quietly and let the
+# next LaunchAgent interval try again, rather than starting the agent with no
+# configuration or erroring.
 if [ ! -f "$USER_DIR/config.json" ]; then
-    cp "$SUPPORT_DIR/config.json" "$USER_DIR/config.json"
-    chmod 600 "$USER_DIR/config.json"
+    echo "$(date '+%Y-%m-%d %H:%M:%S')  INFO      config.json not seeded yet — waiting for com.assetly.seed." \
+        >> "$USER_DIR/agent.log"
+    exit 0
 fi
 
 find_python() {
