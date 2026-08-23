@@ -16,10 +16,12 @@ from app.config import (
     CHECKIN_API_URL_FOR_DOWNLOAD,
     MACOS_PKG_IDENTIFIER,
     MACOS_PKG_VERSION,
+    RATE_LIMIT_LOGIN,
     REPO_ROOT,
     WINDOWS_EXE_PATH,
 )
 from app.db import get_pool
+from app.rate_limit import client_ip, enforce_rate_limit, hashed_bucket
 from app.enrollment import (
     create_enrollment_token,
     list_tokens,
@@ -91,6 +93,14 @@ async def login_form(request: Request):
 @router.post("/login")
 async def login_submit(request: Request, email: str = Form(...), password: str = Form(...)):
     pool = await get_pool()
+    # Two buckets, both enforced. Per-IP stops one host walking a password
+    # list; per-account stops a distributed attempt against one known admin
+    # address, which per-IP alone would not see. The email is hashed into the
+    # bucket key so this table never becomes a list of admin addresses.
+    limit, window = RATE_LIMIT_LOGIN
+    await enforce_rate_limit(pool, f"login:ip:{client_ip(request)}", limit, window)
+    await enforce_rate_limit(pool, hashed_bucket("login:email", email), limit, window)
+
     admin_id = await resolve_admin(pool, email, password)
     if admin_id is None:
         return templates.TemplateResponse(

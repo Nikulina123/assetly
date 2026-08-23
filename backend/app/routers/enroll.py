@@ -3,9 +3,10 @@
 Separate from checkin.py: this is the one endpoint an agent calls before it has
 any device identity, so its auth rules differ from every other route.
 """
-from fastapi import APIRouter, Header, HTTPException
+from fastapi import APIRouter, Header, HTTPException, Request
 
 from app.auth import resolve_company_id
+from app.config import RATE_LIMIT_ENROLL
 from app.db import get_pool
 from app.enrollment import (
     EnrollmentError,
@@ -14,16 +15,27 @@ from app.enrollment import (
     enroll_device,
 )
 from app.models import EnrollRequest, EnrollResponse
+from app.rate_limit import client_ip, enforce_rate_limit
 
 router = APIRouter(tags=["enroll"])
 
 
 @router.post("/api/v1/enroll", response_model=EnrollResponse)
-async def enroll(payload: EnrollRequest, authorization: str | None = Header(default=None)):
+async def enroll(
+    payload: EnrollRequest,
+    request: Request,
+    authorization: str | None = Header(default=None),
+):
+    pool = await get_pool()
+    # Per-IP: an enrolling agent has no device identity yet, so there is
+    # nothing else to key on. This is the endpoint a leaked enrollment token
+    # would be used against at volume.
+    limit, window = RATE_LIMIT_ENROLL
+    await enforce_rate_limit(pool, f"enroll:ip:{client_ip(request)}", limit, window)
+
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Missing or malformed Authorization header")
     bearer = authorization.removeprefix("Bearer ").strip()
-    pool = await get_pool()
 
     try:
         credential = await enroll_device(pool, bearer, payload.serial_number, payload.hostname)

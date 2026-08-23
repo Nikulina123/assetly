@@ -87,3 +87,11 @@ if ENVIRONMENT == "production" and not SESSION_COOKIE_SECURE:
     raise RuntimeError(
         "SESSION_COOKIE_SECURE must be true when ENVIRONMENT=production"
     )
+
+# Rate limits, as (limit, window_seconds). Deliberately generous: these exist
+# to stop credential stuffing and cost amplification, not to shape legitimate
+# traffic. A real fleet checks in on a six-month interval, so an agent that
+# trips its limit is malfunctioning or malicious either way.
+RATE_LIMIT_LOGIN = (int(os.environ.get("RATE_LIMIT_LOGIN", "10")), 900)
+RATE_LIMIT_ENROLL = (int(os.environ.get("RATE_LIMIT_ENROLL", "30")), 3600)
+RATE_LIMIT_AGENT = (int(os.environ.get("RATE_LIMIT_AGENT", "60")), 3600)

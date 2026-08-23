@@ -7,11 +7,13 @@ from fastapi.responses import JSONResponse
 
 from app.agent_ui import resolve_agent_ui
 from app.auth import resolve_credential
+from app.config import RATE_LIMIT_AGENT
 from app.db import get_pool
 from app.field_config import resolve_field_config
 from app.hardware import normalize_os
 from app.models import CheckinRequest, CheckinResponse
 from app.notifications import notify_auth_failure, notify_checkin_success
+from app.rate_limit import enforce_rate_limit, hashed_bucket
 from app.schedule import resolve_schedule
 
 router = APIRouter(tags=["checkin"])
@@ -36,6 +38,14 @@ async def get_current_company_id(
         raise HTTPException(status_code=401, detail="Missing or malformed Authorization header")
     api_key = authorization.removeprefix("Bearer ").strip()
     pool = await get_pool()
+    # Keyed on a hash of the presented credential, so this covers both
+    # /checkin and /config for one device, and an invalid credential gets its
+    # own bucket rather than sharing one with every other invalid credential.
+    # Applied before resolve_credential so a flood costs one INSERT, not a
+    # credential lookup plus a background email.
+    limit, window = RATE_LIMIT_AGENT
+    await enforce_rate_limit(pool, hashed_bucket("agent", api_key), limit, window)
+
     result = await resolve_credential(pool, api_key)
     if result is None:
         # Only a present-but-invalid key triggers this -- a missing header
