@@ -6,7 +6,7 @@ any device identity, so its auth rules differ from every other route.
 from fastapi import APIRouter, Header, HTTPException, Request
 
 from app.auth import resolve_company_id
-from app.config import RATE_LIMIT_ENROLL
+from app.config import RATE_LIMIT_ENROLL_IP, RATE_LIMIT_ENROLL_TOKEN
 from app.db import get_pool
 from app.enrollment import (
     EnrollmentError,
@@ -15,7 +15,7 @@ from app.enrollment import (
     enroll_device,
 )
 from app.models import EnrollRequest, EnrollResponse
-from app.rate_limit import client_ip, enforce_rate_limit
+from app.rate_limit import client_ip, enforce_rate_limit, hashed_bucket
 
 router = APIRouter(tags=["enroll"])
 
@@ -27,15 +27,32 @@ async def enroll(
     authorization: str | None = Header(default=None),
 ):
     pool = await get_pool()
-    # Per-IP: an enrolling agent has no device identity yet, so there is
-    # nothing else to key on. This is the endpoint a leaked enrollment token
-    # would be used against at volume.
-    limit, window = RATE_LIMIT_ENROLL
-    await enforce_rate_limit(pool, f"enroll:ip:{client_ip(request)}", limit, window)
 
+    # The bearer parse -- and the 401 for a missing/malformed header -- comes
+    # BEFORE any rate limiting. A bad header is rejected on essentially free
+    # work (no DB call, no enrollment logic reached), so there is no unbounded
+    # work for a limiter to guard here; the limiter's job starts once there is
+    # a token to bucket on.
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Missing or malformed Authorization header")
     bearer = authorization.removeprefix("Bearer ").strip()
+
+    # Primary limit: keyed on the presented bearer, not client_ip. Task 12
+    # moved enrollment to install time, so a single site's MDM/GPO rollout
+    # pushes installers for every seat from one egress IP -- an IP-keyed limit
+    # alone would exhaust at 30 enrollments and push the rest onto the
+    # on-disk-token fallback path, exactly the outcome C-2 exists to close.
+    # The real per-token ceiling is max_devices, enforced in enroll_device;
+    # this bucket only needs to stop pathological abuse of one token.
+    token_limit, token_window = RATE_LIMIT_ENROLL_TOKEN
+    await enforce_rate_limit(
+        pool, hashed_bucket("enroll:token", bearer), token_limit, token_window
+    )
+    # Secondary, coarser per-IP limit: still useful against a flood of
+    # different (unknown/bogus) tokens from one address, which the per-token
+    # bucket alone wouldn't catch since each bogus token gets its own bucket.
+    ip_limit, ip_window = RATE_LIMIT_ENROLL_IP
+    await enforce_rate_limit(pool, f"enroll:ip:{client_ip(request)}", ip_limit, ip_window)
 
     try:
         credential = await enroll_device(pool, bearer, payload.serial_number, payload.hostname)

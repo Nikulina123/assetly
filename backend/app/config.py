@@ -121,7 +121,23 @@ if ENVIRONMENT == "production" and not SESSION_COOKIE_SECURE:
 # traffic. A real fleet checks in on a six-month interval, so an agent that
 # trips its limit is malfunctioning or malicious either way.
 RATE_LIMIT_LOGIN = (int(os.environ.get("RATE_LIMIT_LOGIN", "10")), 900)
-RATE_LIMIT_ENROLL = (int(os.environ.get("RATE_LIMIT_ENROLL", "30")), 3600)
+# Enrollment is keyed on the bearer token, not client_ip, because Task 12
+# moved enrollment to install time: an MDM/GPO rollout pushes the installer
+# to every seat in a site from one egress IP, so an IP-keyed limit punishes
+# large sites for being large. The real per-token ceiling is max_devices on
+# the token itself (enforced in enroll_device) -- this bucket only needs to
+# stop pathological abuse of one token (a scripted retry storm, a bug loop),
+# not size a legitimate rollout, so it is set well above any realistic site:
+# 500/hour is >16x a 30-per-hour site push and still far below what a script
+# hammering one token would produce in the same window.
+RATE_LIMIT_ENROLL_TOKEN = (int(os.environ.get("RATE_LIMIT_ENROLL_TOKEN", "500")), 3600)
+# Kept as a secondary, coarser guard so a flood of malformed/unknown-token
+# requests from one address (which have no token to bucket on until they're
+# rejected) can still be capped. Set high enough that several companies'
+# installers rolling out from behind the same NAT/proxy in the same hour
+# don't collide with it: 300/hour comfortably covers a multi-company site
+# while still bounding a single misbehaving address.
+RATE_LIMIT_ENROLL_IP = (int(os.environ.get("RATE_LIMIT_ENROLL_IP", "300")), 3600)
 RATE_LIMIT_AGENT = (int(os.environ.get("RATE_LIMIT_AGENT", "60")), 3600)
 
 # Auth-failure digesting. At most one digest per interval, with a hard daily
