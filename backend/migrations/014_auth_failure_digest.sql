@@ -35,3 +35,37 @@ INSERT INTO notification_state (id) VALUES (TRUE);
 GRANT SELECT, INSERT, DELETE ON auth_failure_events TO assetly;
 GRANT USAGE ON SEQUENCE auth_failure_events_id_seq TO assetly;
 GRANT SELECT, UPDATE ON notification_state TO assetly;
+
+-- Supabase exposes a PostgREST API keyed on `anon` / `authenticated` roles.
+-- On this project those roles currently hold no grants on any public table
+-- (verified 2026-08-24), so they cannot reach this table -- but that is a
+-- project setting somebody could change later, not a property of the schema.
+-- RLS plus an explicit policy for the application role makes the guarantee
+-- local to this table instead of depending on a dashboard setting staying put.
+--
+-- The policy is required, not decorative: the table is owned by the migrating
+-- role (postgres/admin), NOT by `assetly`, so with RLS on and no policy the
+-- application would be denied outright and every guarded endpoint would 500.
+--
+-- The REVOKE is guarded because `anon` / `authenticated` are Supabase-created
+-- roles that do not exist on a local development database -- same guarded
+-- pattern as 008's role rename.
+
+ALTER TABLE auth_failure_events ENABLE ROW LEVEL SECURITY;
+ALTER TABLE notification_state  ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY auth_failure_events_app ON auth_failure_events
+    FOR ALL TO assetly USING (true) WITH CHECK (true);
+CREATE POLICY notification_state_app ON notification_state
+    FOR ALL TO assetly USING (true) WITH CHECK (true);
+
+DO $$
+BEGIN
+    IF EXISTS (SELECT FROM pg_roles WHERE rolname = 'anon') THEN
+        EXECUTE 'REVOKE ALL ON auth_failure_events, notification_state FROM anon';
+    END IF;
+    IF EXISTS (SELECT FROM pg_roles WHERE rolname = 'authenticated') THEN
+        EXECUTE 'REVOKE ALL ON auth_failure_events, notification_state FROM authenticated';
+    END IF;
+END
+$$;
