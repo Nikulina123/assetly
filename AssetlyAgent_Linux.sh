@@ -173,11 +173,15 @@ except Exception:
     pass' 2>/dev/null)"
 
 if [[ -n "$CREDENTIAL" ]]; then
+    # github_raw_url is deliberately not written here. GITHUB_RAW_URL above is
+    # still used to FETCH the agent during this install -- that download needs a
+    # URL -- but inventory_agent.py never reads the config key, so persisting it
+    # only made config.json look like it had a knob it does not have. Same
+    # removal AssetlyAgent_Windows.ps1 and the macOS postinstall have made.
     cat > "$CONFIG_FILE" <<JSON
 {
   "checkin_api_url": "$CHECKIN_API_URL",
-  "device_credential": "$CREDENTIAL",
-  "github_raw_url":  "$GITHUB_RAW_URL"
+  "device_credential": "$CREDENTIAL"
 }
 JSON
     echo "      Enrolled now; enrollment token discarded."
@@ -185,8 +189,7 @@ else
     cat > "$CONFIG_FILE" <<JSON
 {
   "checkin_api_url": "$CHECKIN_API_URL",
-  "enrollment_token": "$ENROLLMENT_TOKEN",
-  "github_raw_url":  "$GITHUB_RAW_URL"
+  "enrollment_token": "$ENROLLMENT_TOKEN"
 }
 JSON
     echo "      Could not enroll now; the agent will enroll itself on first run."
