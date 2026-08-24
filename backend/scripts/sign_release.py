@@ -1,7 +1,14 @@
 #!/usr/bin/env python3
 """Signs an agent release. Runs on a release owner's machine, never in CI.
 
-    python backend/scripts/sign_release.py --version 2.1.0 --key ~/.assetly/release_key.pem
+    backend/venv/bin/python backend/scripts/sign_release.py \
+        --version 2.1.0 --key ~/.assetly/release_key.pem
+
+Run it with the venv interpreter, not a bare `python`: this script needs
+`cryptography`, which is deliberately a DEV-only dependency (see
+backend/requirements-dev.txt). It is kept out of the root requirements.txt
+because the agents verify with stdlib only and the deployed function has no
+reason to carry it.
 
 The private key never enters this repository, CI, or an environment variable.
 That is deliberate and it is the control: CI can build the Windows executable
