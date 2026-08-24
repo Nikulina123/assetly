@@ -55,7 +55,7 @@ $DefaultDepartments = @("Webiz ERP","Fundbox","Playtika","Artlist","The5%ers","O
 # disables updating entirely -- it never falls back to an unverified path.
 # Must be byte-identical to UPDATE_SIGNING_PUBLIC_KEY in inventory_agent.py
 # and in the backend environment.
-$UpdateSigningPublicKey = ""
+$UpdateSigningPublicKey = "MIICIjANBgkqhkiG9w0BAQEFAAOCAg8AMIICCgKCAgEArlnAJm/gZa+426zuPIHjloYQVS1G0jb8SqZGbsLmjdzPvfT09DcUa+TKsphntNLAgxE8rDjbOTM9aVKol0LhMI9e/2XZe66EJBS881x8oh5hQKU5PkQV+lQHixCTz1YXExmRh2XltxeiaLgW5leK9djA5SauM2koR8LMu2GWEYzGFl6IpeOXiwv2OL2MJm9LjDBZrLecPu4MtbDLBjCTv3RieKxuUAkxiTXd/WYzMxt+E3FAzMPA1Ujy18UurRBDArX+r1+jbBU2QMbV4rClQ5bipFOIL2ylbuzFSNf4N2aqjCBsD8B0qi3tuMzRy9YDnQcaQGC9mU2uAINbrMc9EivYEqr2XYS0gxuZ317VBU8mOYKs/pjP0ynVLbjVGBteU1GoZ+qOLBtRwrhPj4NS5vJApkm/heyUbSRC8jJY1RtTnF6wOuTf5HIgocaxVSX1uUqMCUkVEbD1TnAWoZzcnbHeDhgynNGi7e+ZOxsHxKTJGecds0jSlUjOGrCa3BG0Nwm/SRO+wkB3VfjIp4lssh0BaNg9bZkMcBFj2shX7XOyK6HoO3hAlhajTSxslUKxfRZ9B49HEaV3DGKNJJlQX4LH5EMM/o9KvwGPUeSStBLKaS/rPs9ed/JbfPRf5JkiqiqjcY4hLbQiffDYlGEEpOL7Ee+LKPyBJRqO8t0Rmt0CAwEAAQ=="
 
 $StateDir   = "$env:LOCALAPPDATA\AssetlyInventory"
 $StateFile  = "$StateDir\state.json"
