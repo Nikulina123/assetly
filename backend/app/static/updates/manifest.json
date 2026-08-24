@@ -1,0 +1,16 @@
+{
+  "artifacts": {
+    "posix_py": {
+      "path": "/static/updates/inventory_agent.py",
+      "sha256": "7dbb54e11b74bce275d0a4a6c6c5fb059ec7dfca5bb527b1cd8677abacda3153",
+      "size": 54833
+    },
+    "windows_exe": {
+      "path": "/static/updates/AssetlyAgent_Windows.exe",
+      "sha256": "3a3088e02c221870f9f81ccb8453888613a552dd9bc2419e4687083c019f69da",
+      "size": 111104
+    }
+  },
+  "released_at": "2026-08-24T09:48:27Z",
+  "version": "2.1.0"
+}
