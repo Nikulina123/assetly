@@ -7,10 +7,10 @@
     },
     "windows_exe": {
       "path": "/static/updates/AssetlyAgent_Windows.exe",
-      "sha256": "3a3088e02c221870f9f81ccb8453888613a552dd9bc2419e4687083c019f69da",
-      "size": 111104
+      "sha256": "19604714791f14403d791660361c0c5f1b2b5867ba27067d9848a239c4e09bc3",
+      "size": 121856
     }
   },
-  "released_at": "2026-08-24T09:48:27Z",
-  "version": "2.1.0"
+  "released_at": "2026-08-24T10:24:05Z",
+  "version": "2.1.1"
 }
