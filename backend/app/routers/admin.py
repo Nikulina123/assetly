@@ -806,6 +806,10 @@ async def download_macos(
         scripts={
             "postinstall": postinstall.encode(),
             "inventory_agent.py": agent_source,
+            # Source for the .app bundle's icns, which the postinstall builds
+            # with sips/iconutil. Shipped rather than fetched so a machine with
+            # no route to the internet at imaging time still gets the icon.
+            "assetly_icon.png": (REPO_ROOT / "assetly_icon.png").read_bytes(),
         },
         component_name="AssetlyAgent.pkg",
     )
