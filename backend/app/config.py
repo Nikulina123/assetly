@@ -40,8 +40,17 @@ SENDLY_API_KEY = os.environ.get("SENDLY_API_KEY", "")
 NOTIFICATION_FROM_EMAIL = os.environ.get("NOTIFICATION_FROM_EMAIL", "noreply@assetly.ge")
 
 # Where sign_release.py writes and the manifest endpoint reads.
+#
+# Deliberately under backend/app/static/, not backend/static/: app/main.py
+# only ever mounts the former at /static (see StaticFiles(directory=...
+# app/static)), so an artifact written anywhere else is signed, verified by
+# the agent as up to date, and then 404s the moment it tries to download --
+# the update channel would authenticate a release it can never actually
+# serve. vercel.json's includeFiles already lists both `backend/app/static/**`
+# and `backend/static/**`, so this location ships in the deployed bundle
+# either way.
 UPDATES_DIR = os.environ.get(
-    "UPDATES_DIR", str(REPO_ROOT / "backend" / "static" / "updates")
+    "UPDATES_DIR", str(REPO_ROOT / "backend" / "app" / "static" / "updates")
 )
 
 # The agent-update signing PUBLIC key, base64 DER (SubjectPublicKeyInfo).

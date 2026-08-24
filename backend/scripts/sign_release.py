@@ -34,7 +34,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 # test can point signer and verifier at a tmpdir instead of writing into tracked
 # repository paths.
 UPDATES_DIR = Path(
-    os.environ.get("UPDATES_DIR", str(REPO_ROOT / "backend" / "static" / "updates"))
+    os.environ.get("UPDATES_DIR", str(REPO_ROOT / "backend" / "app" / "static" / "updates"))
 )
 
 # Source artifact -> the name the manifest and the agents use for it.
@@ -104,6 +104,9 @@ def main() -> None:
         artifacts[name] = {
             "sha256": hashlib.sha256(payload).hexdigest(),
             "size": len(payload),
+            # Must match the /static mount in app/main.py, which serves
+            # backend/app/static/ -- UPDATES_DIR above is under that tree
+            # specifically so this path is actually reachable.
             "path": f"/static/updates/{source.name}",
         }
         print(f"{name}: {artifacts[name]['sha256']} ({len(payload)} bytes)")
@@ -128,7 +131,7 @@ def main() -> None:
     (UPDATES_DIR / "manifest.sig").write_text(base64.b64encode(signature).decode() + "\n")
 
     print(f"\nSigned {manifest_path}")
-    print("Commit backend/static/updates/ and deploy.")
+    print("Commit backend/app/static/updates/ and deploy.")
 
 
 if __name__ == "__main__":

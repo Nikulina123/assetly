@@ -1,4 +1,5 @@
 import base64
+import hashlib
 import json
 import os
 import subprocess
@@ -102,3 +103,87 @@ class TestWindowsBaseBytes:
         padding = b"x" * 9000
         data = begin + padding + end
         assert base(data) == data
+
+
+@pytest.mark.asyncio
+async def test_signed_artifact_is_reachable_through_the_running_app(
+    private_key_pem, monkeypatch, tmp_path, db_pool, enrolled_device
+):
+    """The whole point of the C-1 remediation: an agent that fetches the
+    manifest, verifies it, and asks for the artifact at the `path` the
+    manifest names must actually get bytes back -- not a 404 -- and those
+    bytes must hash to the sha256 the manifest declares.
+
+    This signs a real release into a tmpdir (never into the tracked repo
+    tree) with sign_release.py, points app.update_manifest at that tmpdir,
+    and repoints the app's own /static mount at the same tmpdir so the
+    artifact is fetched through the actual running app rather than off disk
+    directly -- proving the served path and the written path agree.
+    """
+    key_path, public_key = private_key_pem
+    updates_dir = tmp_path / "updates"
+
+    # A small fake "posix_py" source artifact so signing has something to
+    # hash quickly, without depending on the real inventory_agent.py content.
+    fake_source = tmp_path / "inventory_agent.py"
+    fake_source.write_text("# fake agent for the round-trip test\n")
+
+    import scripts.sign_release as sign_release
+
+    monkeypatch.setattr(sign_release, "UPDATES_DIR", updates_dir)
+    monkeypatch.setattr(
+        sign_release,
+        "ARTIFACTS",
+        {"posix_py": fake_source},
+    )
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(REPO_ROOT / "backend" / "scripts" / "sign_release.py"),
+            "--version", "5.0.0",
+            "--key", str(key_path),
+        ],
+        capture_output=True,
+        text=True,
+        env={**os.environ, "UPDATES_DIR": str(updates_dir)},
+    )
+    assert result.returncode == 0, result.stderr
+
+    import app.update_manifest as update_manifest
+    import app.routers.agent_update as agent_update
+    from app.main import app
+
+    monkeypatch.setattr(update_manifest, "UPDATES_DIR", str(updates_dir))
+    monkeypatch.setattr(agent_update, "load_manifest", update_manifest.load_manifest)
+
+    # Repoint the app's real /static mount at the tmpdir, so "through the
+    # app" means through the exact same StaticFiles route production uses,
+    # not a bespoke test-only server.
+    static_route = next(r for r in app.router.routes if getattr(r, "name", None) == "static")
+    monkeypatch.setattr(static_route.app, "all_directories", [str(updates_dir.parent)])
+
+    import httpx
+
+    credential, _serial = enrolled_device
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        manifest_resp = await client.get(
+            "/api/v1/agent/manifest",
+            headers={"Authorization": f"Bearer {credential}"},
+        )
+        assert manifest_resp.status_code == 200
+        manifest = json.loads(manifest_resp.json()["manifest"])
+        artifact = manifest["artifacts"]["posix_py"]
+
+        artifact_resp = await client.get(artifact["path"])
+        assert artifact_resp.status_code == 200
+        assert hashlib.sha256(artifact_resp.content).hexdigest() == artifact["sha256"]
+
+    # This test exercises the app's own DB pool (via get_current_company_id),
+    # which caches a pool bound to this test's event loop. Left open, the
+    # next module's pool-closing teardown blows up trying to close it on an
+    # already-closed loop -- see the _reset_app_pool fixture other test
+    # modules use for the same reason.
+    import app.db as db_module
+    await db_module.close_pool()
