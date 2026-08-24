@@ -26,8 +26,14 @@
 # ─── CONFIGURATION — edit these lines before distributing ────────────────────
 CHECKIN_API_URL="https://api.example.com/api/v1/inventory/checkin"   # ← FILL IN (replaced automatically when downloaded from the admin portal)
 ENROLLMENT_TOKEN=""                                                   # ← FILL IN (replaced automatically when downloaded from the admin portal)
-GITHUB_RAW_URL="https://raw.githubusercontent.com/Nikulina123/Check-in_Agent/main/inventory_agent.py"
 # ─────────────────────────────────────────────────────────────────────────────
+# github_raw_url is deliberately absent, not merely unused -- the same removal
+# AssetlyAgent_Windows.ps1 already made. inventory_agent.py never reads it (see
+# the comment above UPDATE_SIGNING_PUBLIC_KEY): the update host is derived from
+# CHECKIN_API_URL and a signature is what authorises an update, so a URL in
+# config.json is not a setting. Writing one anyway made the file look like it
+# had a knob it does not have. This package ships inventory_agent.py in its own
+# Scripts directory, so nothing here needs to fetch the agent either.
 
 # Pinned python.org build, used only when the Mac has no usable Python already.
 # python.org is the one distribution that reliably ships a Tcl/Tk the current
@@ -291,8 +297,7 @@ if [ -n "$CREDENTIAL" ]; then
     cat > "$SEED_CONFIG" <<JSON
 {
   "checkin_api_url": "$CHECKIN_API_URL",
-  "device_credential": "$CREDENTIAL",
-  "github_raw_url": "$GITHUB_RAW_URL"
+  "device_credential": "$CREDENTIAL"
 }
 JSON
     say "Enrolled at install time; enrollment token discarded."
@@ -303,8 +308,7 @@ else
     cat > "$SEED_CONFIG" <<JSON
 {
   "checkin_api_url": "$CHECKIN_API_URL",
-  "enrollment_token": "$ENROLLMENT_TOKEN",
-  "github_raw_url": "$GITHUB_RAW_URL"
+  "enrollment_token": "$ENROLLMENT_TOKEN"
 }
 JSON
     say "Could not enroll at install time; deferring enrollment to first run."
