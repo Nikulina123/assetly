@@ -69,7 +69,7 @@ async def test_download_macos_embeds_a_fresh_enrollment_token(admin, company, db
         csrf_token = await _get_csrf_token(client, company_id)
         resp = await client.post(
             f"/admin/companies/{company_id}/download/macos",
-            data={"csrf_token": csrf_token},
+            data={"csrf_token": csrf_token, "device_count": "25", "token_days": "14"},
         )
     finally:
         await client.aclose()
@@ -109,7 +109,7 @@ async def test_download_linux_embeds_a_fresh_enrollment_token(admin, company, db
         csrf_token = await _get_csrf_token(client, company_id)
         resp = await client.post(
             f"/admin/companies/{company_id}/download/linux",
-            data={"csrf_token": csrf_token},
+            data={"csrf_token": csrf_token, "device_count": "25", "token_days": "14"},
         )
     finally:
         await client.aclose()
@@ -142,7 +142,7 @@ async def test_download_blocked_for_revoked_company(admin, company, db_pool):
 
         resp = await client.post(
             f"/admin/companies/{company_id}/download/macos",
-            data={"csrf_token": csrf_token},
+            data={"csrf_token": csrf_token, "device_count": "25", "token_days": "14"},
         )
     finally:
         await client.aclose()
@@ -174,7 +174,7 @@ async def test_download_windows_without_exe_returns_clear_error(admin, company, 
         csrf_token = await _get_csrf_token(client, company_id)
         resp = await client.post(
             f"/admin/companies/{company_id}/download/windows",
-            data={"csrf_token": csrf_token},
+            data={"csrf_token": csrf_token, "device_count": "25", "token_days": "14"},
         )
     finally:
         await client.aclose()
@@ -211,7 +211,7 @@ async def test_download_windows_serves_one_exe_with_config_embedded(
         csrf_token = await _get_csrf_token(client, company_id)
         resp = await client.post(
             f"/admin/companies/{company_id}/download/windows",
-            data={"csrf_token": csrf_token},
+            data={"csrf_token": csrf_token, "device_count": "25", "token_days": "14"},
         )
     finally:
         await client.aclose()
@@ -255,7 +255,7 @@ async def test_download_windows_does_not_mint_token_when_exe_missing(admin, comp
         csrf_token = await _get_csrf_token(client, company_id)
         resp = await client.post(
             f"/admin/companies/{company_id}/download/windows",
-            data={"csrf_token": csrf_token},
+            data={"csrf_token": csrf_token, "device_count": "25", "token_days": "14"},
         )
     finally:
         await client.aclose()
@@ -280,11 +280,11 @@ async def test_downloading_two_platforms_leaves_both_installers_working(admin, c
         csrf_token = await _get_csrf_token(client, company_id)
         mac = await client.post(
             f"/admin/companies/{company_id}/download/macos",
-            data={"csrf_token": csrf_token},
+            data={"csrf_token": csrf_token, "device_count": "25", "token_days": "14"},
         )
         lin = await client.post(
             f"/admin/companies/{company_id}/download/linux",
-            data={"csrf_token": csrf_token},
+            data={"csrf_token": csrf_token, "device_count": "25", "token_days": "14"},
         )
     finally:
         await client.aclose()
@@ -356,3 +356,64 @@ async def test_diagnostics_requires_login():
     async with await _client() as client:
         resp = await client.get("/admin/diagnostics", follow_redirects=False)
     assert resp.status_code == 303
+
+
+async def test_download_mints_a_capped_token(admin, company, db_pool):
+    """Unlimited devices for 90 days makes a leaked installer maximally
+    valuable and gives no natural expiry pressure."""
+    import datetime
+    import uuid
+
+    _, email, password = admin
+    company_id, _ = company
+    client = await _logged_in_client(email, password)
+    try:
+        csrf_token = await _get_csrf_token(client, company_id)
+        resp = await client.post(
+            f"/admin/companies/{company_id}/download/linux",
+            data={"csrf_token": csrf_token, "device_count": "25", "token_days": "14"},
+        )
+    finally:
+        await client.aclose()
+    assert resp.status_code == 200
+
+    async with db_pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT max_devices, expires_at FROM enrollment_tokens "
+            "WHERE company_id = $1 ORDER BY created_at DESC LIMIT 1",
+            uuid.UUID(company_id),
+        )
+    assert row["max_devices"] is not None
+    assert row["max_devices"] >= 25
+    lifetime = row["expires_at"] - datetime.datetime.now(datetime.timezone.utc)
+    assert 13 <= lifetime.days <= 14
+
+
+async def test_download_rejects_a_bad_device_count(admin, company):
+    _, email, password = admin
+    company_id, _ = company
+    client = await _logged_in_client(email, password)
+    try:
+        csrf_token = await _get_csrf_token(client, company_id)
+        resp = await client.post(
+            f"/admin/companies/{company_id}/download/linux",
+            data={"csrf_token": csrf_token, "device_count": "0", "token_days": "14"},
+        )
+    finally:
+        await client.aclose()
+    assert resp.status_code == 400
+
+
+async def test_download_rejects_an_unlisted_lifetime(admin, company):
+    _, email, password = admin
+    company_id, _ = company
+    client = await _logged_in_client(email, password)
+    try:
+        csrf_token = await _get_csrf_token(client, company_id)
+        resp = await client.post(
+            f"/admin/companies/{company_id}/download/linux",
+            data={"csrf_token": csrf_token, "device_count": "5", "token_days": "3650"},
+        )
+    finally:
+        await client.aclose()
+    assert resp.status_code == 400

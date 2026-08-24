@@ -184,3 +184,55 @@ $payload["agent_version"]   = "1.0"
 $payload["submission_type"] = "online"
 $payload["platform"]        = "windows"
 ```
+
+## Deploy ordering (hard gate)
+
+Migrations **013** (`rate_limit_hits`), **014**, and **015**
+(`normalise_credential_serials`) must be applied to the production database
+with `psql -1 <migration file>` **before** deploying any code that depends on
+them. This is not merely recommended ordering — it is a hard gate:
+
+- Code from Task 6 onward calls `enforce_rate_limit` on `/admin/login`,
+  `/api/v1/enroll`, `/checkin`, `/config`, and `/agent/manifest`, all of which
+  hit the `rate_limit_hits` table added by migration 013.
+- `check_rate_limit` (`backend/app/rate_limit.py`) catches
+  `asyncpg.UndefinedTableError` specifically and fails **open** (allows the
+  request, logs at ERROR) so a missed migration degrades to "no rate limiting"
+  rather than a 500 on every gated route — but that is a safety net for an
+  ordering mistake, not a substitute for the correct order. Deploy the
+  migration first regardless.
+- Migration 014's consumers already catch broadly and degrade quietly by
+  design; treat 013 and 014 as a single ordered pair applied ahead of the code
+  that uses them, not as independently orderable.
+- Migration 015 normalises `device_credentials.serial_number` at rest to
+  `lower(btrim(...))`, matching the casefolded lookup key that
+  `enroll_device`, `revoke_device_credential`, and `portal.py::device_detail`
+  now compare against. If the code deploys before this migration runs, every
+  revoke against a pre-existing (un-normalised) row silently affects zero
+  rows and reports success while the credential stays live — a security
+  regression, not a cosmetic one. This migration has no code dependency in
+  the other direction (it's a data fixup with no new schema), so it is safe
+  to run standalone ahead of the rest of the deploy.
+
+Sequence for any deploy that includes new or changed migrations:
+
+```
+psql -1 -f backend/migrations/013_rate_limit.sql "$DATABASE_URL"
+psql -1 -f backend/migrations/014_auth_failure_digest.sql "$DATABASE_URL"
+psql -1 -f backend/migrations/015_normalise_credential_serials.sql "$DATABASE_URL"
+# only then deploy/promote the new application code
+```
+
+## Required production environment
+
+Required in production: `ENVIRONMENT=production` and `SESSION_COOKIE_SECURE=true`.
+The application refuses to start without the second when the first is set.
+
+## Device lifecycle
+
+**Hardware replacement.** A device credential is bound to its enrolled serial.
+When a machine's board or chassis is replaced and its serial changes, its
+check-ins will be rejected with 409. The fix is admin-initiated: revoke the old
+credential in the portal, then re-run the installer on the machine. This is
+deliberately not self-service — an endpoint that could rebind its own
+credential would reopen exactly the hole the binding closes.

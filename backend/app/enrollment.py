@@ -87,13 +87,18 @@ async def revoke_token(pool: asyncpg.Pool, company_id: str, token_id: str) -> No
 async def revoke_device_credential(
     pool: asyncpg.Pool, company_id: str, serial_number: str
 ) -> None:
+    # device_credentials.serial_number is stored normalised (see enroll_device
+    # below) -- normalise the lookup key the same way, or a caller passing the
+    # machine's real casing (e.g. from the devices table) would silently
+    # match nothing and leave the credential live.
+    normalized_serial = serial_number.strip().casefold()
     async with pool.acquire() as conn:
         async with conn.transaction():
             await _scoped(conn, company_id)
             await conn.execute(
                 "UPDATE device_credentials SET revoked_at = NOW() "
                 "WHERE company_id = $1 AND serial_number = $2 AND revoked_at IS NULL",
-                uuid.UUID(company_id), serial_number,
+                uuid.UUID(company_id), normalized_serial,
             )
 
 
@@ -129,6 +134,16 @@ async def enroll_device(
     """
     credential = _generate_credential()
     now = datetime.datetime.now(datetime.timezone.utc)
+    # Normalised for storage in device_credentials ONLY -- this is the value
+    # checkin.py's binding check compares against, and install-time
+    # enrollment (Task 12) now collects the serial via a root shell
+    # (ioreg / dmidecode) rather than the agent's own collector, so a case or
+    # whitespace drift between the two is likelier than it used to be.
+    # devices.serial_number and device_checkins.serial_number are unaffected
+    # by this: those are inventory/display values and must keep the
+    # machine's real casing, so callers still pass the raw serial_number for
+    # anything outside device_credentials.
+    normalized_serial = serial_number.strip().casefold()
     async with pool.acquire() as conn:
         async with conn.transaction():
             row = await _resolve_token_row(conn, token)
@@ -145,7 +160,7 @@ async def enroll_device(
             existing = await conn.fetchval(
                 "SELECT id FROM device_credentials "
                 "WHERE company_id = $1 AND serial_number = $2",
-                row["company_id"], serial_number,
+                row["company_id"], normalized_serial,
             )
             if existing is None and row["max_devices"] is not None:
                 if row["used_count"] >= row["max_devices"]:
@@ -159,7 +174,7 @@ async def enroll_device(
                 "credential_hash = EXCLUDED.credential_hash, "
                 "hostname = EXCLUDED.hostname, "
                 "enrolled_at = NOW(), revoked_at = NULL",
-                row["company_id"], hash_api_key(credential), serial_number,
+                row["company_id"], hash_api_key(credential), normalized_serial,
                 hostname, row["id"],
             )
             if existing is None:

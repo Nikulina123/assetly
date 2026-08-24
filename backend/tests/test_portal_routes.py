@@ -186,3 +186,33 @@ async def test_device_pages_render_with_missing_optional_fields(db_pool, company
     assert computers_resp.status_code == 200
     assert device_resp.status_code == 200
     assert "SN-BARE" in device_resp.text
+
+
+async def test_device_detail_finds_preexisting_unnormalised_credential(db_pool, company, admin):
+    """A device_credentials row written before serials were casefolded at
+    enrollment (simulated here by inserting directly with real-world casing)
+    must still be found by device_detail's credential lookup -- otherwise the
+    portal shows "no active credential" and hides the revoke control for a
+    credential that is still live."""
+    from app.auth import generate_api_key, hash_api_key
+
+    company_id, api_key = company
+    _, email, password = admin
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test", follow_redirects=True) as client:
+        await _submit(client, api_key, "ABC-123", "raw-host")
+        plaintext = generate_api_key()
+        async with db_pool.acquire() as conn:
+            await conn.execute(
+                "INSERT INTO device_credentials "
+                "(company_id, credential_hash, serial_number, hostname) "
+                "VALUES ($1, $2, $3, $4)",
+                company_id, hash_api_key(plaintext), "ABC-123", "raw-host",
+            )
+        from tests.test_enrollment import _run_migration_015
+        await _run_migration_015(db_pool)
+        await _login(client, email, password)
+        resp = await client.get(f"/admin/companies/{company_id}/computers/ABC-123")
+    assert resp.status_code == 200
+    assert "No enrollment credential on file" not in resp.text
+    assert "/revoke" in resp.text

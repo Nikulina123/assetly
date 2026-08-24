@@ -74,7 +74,7 @@ def test_send_email_raises_on_http_error(monkeypatch):
         send_email("customer@example.com", "Subject", "<p>Hi</p>")
 
 
-from app.notifications import notify_auth_failure, notify_checkin_success
+from app.notifications import notify_checkin_success
 
 
 def test_notify_checkin_success_sends_with_correct_content(monkeypatch):
@@ -137,27 +137,3 @@ def test_notify_checkin_success_does_not_raise_when_send_email_fails(monkeypatch
     monkeypatch.setattr("app.notifications.send_email", failing_send)
 
     notify_checkin_success("owner@example.com", "my-laptop", "Nino Test", None, {})  # must not raise
-
-
-def test_notify_auth_failure_sends_to_ops_email(monkeypatch):
-    captured = {}
-    monkeypatch.setattr(
-        "app.notifications.send_email",
-        lambda to, subject, html, text=None: captured.update(to=to, subject=subject),
-    )
-    monkeypatch.setattr("app.notifications.OPS_ALERT_EMAIL", "ops@assetly.example")
-
-    notify_auth_failure("as_live_abc12345")
-
-    assert captured["to"] == "ops@assetly.example"
-    assert "Auth failure" in captured["subject"]
-
-
-def test_notify_auth_failure_noops_without_ops_email(monkeypatch):
-    called = []
-    monkeypatch.setattr("app.notifications.send_email", lambda *a, **kw: called.append(1))
-    monkeypatch.setattr("app.notifications.OPS_ALERT_EMAIL", "")
-
-    notify_auth_failure("as_live_abc12345")
-
-    assert called == []

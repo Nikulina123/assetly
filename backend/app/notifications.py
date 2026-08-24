@@ -1,9 +1,19 @@
+import datetime
+import hashlib
 import html
 import json
 import logging
 import urllib.request
 
-from app.config import NOTIFICATION_FROM_EMAIL, OPS_ALERT_EMAIL, SENDLY_API_KEY
+import asyncpg
+
+from app.config import (
+    AUTH_DIGEST_DAILY_CAP,
+    AUTH_DIGEST_INTERVAL_SECONDS,
+    NOTIFICATION_FROM_EMAIL,
+    OPS_ALERT_EMAIL,
+    SENDLY_API_KEY,
+)
 
 log = logging.getLogger("assetly_backend")
 
@@ -59,13 +69,110 @@ def notify_checkin_success(
         log.warning(f"Failed to send checkin-success notification to {to_email}: {e}")
 
 
-def notify_auth_failure(key_prefix: str) -> None:
-    """Never raises, same reasoning as notify_checkin_success. No-ops if
-    OPS_ALERT_EMAIL isn't configured."""
+def safe_key_fingerprint(api_key: str) -> str:
+    """A non-secret identifier for a rejected bearer.
+
+    The previous implementation emailed api_key[:16], which for a key of the
+    form as_live_ + hex hands 8 hex characters of live secret material to a
+    third-party email vendor (audit finding L-2). The published prefix plus a
+    hash fragment correlates repeated attempts just as well and discloses
+    nothing: the fragment is derived from the full key, so it cannot be walked
+    backwards into the key.
+    """
+    known_prefixes = ("as_live_", "wz_live_", "as_enroll_", "as_dev_")
+    prefix = next((p for p in known_prefixes if api_key.startswith(p)), "unknown_")
+    fragment = hashlib.sha256(api_key.encode()).hexdigest()[:8]
+    return f"{prefix}#{fragment}"
+
+
+async def record_auth_failure(
+    pool: asyncpg.Pool, key_prefix: str, ip_address: str | None
+) -> None:
+    """Records one rejected credential. Never raises and never sends email --
+    this runs on a path an unauthenticated caller controls, so it must not
+    perform outbound network I/O. The digest below is what actually notifies."""
+    try:
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "INSERT INTO auth_failure_events (key_prefix, ip_address) VALUES ($1, $2)",
+                key_prefix, ip_address,
+            )
+    except Exception as e:
+        log.warning(f"Failed to record auth failure: {e}")
+
+
+async def maybe_send_auth_failure_digest(pool: asyncpg.Pool) -> None:
+    """Sends one digest if the interval has elapsed and the daily cap allows.
+
+    Called opportunistically off request traffic -- there is no scheduler on
+    this deployment. The claim is made with a conditional UPDATE ... RETURNING,
+    so of two warm instances arriving at the same moment exactly one wins the
+    row and sends; the loser's UPDATE matches nothing and it returns quietly.
+    """
     if not OPS_ALERT_EMAIL:
         return
-    html_body = f"<p>A check-in request was rejected: invalid or revoked API key (prefix: {html.escape(key_prefix)}).</p>"
+    now = datetime.datetime.now(datetime.timezone.utc)
+    cutoff = now - datetime.timedelta(seconds=AUTH_DIGEST_INTERVAL_SECONDS)
     try:
-        send_email(OPS_ALERT_EMAIL, "[Assetly Inventory] Auth failure on checkin endpoint", html_body)
+        async with pool.acquire() as conn:
+            claimed = await conn.fetchrow(
+                """
+                UPDATE notification_state
+                   SET last_digest_sent_at = $1,
+                       digest_day = CURRENT_DATE,
+                       digests_sent_today =
+                           CASE WHEN digest_day = CURRENT_DATE
+                                THEN digests_sent_today + 1 ELSE 1 END
+                 WHERE id = TRUE
+                   AND (last_digest_sent_at IS NULL OR last_digest_sent_at < $2)
+                   AND (digest_day IS DISTINCT FROM CURRENT_DATE
+                        OR digests_sent_today < $3)
+                RETURNING TRUE
+                """,
+                now, cutoff, AUTH_DIGEST_DAILY_CAP,
+            )
+            if claimed is None:
+                return
+
+            rows = await conn.fetch(
+                "SELECT key_prefix, count(*) AS hits, max(occurred_at) AS last_seen "
+                "FROM auth_failure_events WHERE occurred_at >= $1 "
+                "GROUP BY key_prefix ORDER BY hits DESC LIMIT 20",
+                cutoff,
+            )
+            total = await conn.fetchval(
+                "SELECT count(*) FROM auth_failure_events WHERE occurred_at >= $1",
+                cutoff,
+            )
+            # Retention: the digest has been sent, so the window's rows have
+            # served their purpose. Keeping a day lets an operator query
+            # recent history without the table growing without bound.
+            await conn.execute(
+                "DELETE FROM auth_failure_events WHERE occurred_at < $1",
+                now - datetime.timedelta(days=1),
+            )
     except Exception as e:
-        log.warning(f"Failed to send auth-failure notification: {e}")
+        log.warning(f"Failed to prepare auth-failure digest: {e}")
+        return
+
+    if not total:
+        return
+
+    lines = "".join(
+        f"<li>{html.escape(row['key_prefix'])} — {row['hits']} attempt(s), "
+        f"last {html.escape(str(row['last_seen']))}</li>"
+        for row in rows
+    )
+    html_body = (
+        f"<p>{total} check-in request(s) were rejected with an invalid or revoked "
+        f"credential in the last {AUTH_DIGEST_INTERVAL_SECONDS // 60} minutes.</p>"
+        f"<ul>{lines}</ul>"
+    )
+    try:
+        send_email(
+            OPS_ALERT_EMAIL,
+            f"[Assetly Inventory] {total} auth failure(s) on the checkin endpoint",
+            html_body,
+        )
+    except Exception as e:
+        log.warning(f"Failed to send auth-failure digest: {e}")

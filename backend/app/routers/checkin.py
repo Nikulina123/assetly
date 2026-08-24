@@ -7,11 +7,18 @@ from fastapi.responses import JSONResponse
 
 from app.agent_ui import resolve_agent_ui
 from app.auth import resolve_credential
+from app.config import RATE_LIMIT_AGENT
 from app.db import get_pool
 from app.field_config import resolve_field_config
 from app.hardware import normalize_os
 from app.models import CheckinRequest, CheckinResponse
-from app.notifications import notify_auth_failure, notify_checkin_success
+from app.notifications import (
+    maybe_send_auth_failure_digest,
+    notify_checkin_success,
+    record_auth_failure,
+    safe_key_fingerprint,
+)
+from app.rate_limit import client_ip, enforce_rate_limit, hashed_bucket
 from app.schedule import resolve_schedule
 
 router = APIRouter(tags=["checkin"])
@@ -36,16 +43,32 @@ async def get_current_company_id(
         raise HTTPException(status_code=401, detail="Missing or malformed Authorization header")
     api_key = authorization.removeprefix("Bearer ").strip()
     pool = await get_pool()
+    # Keyed on a hash of the presented credential, so this covers both
+    # /checkin and /config for one device, and an invalid credential gets its
+    # own bucket rather than sharing one with every other invalid credential.
+    # Applied before resolve_credential so a flood costs one INSERT, not a
+    # credential lookup plus a background email.
+    limit, window = RATE_LIMIT_AGENT
+    await enforce_rate_limit(pool, hashed_bucket("agent", api_key), limit, window)
+
     result = await resolve_credential(pool, api_key)
     if result is None:
         # Only a present-but-invalid key triggers this -- a missing header
         # entirely (the branch above) is far more common (unconfigured
         # devices, generic bot traffic) and much less actionable, so it's
-        # deliberately not notified on, to keep this signal meaningful.
-        background_tasks.add_task(notify_auth_failure, api_key[:16] + "...")
+        # deliberately not recorded, to keep this signal meaningful.
+        #
+        # Recording is a database INSERT, not an email. The digest goes out
+        # opportunistically, at most once an hour: an unauthenticated caller
+        # must not be able to trigger outbound mail.
+        background_tasks.add_task(
+            record_auth_failure, pool, safe_key_fingerprint(api_key), client_ip(request)
+        )
+        background_tasks.add_task(maybe_send_auth_failure_digest, pool)
         raise HTTPException(status_code=401, detail="Invalid or revoked API key")
-    company_id, credential_id = result
+    company_id, credential_id, enrolled_serial = result
     request.state.credential_id = credential_id
+    request.state.enrolled_serial = enrolled_serial
     return company_id
 
 
@@ -70,6 +93,39 @@ async def checkin(
     company_id: str = Depends(get_current_company_id),
 ):
     platform_name, os_version = normalize_os(payload.os)
+
+    # M-1: a credential may only speak for the machine it was enrolled for.
+    # Without this, any one compromised endpoint -- or anyone holding a leaked
+    # enrollment token -- can submit a check-in claiming any serial, and the
+    # ON CONFLICT DO UPDATE below silently overwrites that machine's record.
+    # For an asset-inventory product that is an attack on the integrity of the
+    # thing the product exists to produce.
+    #
+    # enrolled_serial is None only on the legacy company-key path, which is
+    # exempt by design: a company key is not issued for a serial. That
+    # exemption ends when ALLOW_LEGACY_COMPANY_KEY_CHECKIN is flipped to false.
+    # Normalised (.strip().casefold()) on both sides before comparing only --
+    # NOT for what gets stored below. devices.serial_number and
+    # device_checkins.serial_number stay exactly as the agent submitted them,
+    # because those are inventory/display values and must keep the machine's
+    # real casing. This binding check is likelier to see a case/whitespace
+    # drift now that install-time enrollment (Task 12) collects the serial
+    # via a root shell (ioreg / dmidecode) -- different code than the agent's
+    # own collector -- so the two no longer share a single source of truth
+    # for exact formatting.
+    enrolled_serial = getattr(request.state, "enrolled_serial", None)
+    if enrolled_serial is not None and (
+        payload.serial_number.strip().casefold() != enrolled_serial.strip().casefold()
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Payload serial number does not match the serial this credential "
+                "was enrolled for. Re-enroll the device from the admin portal if "
+                "its hardware was replaced."
+            ),
+        )
+
     pool = await get_pool()
 
     async with pool.acquire() as conn:

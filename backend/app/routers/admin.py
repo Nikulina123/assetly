@@ -14,12 +14,16 @@ from app.admin_auth import resolve_admin
 from app.auth import generate_api_key, hash_api_key
 from app.config import (
     CHECKIN_API_URL_FOR_DOWNLOAD,
+    INSTALLER_TOKEN_DAY_CHOICES,
+    INSTALLER_TOKEN_DAYS,
     MACOS_PKG_IDENTIFIER,
     MACOS_PKG_VERSION,
+    RATE_LIMIT_LOGIN,
     REPO_ROOT,
     WINDOWS_EXE_PATH,
 )
 from app.db import get_pool
+from app.rate_limit import client_ip, enforce_rate_limit, hashed_bucket
 from app.enrollment import (
     create_enrollment_token,
     list_tokens,
@@ -91,11 +95,25 @@ async def login_form(request: Request):
 @router.post("/login")
 async def login_submit(request: Request, email: str = Form(...), password: str = Form(...)):
     pool = await get_pool()
+    # Two buckets, both enforced. Per-IP stops one host walking a password
+    # list; per-account stops a distributed attempt against one known admin
+    # address, which per-IP alone would not see. The email is hashed into the
+    # bucket key so this table never becomes a list of admin addresses.
+    limit, window = RATE_LIMIT_LOGIN
+    await enforce_rate_limit(pool, f"login:ip:{client_ip(request)}", limit, window)
+    await enforce_rate_limit(pool, hashed_bucket("login:email", email), limit, window)
+
     admin_id = await resolve_admin(pool, email, password)
     if admin_id is None:
         return templates.TemplateResponse(
             request, "login.html", {"error": "Invalid email or password"}
         )
+    # Clear before writing admin_id: these are client-side signed cookies, so
+    # the pre-login session is attacker-fixable. Clearing also drops the
+    # pre-auth csrf_token, which _new_csrf_token then re-mints on the next
+    # authenticated render -- so the token an authenticated form carries was
+    # never visible to anyone before authentication.
+    request.session.clear()
     request.session["admin_id"] = admin_id
     return RedirectResponse("/admin/companies", status_code=303)
 
@@ -497,7 +515,6 @@ async def update_hardware_fields(
     ip_address: str | None = Form(None),
     department_enabled: str | None = Form(None),
     department_required: str | None = Form(None),
-    department_options: str | None = Form(None),
     admin_id: str = Depends(require_admin),
 ):
     _check_csrf(request, csrf_token)
@@ -509,15 +526,22 @@ async def update_hardware_fields(
         ("cpu", cpu), ("ram", ram), ("storage", storage), ("ip_address", ip_address),
     ]:
         await set_hardware_field_enabled(pool, company_id_str, field_key, submitted_value is not None)
+
+    # Check if department_options was submitted in the form. In Starlette 1.6.0, empty form fields
+    # may not appear in the Form() parameters, so we check the raw form data to distinguish
+    # between "not submitted" (None) and "submitted but empty" (list).
+    form_data = await request.form()
+    if "department_options" in form_data:
+        department_options_raw = form_data["department_options"]
+        options = department_options_raw.splitlines() if department_options_raw else []
+    else:
+        options = None
+
     await set_department_config(
         pool, company_id_str,
         enabled=department_enabled is not None,
         required=department_required is not None,
-        # A textarea always posts, so "" here is an admin who cleared the box
-        # (-> restore the built-in list), which set_department_config
-        # distinguishes from None ("this caller isn't editing the options").
-        # None only reaches it if the field is missing from the form entirely.
-        options=department_options.splitlines() if department_options is not None else None,
+        options=options,
     )
 
     return RedirectResponse(f"/admin/companies/{company_id}", status_code=303)
@@ -721,11 +745,38 @@ def embed_windows_config(exe_bytes: bytes, config: dict) -> bytes:
     return exe_bytes + WINDOWS_CONFIG_BEGIN + json.dumps(config).encode() + WINDOWS_CONFIG_END
 
 
+def _installer_token_terms(device_count: int, token_days: int) -> tuple[int, datetime.datetime]:
+    """Validated (max_devices, expires_at) for an installer-minted token.
+
+    Rejects rather than clamps, matching agent_ui.py: an admin who typed 5000
+    by accident should see an error, not silently receive a token that lets
+    5000 machines enroll.
+
+    The headroom exists because a device count is an estimate and a re-imaged
+    machine re-enrolls under the same serial (device_credentials is UNIQUE on
+    (company_id, serial_number), so that replaces rather than adds) -- but a
+    genuinely new machine does not, and an installer that stops working
+    mid-rollout is a support call.
+    """
+    if not 1 <= device_count <= 10000:
+        raise HTTPException(status_code=400, detail="Device count must be between 1 and 10000")
+    if token_days not in INSTALLER_TOKEN_DAY_CHOICES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Token lifetime must be one of {INSTALLER_TOKEN_DAY_CHOICES} days",
+        )
+    max_devices = device_count + max(5, device_count // 10)
+    expires_at = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=token_days)
+    return max_devices, expires_at
+
+
 @router.post("/companies/{company_id}/download/macos")
 async def download_macos(
     request: Request,
     company_id: uuid.UUID,
     csrf_token: str = Form(...),
+    device_count: int = Form(...),
+    token_days: int = Form(INSTALLER_TOKEN_DAYS),
     admin_id: str = Depends(require_admin),
 ):
     """Serves a double-clickable installer package rather than a shell script.
@@ -740,7 +791,11 @@ async def download_macos(
     await _get_active_company_or_404(pool, company_id)
     postinstall_template = _load_installer_template("AssetlyAgent_macOS_postinstall.sh")
     agent_source = (REPO_ROOT / "inventory_agent.py").read_bytes()
-    token = await create_enrollment_token(pool, str(company_id), label="macOS installer")
+    max_devices, expires_at = _installer_token_terms(device_count, token_days)
+    token = await create_enrollment_token(
+        pool, str(company_id), label=f"macOS installer ({device_count} devices)",
+        expires_at=expires_at, max_devices=max_devices,
+    )
     postinstall = _render_installer_script(
         postinstall_template, CHECKIN_API_URL_FOR_DOWNLOAD, token
     )
@@ -766,13 +821,19 @@ async def download_linux(
     request: Request,
     company_id: uuid.UUID,
     csrf_token: str = Form(...),
+    device_count: int = Form(...),
+    token_days: int = Form(INSTALLER_TOKEN_DAYS),
     admin_id: str = Depends(require_admin),
 ):
     _check_csrf(request, csrf_token)
     pool = await get_pool()
     await _get_active_company_or_404(pool, company_id)
     template_text = _load_installer_template("AssetlyAgent_Linux.sh")
-    token = await create_enrollment_token(pool, str(company_id), label="Linux installer")
+    max_devices, expires_at = _installer_token_terms(device_count, token_days)
+    token = await create_enrollment_token(
+        pool, str(company_id), label=f"Linux installer ({device_count} devices)",
+        expires_at=expires_at, max_devices=max_devices,
+    )
     script_text = _render_installer_script(template_text, CHECKIN_API_URL_FOR_DOWNLOAD, token)
     return Response(
         content=script_text,
@@ -786,6 +847,8 @@ async def download_windows(
     request: Request,
     company_id: uuid.UUID,
     csrf_token: str = Form(...),
+    device_count: int = Form(...),
+    token_days: int = Form(INSTALLER_TOKEN_DAYS),
     admin_id: str = Depends(require_admin),
 ):
     """Serves one self-contained .exe instead of an exe plus a config file.
@@ -809,7 +872,11 @@ async def download_windows(
     exe_bytes = WINDOWS_EXE_PATH.read_bytes()
     pool = await get_pool()
     await _get_active_company_or_404(pool, company_id)
-    token = await create_enrollment_token(pool, str(company_id), label="Windows installer")
+    max_devices, expires_at = _installer_token_terms(device_count, token_days)
+    token = await create_enrollment_token(
+        pool, str(company_id), label=f"Windows installer ({device_count} devices)",
+        expires_at=expires_at, max_devices=max_devices,
+    )
 
     return Response(
         content=embed_windows_config(

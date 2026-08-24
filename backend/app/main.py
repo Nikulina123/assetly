@@ -6,10 +6,11 @@ from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.sessions import SessionMiddleware
 
-from app.config import SESSION_COOKIE_SECURE, SESSION_SECRET_KEY
+from app.config import SESSION_COOKIE_SECURE, SESSION_MAX_AGE_SECONDS, SESSION_SECRET_KEY
 from app.db import get_pool
 from app.routers.admin import NotAuthenticated
 from app.routers.admin import router as admin_router
+from app.routers.agent_update import router as agent_update_router
 from app.routers.checkin import router as checkin_router
 from app.routers.enroll import router as enroll_router
 from app.routers.portal import router as portal_router
@@ -20,11 +21,13 @@ app.add_middleware(
     secret_key=SESSION_SECRET_KEY,
     https_only=SESSION_COOKIE_SECURE,
     same_site="lax",
+    max_age=SESSION_MAX_AGE_SECONDS,
 )
 app.include_router(checkin_router)
 app.include_router(enroll_router)
 app.include_router(admin_router)
 app.include_router(portal_router)
+app.include_router(agent_update_router)
 app.mount(
     "/static",
     StaticFiles(directory=str(Path(__file__).resolve().parent / "static")),
@@ -59,7 +62,8 @@ async def http_exception_handler_with_background_tasks(request, exc):
     # on the normal successful-return path; a dependency (e.g.
     # app.routers.checkin.get_current_company_id) that raises HTTPException
     # bypasses that entirely, so any background tasks it queued (e.g.
-    # notify_auth_failure) would otherwise be silently dropped. That
+    # record_auth_failure and maybe_send_auth_failure_digest) would otherwise
+    # be silently dropped. That
     # dependency stashes its BackgroundTasks instance on request.state
     # specifically so this handler can still run it.
     response = await http_exception_handler(request, exc)
