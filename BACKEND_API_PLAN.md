@@ -187,10 +187,10 @@ $payload["platform"]        = "windows"
 
 ## Deploy ordering (hard gate)
 
-Migrations **013** (`rate_limit_hits`) and **014** must be applied to the
-production database with `psql -1 <migration file>` **before** deploying any
-code that depends on them. This is not merely recommended ordering — it is a
-hard gate:
+Migrations **013** (`rate_limit_hits`), **014**, and **015**
+(`normalise_credential_serials`) must be applied to the production database
+with `psql -1 <migration file>` **before** deploying any code that depends on
+them. This is not merely recommended ordering — it is a hard gate:
 
 - Code from Task 6 onward calls `enforce_rate_limit` on `/admin/login`,
   `/api/v1/enroll`, `/checkin`, `/config`, and `/agent/manifest`, all of which
@@ -204,12 +204,22 @@ hard gate:
 - Migration 014's consumers already catch broadly and degrade quietly by
   design; treat 013 and 014 as a single ordered pair applied ahead of the code
   that uses them, not as independently orderable.
+- Migration 015 normalises `device_credentials.serial_number` at rest to
+  `lower(btrim(...))`, matching the casefolded lookup key that
+  `enroll_device`, `revoke_device_credential`, and `portal.py::device_detail`
+  now compare against. If the code deploys before this migration runs, every
+  revoke against a pre-existing (un-normalised) row silently affects zero
+  rows and reports success while the credential stays live — a security
+  regression, not a cosmetic one. This migration has no code dependency in
+  the other direction (it's a data fixup with no new schema), so it is safe
+  to run standalone ahead of the rest of the deploy.
 
 Sequence for any deploy that includes new or changed migrations:
 
 ```
 psql -1 -f backend/migrations/013_rate_limit.sql "$DATABASE_URL"
 psql -1 -f backend/migrations/014_auth_failure_digest.sql "$DATABASE_URL"
+psql -1 -f backend/migrations/015_normalise_credential_serials.sql "$DATABASE_URL"
 # only then deploy/promote the new application code
 ```
 
