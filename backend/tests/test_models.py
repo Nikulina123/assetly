@@ -3,7 +3,7 @@ import uuid
 import pytest
 from pydantic import ValidationError
 
-from app.models import CheckinRequest
+from app.models import MAX_FIELD_LENGTH, CheckinRequest, EnrollRequest
 
 
 def _payload(**overrides):
@@ -108,3 +108,24 @@ def test_accepts_custom_fields_at_the_limits():
         **_valid_payload(custom_fields={f"k{i}": "v" * 512 for i in range(32)})
     )
     assert len(model.custom_fields) == 32
+
+
+def test_enroll_request_rejects_oversized_serial_number():
+    """An unbounded serial_number on EnrollRequest let a device enroll with a
+    serial its own CheckinRequest (capped at MAX_FIELD_LENGTH) could never
+    carry -- permanently rejecting that device's check-ins with a 409."""
+    with pytest.raises(ValidationError):
+        EnrollRequest(serial_number="S" * (MAX_FIELD_LENGTH + 1))
+
+
+def test_enroll_request_rejects_oversized_hostname():
+    with pytest.raises(ValidationError):
+        EnrollRequest(serial_number="SN-001", hostname="H" * (MAX_FIELD_LENGTH + 1))
+
+
+def test_enroll_request_accepts_serial_number_and_hostname_at_the_limit():
+    model = EnrollRequest(
+        serial_number="S" * MAX_FIELD_LENGTH, hostname="H" * MAX_FIELD_LENGTH
+    )
+    assert len(model.serial_number) == MAX_FIELD_LENGTH
+    assert len(model.hostname) == MAX_FIELD_LENGTH

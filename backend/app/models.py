@@ -79,8 +79,8 @@ class CheckinResponse(BaseModel):
 
 
 class EnrollRequest(BaseModel):
-    serial_number: str
-    hostname: str | None = None
+    serial_number: str = Field(max_length=MAX_FIELD_LENGTH)
+    hostname: str | None = Field(default=None, max_length=MAX_FIELD_LENGTH)
 
 
 class EnrollResponse(BaseModel):
