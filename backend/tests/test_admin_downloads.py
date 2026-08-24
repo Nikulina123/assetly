@@ -417,3 +417,23 @@ async def test_download_rejects_an_unlisted_lifetime(admin, company):
     finally:
         await client.aclose()
     assert resp.status_code == 400
+
+
+def test_portal_serves_the_signed_windows_agent():
+    """The portal must hand out the artifact the release manifest signs.
+
+    These were two different files until 2026-08-24, when they diverged and put
+    a real endpoint into a permanent update loop: a freshly downloaded agent
+    compared itself against the signed manifest, found a mismatch, "updated" to
+    the signed build, and the older build's legacy GitHub-raw path pulled it
+    back. Pointing WINDOWS_EXE_PATH inside UPDATES_DIR collapses the two
+    channels into one source of truth, so a fresh install is by construction
+    already up to date. Reverting this reopens that loop.
+    """
+    from pathlib import Path
+
+    from app.config import UPDATES_DIR, WINDOWS_EXE_PATH
+
+    assert WINDOWS_EXE_PATH.parent == Path(UPDATES_DIR), (
+        "the portal must serve the signed artifact, not CI's unsigned build output"
+    )

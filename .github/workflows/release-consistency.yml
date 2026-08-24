@@ -1,0 +1,70 @@
+name: Release consistency
+
+# Fails when CI's freshly built Windows agent is not the one the signed release
+# manifest covers.
+#
+# This exists because of a real incident on 2026-08-24. CI rebuilds
+# backend/static/AssetlyAgent_Windows.exe whenever the .ps1 changes, while the
+# release owner signs a copy into backend/app/static/updates/ by hand, offline.
+# A signed release that was never published left those two out of step, and a
+# real endpoint spent minutes flipping between the two builds: the newer agent
+# "updated" down to the signed older one, whose legacy GitHub-raw path pulled it
+# straight back up again.
+#
+# The portal now serves the SIGNED artifact (see app/config.py WINDOWS_EXE_PATH),
+# so the two can no longer be distributed in parallel -- but they can still drift,
+# and drift means the latest agent code is built and NOT being handed to anyone.
+# That is a state worth failing loudly on rather than discovering from a fleet.
+#
+# A red build here is not corruption. It means: a .ps1 change has been compiled
+# but not signed into a release yet. Fix it by signing and pushing:
+#
+#   backend/venv/bin/python backend/scripts/sign_release.py \
+#       --version <next> --key ~/.assetly/release_key.pem
+#   git add backend/app/static/updates/ && git commit && git push
+#
+# Signing is deliberately not automated here: the private key must never exist
+# in CI, or a compromise of this repository could produce agents the whole fleet
+# would install.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  manifest-matches-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compare CI's build against the signed manifest
+        run: |
+          set -euo pipefail
+          MANIFEST=backend/app/static/updates/manifest.json
+          BUILD=backend/static/AssetlyAgent_Windows.exe
+
+          if [ ! -f "$MANIFEST" ]; then
+            echo "No signed release yet ($MANIFEST missing) — nothing to compare."
+            exit 0
+          fi
+          if [ ! -f "$BUILD" ]; then
+            echo "::error::$BUILD is missing, but a signed manifest exists."
+            exit 1
+          fi
+
+          SIGNED=$(python3 -c "import json;print(json.load(open('$MANIFEST'))['artifacts']['windows_exe']['sha256'])")
+          BUILT=$(sha256sum "$BUILD" | cut -d' ' -f1)
+
+          echo "signed manifest : $SIGNED"
+          echo "CI build        : $BUILT"
+
+          if [ "$SIGNED" != "$BUILT" ]; then
+            echo "::error::The compiled Windows agent does not match the signed release."
+            echo "::error::The .ps1 was changed and rebuilt, but no release has been signed for it,"
+            echo "::error::so the portal is still handing out the previous signed build."
+            echo "::error::Sign a release locally and push it — see this workflow's header."
+            exit 1
+          fi
+          echo "The signed release covers the current build."

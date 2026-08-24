@@ -22,8 +22,43 @@ DB_POOL_MAX_SIZE = int(os.environ.get("DB_POOL_MAX_SIZE", "2"))
 DB_COMMAND_TIMEOUT = float(os.environ.get("DB_COMMAND_TIMEOUT", "10"))
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
+# Where sign_release.py writes and the manifest endpoint reads.
+#
+# Deliberately under backend/app/static/, not backend/static/: app/main.py
+# only ever mounts the former at /static (see StaticFiles(directory=...
+# app/static)), so an artifact written anywhere else is signed, verified by
+# the agent as up to date, and then 404s the moment it tries to download --
+# the update channel would authenticate a release it can never actually
+# serve. vercel.json's includeFiles already lists both `backend/app/static/**`
+# and `backend/static/**`, so this location ships in the deployed bundle
+# either way.
+UPDATES_DIR = os.environ.get(
+    "UPDATES_DIR", str(REPO_ROOT / "backend" / "app" / "static" / "updates")
+)
+
+# The Windows agent the portal HANDS OUT. This deliberately points at the
+# SIGNED artifact under UPDATES_DIR, not at CI's build output in
+# backend/static/.
+#
+# Why: those were two different files, and on 2026-08-24 they diverged and put
+# a real endpoint into a permanent update loop. CI rebuilds
+# backend/static/AssetlyAgent_Windows.exe on every change to the .ps1; the
+# release owner signs a copy into UPDATES_DIR by hand. A freshly downloaded
+# agent compared its own hash against the signed manifest, found a difference,
+# "updated" to the signed build, restarted -- and the legacy GitHub-raw path in
+# the older build pulled it straight back. Each step was correct in isolation;
+# the two channels simply disagreed about which build was current.
+#
+# Serving the signed artifact collapses that to one source of truth: what the
+# portal distributes is, by construction, exactly what the manifest signs, so a
+# fresh install is immediately "already up to date". It also makes the failure
+# mode safe -- change the .ps1 without signing a release and the portal keeps
+# serving the last SIGNED build, so the mistake shows up as "my change did not
+# ship" rather than as a fleet-wide loop. An unsigned build is never
+# distributed. See .github/workflows/release-consistency.yml, which fails when
+# CI's build and the signed manifest disagree.
 WINDOWS_EXE_PATH = Path(
-    os.environ.get("WINDOWS_EXE_PATH", str(REPO_ROOT / "backend" / "static" / "AssetlyAgent_Windows.exe"))
+    os.environ.get("WINDOWS_EXE_PATH", str(Path(UPDATES_DIR) / "AssetlyAgent_Windows.exe"))
 )
 
 # Identity of the macOS installer package. The identifier is what macOS keys
@@ -39,19 +74,6 @@ CHECKIN_API_URL_FOR_DOWNLOAD = f"{PUBLIC_API_BASE_URL}/api/v1/inventory/checkin"
 SENDLY_API_KEY = os.environ.get("SENDLY_API_KEY", "")
 NOTIFICATION_FROM_EMAIL = os.environ.get("NOTIFICATION_FROM_EMAIL", "noreply@assetly.ge")
 
-# Where sign_release.py writes and the manifest endpoint reads.
-#
-# Deliberately under backend/app/static/, not backend/static/: app/main.py
-# only ever mounts the former at /static (see StaticFiles(directory=...
-# app/static)), so an artifact written anywhere else is signed, verified by
-# the agent as up to date, and then 404s the moment it tries to download --
-# the update channel would authenticate a release it can never actually
-# serve. vercel.json's includeFiles already lists both `backend/app/static/**`
-# and `backend/static/**`, so this location ships in the deployed bundle
-# either way.
-UPDATES_DIR = os.environ.get(
-    "UPDATES_DIR", str(REPO_ROOT / "backend" / "app" / "static" / "updates")
-)
 
 # The agent-update signing PUBLIC key, base64 DER (SubjectPublicKeyInfo).
 # Public by definition -- committing it is correct and is what lets an agent
