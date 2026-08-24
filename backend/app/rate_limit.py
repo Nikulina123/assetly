@@ -7,10 +7,13 @@ the fixed-vs-sliding-window reasoning.
 """
 import datetime
 import hashlib
+import logging
 import random
 
 import asyncpg
 from fastapi import HTTPException, Request
+
+logger = logging.getLogger(__name__)
 
 # Fraction of calls that also prune expired rows. There is no scheduler on this
 # deployment and adding one for table hygiene is not warranted; at any real
@@ -86,21 +89,46 @@ async def check_rate_limit(
     now = datetime.datetime.now(datetime.timezone.utc)
     window_start = _window_start(window_seconds, now)
 
-    async with pool.acquire() as conn:
-        count = await conn.fetchval(
-            """
-            INSERT INTO rate_limit_hits (bucket_key, window_start, count)
-            VALUES ($1, $2, 1)
-            ON CONFLICT (bucket_key, window_start)
-            DO UPDATE SET count = rate_limit_hits.count + 1
-            RETURNING count
-            """,
-            bucket_key, window_start,
-        )
-        if random.random() < _PRUNE_PROBABILITY:
-            await conn.execute(
-                "DELETE FROM rate_limit_hits WHERE window_start < $1", now - _PRUNE_AGE
+    try:
+        async with pool.acquire() as conn:
+            count = await conn.fetchval(
+                """
+                INSERT INTO rate_limit_hits (bucket_key, window_start, count)
+                VALUES ($1, $2, 1)
+                ON CONFLICT (bucket_key, window_start)
+                DO UPDATE SET count = rate_limit_hits.count + 1
+                RETURNING count
+                """,
+                bucket_key, window_start,
             )
+            if random.random() < _PRUNE_PROBABILITY:
+                await conn.execute(
+                    "DELETE FROM rate_limit_hits WHERE window_start < $1", now - _PRUNE_AGE
+                )
+    except asyncpg.UndefinedTableError:
+        # Narrow and deliberate: this fires only when rate_limit_hits itself
+        # does not exist, which means migration 013 has not been applied yet
+        # against code that already calls enforce_rate_limit on /admin/login,
+        # /api/v1/enroll, /checkin, /config, and /agent/manifest. Without this
+        # catch, deploying the code before the migration turns every one of
+        # those routes into a 500 -- the entire API goes down over a table
+        # that exists purely to rate-limit, not to serve the request.
+        #
+        # Fail OPEN (allow) rather than reject: the alternative to "no rate
+        # limiting for a few minutes during a bad deploy order" is "the API is
+        # completely down", and the former is clearly the lesser failure.
+        # This must stay a narrow except on UndefinedTableError specifically,
+        # never a blanket `except Exception` -- broadening it would silently
+        # disable rate limiting on any transient database hiccup, not just
+        # this one unambiguous "table does not exist" case.
+        logger.error(
+            "rate_limit_hits table does not exist -- migration 013 has not "
+            "been applied. Failing open (request allowed) for bucket %r. "
+            "Apply migrations/013_rate_limit.sql before code that calls "
+            "enforce_rate_limit is deployed.",
+            bucket_key,
+        )
+        return True, 0
 
     if count <= limit:
         return True, 0

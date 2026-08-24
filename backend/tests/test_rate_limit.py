@@ -1,9 +1,11 @@
 import datetime
 
+import asyncpg
 import pytest
 from starlette.requests import Request
 
 from app.rate_limit import check_rate_limit, client_ip
+from tests.conftest import ADMIN_TEST_DATABASE_URL
 
 
 def _make_request(headers: dict[str, str]) -> Request:
@@ -64,6 +66,30 @@ async def test_a_new_window_resets_the_count(db_pool):
         db_pool, "test:window", limit=5, window_seconds=900
     )
     assert allowed is True
+
+
+@pytest.mark.asyncio
+async def test_missing_table_fails_open_instead_of_raising(db_pool):
+    """Reproduces deploying the code before migration 013: rate_limit_hits
+    does not exist yet. check_rate_limit must not raise -- it must fail open
+    (allow the request) so /admin/login, /api/v1/enroll, /checkin, /config,
+    and /agent/manifest don't 500 on every call during that deploy gap."""
+    admin_conn = await asyncpg.connect(ADMIN_TEST_DATABASE_URL)
+    try:
+        await admin_conn.execute("ALTER TABLE rate_limit_hits RENAME TO rate_limit_hits_hidden")
+        try:
+            allowed, retry_after = await check_rate_limit(
+                db_pool, "test:missing-table", limit=1, window_seconds=900
+            )
+        finally:
+            await admin_conn.execute(
+                "ALTER TABLE rate_limit_hits_hidden RENAME TO rate_limit_hits"
+            )
+    finally:
+        await admin_conn.close()
+
+    assert allowed is True
+    assert retry_after == 0
 
 
 def test_client_ip_rejects_spoofed_leftmost_forwarded_for():
