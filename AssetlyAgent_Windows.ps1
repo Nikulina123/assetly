@@ -47,7 +47,12 @@ $AgentVersion     = "2.0"
 # Fallback only — the live per-company list arrives on the department entry of
 # the field config. Kept in sync with DEFAULT_DEPARTMENT_OPTIONS in
 # backend/app/field_config.py and inventory_agent.py.
-$DefaultDepartments = @("Webiz ERP","Fundbox","Playtika","Artlist","The5%ers","Other")
+#
+# One neutral value on purpose: this list previously held a real customer's
+# department names, which any agent that could not reach /config then showed to
+# a different company's employees. Never empty -- a required department field
+# with an empty dropdown cannot be submitted.
+$DefaultDepartments = @("Other")
 
 # ─── Update signing ───────────────────────────────────────────────────────────
 # The release signing PUBLIC key, base64 DER (SubjectPublicKeyInfo). Compiled
