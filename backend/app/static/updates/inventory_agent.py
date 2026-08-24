@@ -142,7 +142,13 @@ DEFAULT_SCHEDULE = {
 # company on the department entry of GET /api/v1/inventory/config, and an admin
 # edits it in the portal. Kept in sync with DEFAULT_DEPARTMENT_OPTIONS in
 # backend/app/field_config.py and $DefaultDepartments in AssetlyAgent_Windows.ps1.
-DEFAULT_DEPARTMENT_OPTIONS = ["Webiz ERP", "Fundbox", "Playtika", "Artlist", "The5%ers", "Other"]
+#
+# Deliberately one neutral value. This used to carry a real customer's
+# department names, which meant any agent that could not reach /config showed
+# every other company's employees that customer's org chart. It is not empty
+# because a dropdown with no options cannot be submitted at all when the
+# department field is required.
+DEFAULT_DEPARTMENT_OPTIONS = ["Other"]
 
 # ─── Agent window appearance ──────────────────────────────────────────────────
 # Copy and colours arrive on the `ui` key of the same GET /config response that
@@ -765,16 +771,15 @@ class InventoryForm(tk.Tk):
             from AppKit import NSApplication
             NSApplication.sharedApplication().activateIgnoringOtherApps_(True)
         except Exception:
-            # osascript fallback — always available on macOS
-            try:
-                subprocess.Popen(
-                    ["osascript", "-e",
-                     f'tell application "System Events" to set frontmost of '
-                     f'first process whose unix id is {os.getpid()} to true'],
-                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                )
-            except Exception:
-                pass
+            # No pyobjc (the usual case -- this agent has no pip dependencies,
+            # and neither the python.org nor the system build ships AppKit).
+            # There is deliberately no osascript fallback here: driving
+            # "System Events" is an Automation request, so macOS shows the
+            # employee a '"python3" wants to control "System Events"' consent
+            # dialog before the check-in window ever appears. The Tk calls
+            # below raise and focus the window on their own, which is worth
+            # more than the small extra reliability that AppleScript bought.
+            pass
         self.lift()
         self.attributes("-topmost", True)
         self.after(200, lambda: self.attributes("-topmost", False))
