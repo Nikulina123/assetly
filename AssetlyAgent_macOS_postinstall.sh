@@ -96,15 +96,50 @@ install_python_from_python_org() {
         return 1
     fi
     rm -rf "$tmp_dir"
-    # python.org ships root certificates as a separate opt-in step; without it
-    # every HTTPS call the agent makes fails certificate verification.
-    local certs
-    certs="$(ls -1d "/Applications/Python 3."*/"Install Certificates.command" 2>/dev/null | sort -Vr | head -1)"
-    if [ -n "$certs" ]; then
-        say "Installing root certificates…"
-        /bin/bash "$certs" >/dev/null 2>&1 || say "WARN: certificate step failed; HTTPS check-ins may fail."
-    fi
     return 0
+}
+
+# ── Root certificates ─────────────────────────────────────────────────────────
+# python.org ships root certificates as a separate opt-in step; without it every
+# HTTPS call the agent makes dies with CERTIFICATE_VERIFY_FAILED -- which is not
+# a loud failure, because fetch_config() and the update check both degrade to
+# their built-in fallbacks. The visible symptom is an agent quietly showing the
+# hardcoded department list instead of the company's, and queueing every
+# check-in offline.
+#
+# This deliberately runs for whatever Python was SELECTED, not only for one this
+# script installed: the common case is a Mac that already has a python.org build
+# whose certificate step was never run. Doing it only inside the installer
+# branch (where it used to live) skips exactly the machines that need it.
+install_root_certificates() {
+    local py="$1" certs version
+    # Only python.org framework builds ship the opt-in command; Homebrew and
+    # the system Python use certifi or the system store and need nothing here.
+    case "$py" in /Library/Frameworks/Python.framework/*) ;; *) return 0 ;; esac
+    if "$py" -c 'import ssl,urllib.request; urllib.request.urlopen("https://www.apple.com", timeout=15)' >/dev/null 2>&1; then
+        return 0
+    fi
+    say "This Python cannot verify HTTPS certificates — installing root certificates…"
+    # Match the command to the selected interpreter's version rather than taking
+    # the newest on disk: a Mac with several python.org versions would otherwise
+    # certify one we are not going to run.
+    version="$("$py" -c 'import sys; print("%d.%d" % sys.version_info[:2])' 2>/dev/null)"
+    certs="/Applications/Python $version/Install Certificates.command"
+    if [ ! -f "$certs" ]; then
+        certs="$(ls -1d "/Applications/Python 3."*/"Install Certificates.command" 2>/dev/null | sort -Vr | head -1)"
+    fi
+    if [ -n "$certs" ] && [ -f "$certs" ]; then
+        /bin/bash "$certs" >/dev/null 2>&1 || say "WARN: certificate step failed."
+    else
+        # No command on disk (e.g. the .app was removed after install). certifi
+        # is what that command installs anyway, so ask pip for it directly.
+        "$py" -m pip install --upgrade certifi >/dev/null 2>&1 || true
+    fi
+    if "$py" -c 'import ssl,urllib.request; urllib.request.urlopen("https://www.apple.com", timeout=15)' >/dev/null 2>&1; then
+        say "Root certificates installed."
+    else
+        say "WARN: HTTPS verification still fails — check-ins and config fetches will not work."
+    fi
 }
 
 say "Installing the Assetly Inventory Agent…"
@@ -122,6 +157,7 @@ if [ -z "$PYTHON3" ]; then
     exit 1
 fi
 say "Using Python: $PYTHON3"
+install_root_certificates "$PYTHON3"
 
 # ── Lay down the shared copies ────────────────────────────────────────────────
 mkdir -p "$SUPPORT_DIR"

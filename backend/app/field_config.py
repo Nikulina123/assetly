@@ -6,14 +6,16 @@ import asyncpg
 HARDWARE_FIELD_KEYS = ["cpu", "ram", "storage", "ip_address"]
 
 # What the department dropdown offers when a company has never edited the list.
-# These are the exact values both agents used to hardcode, so an existing
-# company sees no change at all until an admin edits them. Kept byte-for-byte
-# in sync with DEFAULT_DEPARTMENT_OPTIONS in inventory_agent.py and
-# $DefaultDepartments in AssetlyAgent_Windows.ps1, which are the fallbacks each
-# agent uses when it cannot reach this endpoint.
-DEFAULT_DEPARTMENT_OPTIONS = [
-    "Webiz ERP", "Fundbox", "Playtika", "Artlist", "The5%ers", "Other",
-]
+# Kept byte-for-byte in sync with DEFAULT_DEPARTMENT_OPTIONS in
+# inventory_agent.py and $DefaultDepartments in AssetlyAgent_Windows.ps1, which
+# are the fallbacks each agent uses when it cannot reach this endpoint.
+#
+# One neutral value on purpose. This list used to hold one early customer's
+# real department names, so every company that had never opened the field
+# editor served that customer's org chart to its own employees. A company that
+# wants real options sets them in the portal; nothing is leaked in the meantime.
+# Never empty: a required department field with no options cannot be submitted.
+DEFAULT_DEPARTMENT_OPTIONS = ["Other"]
 
 
 def _department_override(rows: list) -> asyncpg.Record | None:
