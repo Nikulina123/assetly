@@ -10,6 +10,13 @@
 # 249, 248, 1943, 1941, 2281, 2280. Older versions lock starlette to 0.38.6 which
 # has known advisories.
 fastapi==0.141.1
+# Pinned explicitly, not left to FastAPI's transitive floor: the CVE fix
+# above (starlette >= 1.1.0) currently rides on whatever fastapi==0.141.1
+# happens to require, and a future resolver run against a loosened fastapi
+# pin could walk starlette back down without anyone noticing. 1.6.0 is the
+# version actually installed and audited (see backend/requirements-dev.txt's
+# pip-audit).
+starlette==1.6.0
 uvicorn[standard]==0.30.6
 asyncpg==0.29.0
 pydantic==2.9.2
