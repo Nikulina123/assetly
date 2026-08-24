@@ -13,6 +13,8 @@
 #    /Library/Application Support/Assetly/inventory_agent.py   pristine copy
 #    /Library/Application Support/Assetly/config.json          seed config
 #    /Library/Application Support/Assetly/assetly-launch.sh    per-user launcher
+#    /Library/Application Support/Assetly/Assetly Inventory Agent.app
+#                                                              icon/name wrapper
 #    /Library/LaunchAgents/com.assetly.inventory.plist         runs at every login
 #
 #  The agent itself runs per-user, out of the user's own Application Support
@@ -158,6 +160,98 @@ if [ -z "$PYTHON3" ]; then
 fi
 say "Using Python: $PYTHON3"
 install_root_certificates "$PYTHON3"
+
+# ── App bundle, purely so the agent looks like itself ─────────────────────────
+# Without this the check-in window belongs to Python.app: the Dock shows the
+# Python rocket and the menu bar and app switcher say "Python". macOS takes both
+# from the bundle that owns the process, so Tk's iconphoto cannot change either
+# (it is a no-op on Aqua) -- the only fix is for the process to run out of a
+# bundle of ours.
+#
+# The executable has to be a COPY of the framework's Python binary, not a
+# symlink or a shell stub: LaunchServices resolves the owning bundle from the
+# real path of the running executable, so a symlink lands back on Python.app and
+# a stub that execs python hands the identity straight back. Copying is what
+# py2app does for the same reason.
+#
+# Copying breaks the code signature -- Python's signature covers Python.app's
+# own Info.plist, which we replace -- and a hardened-runtime binary with a
+# broken signature is SIGKILLed on launch (observed: exit 137). So the finished
+# bundle is re-signed ad-hoc. /usr/bin/codesign is part of the base OS; no Xcode
+# or developer account is involved, and an ad-hoc signature is sufficient for a
+# bundle built on the machine that runs it.
+APP_BUNDLE="$SUPPORT_DIR/Assetly Inventory Agent.app"
+
+build_app_bundle() {
+    local py="$1" py_app_bin iconset sz
+    # Only framework builds ship the Python.app whose binary we copy. On
+    # Homebrew or the system Python there is nothing to copy, so the bundle is
+    # skipped and the launcher falls back to running python directly -- the
+    # agent works exactly as before, just with Python's icon.
+    py_app_bin="$(dirname "$(dirname "$py")")/Resources/Python.app/Contents/MacOS/Python"
+    if [ ! -x "$py_app_bin" ]; then
+        say "Python is not a framework build — skipping the app bundle (agent still runs)."
+        return 1
+    fi
+
+    rm -rf "$APP_BUNDLE"
+    mkdir -p "$APP_BUNDLE/Contents/MacOS" "$APP_BUNDLE/Contents/Resources"
+    cp "$py_app_bin" "$APP_BUNDLE/Contents/MacOS/AssetlyAgent" || return 1
+
+    cat > "$APP_BUNDLE/Contents/Info.plist" <<'APP_PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+    "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleName</key>              <string>Assetly Inventory Agent</string>
+    <key>CFBundleDisplayName</key>       <string>Assetly Inventory Agent</string>
+    <key>CFBundleExecutable</key>        <string>AssetlyAgent</string>
+    <key>CFBundleIdentifier</key>        <string>com.assetly.inventory.agent</string>
+    <key>CFBundleIconFile</key>          <string>assetly</string>
+    <key>CFBundlePackageType</key>       <string>APPL</string>
+    <key>CFBundleShortVersionString</key><string>2.0</string>
+    <!-- Retina: without this the icon and window render doubled and soft. -->
+    <key>NSHighResolutionCapable</key>   <true/>
+</dict>
+</plist>
+APP_PLIST
+
+    # assetly_icon.png ships in the package's Scripts directory alongside this
+    # script. sips and iconutil are both part of the base OS.
+    if [ -f "$SCRIPT_DIR/assetly_icon.png" ]; then
+        iconset="$(mktemp -d -t assetly-iconset)/assetly.iconset"
+        mkdir -p "$iconset"
+        for sz in 16 32 128 256 512; do
+            sips -z "$sz" "$sz" "$SCRIPT_DIR/assetly_icon.png" \
+                --out "$iconset/icon_${sz}x${sz}.png" >/dev/null 2>&1
+            sips -z "$((sz * 2))" "$((sz * 2))" "$SCRIPT_DIR/assetly_icon.png" \
+                --out "$iconset/icon_${sz}x${sz}@2x.png" >/dev/null 2>&1
+        done
+        iconutil -c icns "$iconset" -o "$APP_BUNDLE/Contents/Resources/assetly.icns" \
+            >/dev/null 2>&1 || say "WARN: could not build the icns; the bundle will use a blank icon."
+        rm -rf "$(dirname "$iconset")"
+    else
+        say "WARN: assetly_icon.png missing from the package — bundle will have no icon."
+    fi
+
+    if ! codesign --force --sign - --timestamp=none "$APP_BUNDLE" >/dev/null 2>&1; then
+        say "WARN: could not sign the app bundle — falling back to plain python."
+        rm -rf "$APP_BUNDLE"
+        return 1
+    fi
+    # Prove it actually launches before the launcher is told to prefer it: a
+    # bundle that SIGKILLs on start would otherwise take the agent down with it.
+    if ! "$APP_BUNDLE/Contents/MacOS/AssetlyAgent" -c 'pass' >/dev/null 2>&1; then
+        say "WARN: the app bundle does not launch — falling back to plain python."
+        rm -rf "$APP_BUNDLE"
+        return 1
+    fi
+    say "Built $APP_BUNDLE"
+    return 0
+}
+
+build_app_bundle "$PYTHON3" || true
 
 # ── Lay down the shared copies ────────────────────────────────────────────────
 mkdir -p "$SUPPORT_DIR"
@@ -344,6 +438,18 @@ find_python() {
     done
     return 1
 }
+
+# The app bundle the installer built, whose only purpose is to give the
+# check-in window Assetly's icon and name instead of Python's. Its executable
+# is a copy of the Python binary, so it takes the same arguments -- but it is
+# pinned to the interpreter present at install time, and that interpreter can
+# later be upgraded or removed out from under it. So it is used only when it
+# still runs, and find_python below remains the fallback: a broken bundle must
+# never mean a missed check-in.
+APP_BIN="$SUPPORT_DIR/Assetly Inventory Agent.app/Contents/MacOS/AssetlyAgent"
+if [ -x "$APP_BIN" ] && "$APP_BIN" -c 'import tkinter' >/dev/null 2>&1; then
+    exec "$APP_BIN" "$USER_DIR/inventory_agent.py" "$@"
+fi
 
 # Resolved at every run rather than baked in at install time, so the agent
 # survives the Python it was installed against being upgraded or removed.
