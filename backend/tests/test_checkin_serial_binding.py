@@ -98,3 +98,27 @@ async def test_legacy_company_key_is_exempt(db_pool, company):
             headers={"Authorization": f"Bearer {api_key}"},
         )
     assert resp.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_checkin_accepts_case_and_whitespace_drifted_serial(db_pool, company):
+    """Install-time enrollment (Task 12) collects the serial via a root shell
+    (ioreg / dmidecode), different code than the agent's own collector, so a
+    case or whitespace drift between the enrolled serial and the check-in
+    payload is now a real, not merely theoretical, risk. Both sides of the
+    binding comparison are normalised with .strip().casefold(), so this must
+    succeed rather than 409."""
+    from app.enrollment import create_enrollment_token, enroll_device
+
+    company_id, _api_key = company
+    token = await create_enrollment_token(db_pool, company_id, label="test", max_devices=5)
+    credential = await enroll_device(db_pool, token, "abc-123", "host-1")
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/api/v1/inventory/checkin",
+            json=_payload("ABC-123 "),
+            headers={"Authorization": f"Bearer {credential}"},
+        )
+    assert resp.status_code == 200

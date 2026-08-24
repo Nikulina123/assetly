@@ -169,9 +169,12 @@ async def test_revoking_a_device_stops_only_that_device(admin, company, db_pool)
     assert resp_a.status_code == 401
     assert resp_b.status_code == 200
 
+    # device_credentials.serial_number is stored normalised (.strip().casefold())
+    # -- see app/enrollment.py::enroll_device -- so keys here are lowercase
+    # even though the enrolled/URL/checkin serials above use their real casing.
     creds = {c["serial_number"]: c for c in await list_device_credentials(db_pool, company_id)}
-    assert creds["SN-A"]["revoked_at"] is not None
-    assert creds["SN-B"]["revoked_at"] is None
+    assert creds["sn-a"]["revoked_at"] is not None
+    assert creds["sn-b"]["revoked_at"] is None
 
 
 async def test_revoke_device_route_requires_login(company):
@@ -246,7 +249,10 @@ async def test_revoke_device_serial_with_special_characters_round_trips(admin, c
     assert device_resp.status_code == 200
 
     creds = await list_device_credentials(db_pool, company_id)
-    assert creds[0]["serial_number"] == serial
+    # Stored normalised (.strip().casefold()); the display/inventory value
+    # (devices/device_checkins) keeps the real casing, but device_credentials
+    # does not -- see app/enrollment.py::enroll_device.
+    assert creds[0]["serial_number"] == serial.strip().casefold()
     assert creds[0]["revoked_at"] is not None
 
 

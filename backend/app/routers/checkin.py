@@ -104,8 +104,19 @@ async def checkin(
     # enrolled_serial is None only on the legacy company-key path, which is
     # exempt by design: a company key is not issued for a serial. That
     # exemption ends when ALLOW_LEGACY_COMPANY_KEY_CHECKIN is flipped to false.
+    # Normalised (.strip().casefold()) on both sides before comparing only --
+    # NOT for what gets stored below. devices.serial_number and
+    # device_checkins.serial_number stay exactly as the agent submitted them,
+    # because those are inventory/display values and must keep the machine's
+    # real casing. This binding check is likelier to see a case/whitespace
+    # drift now that install-time enrollment (Task 12) collects the serial
+    # via a root shell (ioreg / dmidecode) -- different code than the agent's
+    # own collector -- so the two no longer share a single source of truth
+    # for exact formatting.
     enrolled_serial = getattr(request.state, "enrolled_serial", None)
-    if enrolled_serial is not None and payload.serial_number != enrolled_serial:
+    if enrolled_serial is not None and (
+        payload.serial_number.strip().casefold() != enrolled_serial.strip().casefold()
+    ):
         raise HTTPException(
             status_code=409,
             detail=(

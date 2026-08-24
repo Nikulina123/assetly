@@ -80,8 +80,14 @@ async def device_detail(
     # this), so filter the company's credential list for this device. Fleet
     # size per company is small enough that this is fine on a page view.
     credentials = await list_device_credentials(pool, str(company_id))
+    # device_credentials.serial_number is stored normalised (see
+    # enroll_device in app/enrollment.py), while `serial_number` here comes
+    # from the URL / devices table and keeps the machine's real casing --
+    # normalise this side the same way before comparing, or an otherwise
+    # active credential would look revoked/missing on this page.
+    normalized_serial = serial_number.strip().casefold()
     context["credential"] = next(
-        (c for c in credentials if c["serial_number"] == serial_number), None
+        (c for c in credentials if c["serial_number"] == normalized_serial), None
     )
     context["nav_active"] = "computers"
     return templates.TemplateResponse(request, "portal_device.html", context)
