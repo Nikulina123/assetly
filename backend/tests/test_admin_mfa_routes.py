@@ -379,7 +379,9 @@ async def test_recovery_codes_page_shows_the_remaining_count(db_pool, enrolled_a
         await login_as(client, enrolled_admin)
         resp = await client.get("/admin/mfa/recovery-codes")
     assert resp.status_code == 200
-    assert b"10" in resp.content
+    assert b"<strong>10</strong>" in resp.content, (
+        "the count must be the rendered element, not just a stray '10' on the page"
+    )
     for code in codes:
         assert code.encode() not in resp.content, "codes are shown once, at generation, only"
 

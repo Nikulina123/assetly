@@ -232,6 +232,15 @@ ordering — it is a hard gate:
     `assetly` policy the application needs to keep working; the dashboard
     shortcut enables RLS without that policy, which denies the application
     outright and 500s every guarded endpoint.
+- Migration 017 adds one index (`(target_company_id, id DESC)` on
+  `audit_log`) to match the `/admin/audit` viewer's actual query shape
+  (keyset pagination on `id`, not on `occurred_at` as 016's indexes assume).
+  Unlike 016, this is **not** a hard gate — the viewer works without it, just
+  as a slower sequential-ish scan on a large table, so it can be applied
+  before or after the code deploys. Apply it after 016 regardless, since it
+  targets a column 016 creates. It grants nothing and does not add `UPDATE`
+  or `DELETE` on `audit_log` — the table is still append-only for the
+  application role by design (see "Audit log retention" above).
 
 Sequence for any deploy that includes new or changed migrations:
 
@@ -240,6 +249,7 @@ psql -1 -f backend/migrations/013_rate_limit.sql "$DATABASE_URL"
 psql -1 -f backend/migrations/014_auth_failure_digest.sql "$DATABASE_URL"
 psql -1 -f backend/migrations/015_normalise_credential_serials.sql "$DATABASE_URL"
 psql -1 -f backend/migrations/016_admin_mfa_rbac_audit.sql "$DATABASE_URL"
+psql -1 -f backend/migrations/017_audit_log_viewer_indexes.sql "$DATABASE_URL"
 # only then deploy/promote the new application code
 ```
 

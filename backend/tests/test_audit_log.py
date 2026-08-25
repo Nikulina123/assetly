@@ -809,8 +809,16 @@ async def test_audit_viewer_scopes_a_scoped_admin_to_their_own_company(
         await login_as(client, scoped_admin)
         resp = await client.get("/admin/audit")
     assert resp.status_code == 200
-    assert str(own_company_id).encode() in resp.content
-    assert str(other_company_id).encode() not in resp.content
-    assert b"admin.login.succeeded" not in resp.content, (
+    # Assert on the rendered row content, inside <tbody> -- the template
+    # renders target_company_name (never the raw id) whenever the company
+    # exists, so asserting the id string is absent from the whole page is
+    # vacuous (it never appears regardless of scoping), and asserting the
+    # own id is present is satisfied by the base.html sidebar's per-company
+    # link even with zero matching rows. "Other Co" and a row count inside
+    # <tbody> are the properties that can actually fail.
+    body = resp.text.split("<tbody>")[1].split("</tbody>")[0]
+    assert "Other Co" not in body
+    assert body.count("company.api_key_rotated") == 1
+    assert "admin.login.succeeded" not in body, (
         "a scoped admin must not see actor-level events with no tenant scope"
     )

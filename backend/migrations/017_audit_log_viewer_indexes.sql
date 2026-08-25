@@ -1,0 +1,29 @@
+-- Index to match the /admin/audit viewer's actual access path (Task 9,
+-- closing H-4's "psql-only" gap with a self-service viewer).
+--
+-- Migration 016 indexed (target_company_id, occurred_at DESC) and
+-- (actor_admin_id, occurred_at DESC) -- both built for "recent activity for
+-- one company/actor", the shape an operator would query by hand. The viewer
+-- instead orders and paginates on the primary key (`ORDER BY a.id DESC`,
+-- keyset pagination via `a.id < $before`), because occurred_at is not unique
+-- enough to page on without risking a row being skipped or repeated across
+-- pages when two rows share a timestamp. Neither existing 016 index has `id`
+-- as a leading or trailing sort column, so a scoped admin's filtered,
+-- paginated query can use 016's company index to find matching rows but
+-- still has to sort them afterward rather than walking the index in order.
+--
+-- This index makes "give me this company's rows, newest id first, before
+-- this id" a single ordered index scan.
+--
+-- No grant changes: an index needs no grant, and this migration adds none --
+-- in particular, it does NOT add UPDATE or DELETE on audit_log. The table
+-- stays INSERT/SELECT-only for the application role by design (see 016 and
+-- BACKEND_API_PLAN.md's "Audit log retention" section): the table only grows,
+-- indefinitely, and pruning is an operator action, never an application one.
+--
+-- APPLY WITH psql --single-transaction (-1), as the `admin` role, after 016
+-- and before deploying code that queries this shape (the viewer degrades to
+-- a slower scan without it, not a broken one -- this is a performance
+-- migration, not a hard gate like 016).
+
+CREATE INDEX idx_audit_log_company_id_desc ON audit_log (target_company_id, id DESC);

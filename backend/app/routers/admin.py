@@ -425,11 +425,12 @@ async def recovery_codes_status(
     pool = await get_pool()
     return templates.TemplateResponse(
         request,
-        "mfa_recovery_codes.html",
+        "mfa_recovery_codes_status.html",
         {
             "remaining": await count_unused_recovery_codes(pool, admin.id),
             "csrf_token": _new_csrf_token(request),
             "admin": admin,
+            "companies": await _all_companies(pool, admin),
         },
     )
 
