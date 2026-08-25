@@ -51,7 +51,7 @@ async def db_pool():
     await admin_conn.execute(
         "TRUNCATE device_checkins, devices, companies, admins, company_fields, "
         "enrollment_tokens, device_credentials, rate_limit_hits, "
-        "auth_failure_events CASCADE;"
+        "auth_failure_events, admin_recovery_codes, audit_log CASCADE;"
     )
     await admin_conn.execute(
         "UPDATE notification_state SET last_digest_sent_at = NULL, "

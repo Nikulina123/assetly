@@ -187,10 +187,11 @@ $payload["platform"]        = "windows"
 
 ## Deploy ordering (hard gate)
 
-Migrations **013** (`rate_limit_hits`), **014**, and **015**
-(`normalise_credential_serials`) must be applied to the production database
-with `psql -1 <migration file>` **before** deploying any code that depends on
-them. This is not merely recommended ordering — it is a hard gate:
+Migrations **013** (`rate_limit_hits`), **014**, **015**
+(`normalise_credential_serials`), and **016** (`admin_mfa_rbac_audit`) must be
+applied to the production database with `psql -1 <migration file>` **before**
+deploying any code that depends on them. This is not merely recommended
+ordering — it is a hard gate:
 
 - Code from Task 6 onward calls `enforce_rate_limit` on `/admin/login`,
   `/api/v1/enroll`, `/checkin`, `/config`, and `/agent/manifest`, all of which
@@ -213,6 +214,24 @@ them. This is not merely recommended ordering — it is a hard gate:
   regression, not a cosmetic one. This migration has no code dependency in
   the other direction (it's a data fixup with no new schema), so it is safe
   to run standalone ahead of the rest of the deploy.
+- Migration 016 adds admin MFA, role, and per-company-scope columns plus the
+  `admin_recovery_codes` and `audit_log` tables. Unlike 013, there is **no
+  fail-open path**: the login flow reads `admins.role` and `admins.mfa_secret`
+  on every request, so code deployed against a database without this
+  migration breaks admin login outright, not just a degraded feature. Apply it
+  strictly before deploying the code that reads those columns.
+  - On Supabase, run it wrapped manually in `BEGIN;` / `COMMIT;` in the SQL
+    Editor — the editor does not wrap pasted scripts in a transaction the way
+    `psql -1` does, so a failure partway would leave the migration half
+    applied.
+  - Use the **direct connection on port 5432**, never the pooler on 6543 — the
+    pooler does not support the session state a single-transaction DDL script
+    needs.
+  - Do **not** click Supabase's "Run and enable RLS" prompt for the new
+    tables. The migration enables RLS itself and creates the explicit
+    `assetly` policy the application needs to keep working; the dashboard
+    shortcut enables RLS without that policy, which denies the application
+    outright and 500s every guarded endpoint.
 
 Sequence for any deploy that includes new or changed migrations:
 
@@ -220,8 +239,14 @@ Sequence for any deploy that includes new or changed migrations:
 psql -1 -f backend/migrations/013_rate_limit.sql "$DATABASE_URL"
 psql -1 -f backend/migrations/014_auth_failure_digest.sql "$DATABASE_URL"
 psql -1 -f backend/migrations/015_normalise_credential_serials.sql "$DATABASE_URL"
+psql -1 -f backend/migrations/016_admin_mfa_rbac_audit.sql "$DATABASE_URL"
 # only then deploy/promote the new application code
 ```
+
+**Audit log retention.** Indefinite, by policy and by grant: `audit_log`
+carries no `DELETE` grant for the application role (`assetly`), so the app
+cannot prune it even if a future bug tried to. Any pruning is an operator
+action, run directly as the `admin` role.
 
 ## Required production environment
 
