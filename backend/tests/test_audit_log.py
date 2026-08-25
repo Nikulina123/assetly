@@ -6,6 +6,7 @@ describes. A log that records attempts that did not happen is as useless in an
 incident as one that misses changes that did.
 """
 import json
+import uuid as uuid_module
 
 import asyncpg
 import pytest
@@ -287,6 +288,186 @@ async def test_logout_is_audited(db_pool, enrolled_admin, login_as):
         await login_as(client, enrolled_admin)
         await client.post("/admin/logout")
     assert len(await _audit_rows(db_pool, "admin.logout")) == 1
+
+
+async def test_every_privileged_mutation_is_audited(db_pool, enrolled_admin, company, login_as):
+    """One row per action, with the actor and the tenant it touched. Drives
+    each route for real rather than asserting on the source, so a route that
+    stops calling audited() fails here."""
+    admin_id, _email, _password, _secret = enrolled_admin
+    company_id, _api_key = company
+
+    async with await _client() as client:
+        await login_as(client, enrolled_admin)
+        resp = await client.get(f"/admin/companies/{company_id}")
+        csrf = resp.text.split('name="csrf_token" value="')[1].split('"')[0]
+
+        await client.post(f"/admin/companies/{company_id}/rotate-key",
+                          data={"csrf_token": csrf})
+        await client.post(f"/admin/companies/{company_id}/notification-email",
+                          data={"csrf_token": csrf, "notification_email": "a@b.com"})
+        await client.post(f"/admin/companies/{company_id}/download/linux",
+                          data={"csrf_token": csrf, "device_count": 5})
+        await client.post(f"/admin/companies/{company_id}/schedule",
+                          data={"csrf_token": csrf, "interval_preset": "86400",
+                                "cancel_retry_seconds": "3600"})
+        await client.post(f"/admin/companies/{company_id}/appearance",
+                          data={"csrf_token": csrf, "heading": "Whose laptop is this?"})
+        await client.post(f"/admin/companies/{company_id}/fields/hardware",
+                          data={"csrf_token": csrf, "cpu": "on"})
+        await client.post(f"/admin/companies/{company_id}/fields/custom",
+                          data={"csrf_token": csrf, "label": "Cost Center"})
+        await client.post(f"/admin/companies/{company_id}/fields/custom/cost_center/remove",
+                          data={"csrf_token": csrf})
+
+        from app.enrollment import create_enrollment_token
+        await create_enrollment_token(db_pool, company_id, label="pre-existing")
+        async with db_pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT id FROM enrollment_tokens WHERE company_id = $1 "
+                "ORDER BY created_at DESC LIMIT 1", uuid_module.UUID(company_id),
+            )
+        token_id = str(row["id"])
+        await client.post(f"/admin/companies/{company_id}/tokens/{token_id}/revoke",
+                          data={"csrf_token": csrf})
+
+        from app.enrollment import enroll_device
+        token = await create_enrollment_token(db_pool, company_id, label="device source")
+        await enroll_device(db_pool, token, "AUDIT-SERIAL-1", "host-1")
+        await client.post(f"/admin/companies/{company_id}/devices/AUDIT-SERIAL-1/revoke",
+                          data={"csrf_token": csrf})
+
+        await client.post(f"/admin/companies/{company_id}/revoke",
+                          data={"csrf_token": csrf})
+
+    for action in (
+        "company.api_key_rotated", "company.notification_email_updated",
+        "installer.downloaded", "company.schedule_updated",
+        "company.appearance_updated", "company.fields.hardware_updated",
+        "company.fields.custom_added", "company.fields.custom_removed",
+        "enrollment_token.revoked", "device_credential.revoked",
+        "company.revoked",
+    ):
+        rows = await _audit_rows(db_pool, action)
+        assert len(rows) == 1, f"{action}: {len(rows)} rows"
+        assert str(rows[0]["actor_admin_id"]) == admin_id
+        assert str(rows[0]["target_company_id"]) == company_id
+
+
+async def test_company_created_is_audited(db_pool, enrolled_admin, login_as):
+    """company.created is issued by a global admin creating a new tenant --
+    driven separately from the parametrised set above because it needs no
+    pre-existing company and its target is the NEW company's id."""
+    admin_id, _email, _password, _secret = enrolled_admin
+    # enrolled_admin is inserted with no company_id, which is already NULL --
+    # i.e. already a global admin (see admin_auth.AdminContext.is_global) --
+    # so no extra setup is needed here.
+    async with await _client() as client:
+        await login_as(client, enrolled_admin)
+        resp = await client.get("/admin/companies")
+        csrf = resp.text.split('name="csrf_token" value="')[1].split('"')[0]
+        await client.post("/admin/companies", data={
+            "csrf_token": csrf, "name": "Brand New Co",
+            "notification_email": "new@co.example",
+        })
+
+    rows = await _audit_rows(db_pool, "company.created")
+    assert len(rows) == 1
+    assert str(rows[0]["actor_admin_id"]) == admin_id
+    assert json.loads(rows[0]["metadata"])["name"] == "Brand New Co"
+
+
+async def test_a_rotate_key_audit_records_the_prefix_not_the_key(db_pool, enrolled_admin, company, login_as):
+    """The audit trail must be readable by a support engineer without handing
+    them a live credential."""
+    _admin_id, _email, _password, _secret = enrolled_admin
+    company_id, _api_key = company
+    async with await _client() as client:
+        await login_as(client, enrolled_admin)
+        resp = await client.get(f"/admin/companies/{company_id}")
+        csrf = resp.text.split('name="csrf_token" value="')[1].split('"')[0]
+        await client.post(f"/admin/companies/{company_id}/rotate-key",
+                          data={"csrf_token": csrf})
+    rows = await _audit_rows(db_pool, "company.api_key_rotated")
+    metadata = json.loads(rows[0]["metadata"])
+    assert "key_prefix" in metadata
+    assert len(metadata["key_prefix"]) <= 8
+
+
+async def test_installer_download_records_the_platform(db_pool, enrolled_admin, company, login_as):
+    _admin_id, _email, _password, _secret = enrolled_admin
+    company_id, _api_key = company
+    async with await _client() as client:
+        await login_as(client, enrolled_admin)
+        resp = await client.get(f"/admin/companies/{company_id}")
+        csrf = resp.text.split('name="csrf_token" value="')[1].split('"')[0]
+        await client.post(f"/admin/companies/{company_id}/download/linux",
+                          data={"csrf_token": csrf, "device_count": 5})
+    rows = await _audit_rows(db_pool, "installer.downloaded")
+    assert json.loads(rows[0]["metadata"])["platform"] == "linux"
+
+
+async def test_device_revoke_records_actual_rows_matched(db_pool, enrolled_admin, company, login_as):
+    """The exact signal that would have caught a Revoke button matching zero
+    rows while reporting success: revoking a serial that was never enrolled
+    must record rows_matched == 0, not a hardcoded 1."""
+    company_id, _api_key = company
+    async with await _client() as client:
+        await login_as(client, enrolled_admin)
+        resp = await client.get(f"/admin/companies/{company_id}")
+        csrf = resp.text.split('name="csrf_token" value="')[1].split('"')[0]
+        await client.post(f"/admin/companies/{company_id}/devices/NEVER-ENROLLED/revoke",
+                          data={"csrf_token": csrf})
+    rows = await _audit_rows(db_pool, "device_credential.revoked")
+    assert len(rows) == 1
+    assert json.loads(rows[0]["metadata"])["rows_matched"] == 0
+
+
+async def test_second_connection_inside_audited_block_does_not_share_fate(db_pool, admin):
+    """Pins the pitfall the brief warns about: acquiring a SECOND connection
+    inside an `audited()` block runs the mutation in a different transaction,
+    so it does NOT roll back with the audit row. This documents the failure
+    mode a future editor of these routes must not reintroduce -- if this test
+    ever starts failing because someone "fixed" audited() to share the
+    connection automatically, that's fine; it means the trap plugged itself.
+    But as long as `audited()` hands out one connection and a caller can still
+    reach for a second one, this is the behavior to expect from doing so."""
+    from app.audit import audited
+
+    admin_id, _email, _password = admin
+
+    class _Req:
+        headers = {}
+        client = type("C", (), {"host": "203.0.113.9"})()
+
+    with pytest.raises(RuntimeError):
+        async with audited(db_pool, _Req(), admin_id, "test.second_connection") as scope:
+            # The trap: a SECOND connection, acquired independently of
+            # scope.conn, running its own transaction that commits before the
+            # audited() block ever gets to the audit INSERT.
+            async with db_pool.acquire() as other_conn:
+                async with other_conn.transaction():
+                    await other_conn.execute(
+                        "INSERT INTO companies (name, api_key_hash, api_key_prefix) "
+                        "VALUES ('LeakedBySecondConn', 'h', 'p')"
+                    )
+            # scope.conn's own transaction now fails, simulating the audit
+            # insert (or anything else in the real mutation) blowing up.
+            raise RuntimeError("mutation failed after the second connection committed")
+
+    async with db_pool.acquire() as conn:
+        leaked = await conn.fetchval(
+            "SELECT COUNT(*) FROM companies WHERE name = 'LeakedBySecondConn'"
+        )
+    # This is the bug the pitfall describes: the second connection's insert
+    # survives even though the audited() block "failed" and wrote no audit
+    # row -- exactly the split-fate outcome atomicity is supposed to prevent.
+    assert leaked == 1, (
+        "a second connection acquired inside audited() commits independently "
+        "of the block's own transaction -- this is why routes must never "
+        "acquire one"
+    )
+    assert await _audit_rows(db_pool, "test.second_connection") == []
 
 
 async def test_no_audit_metadata_contains_secret_material(db_pool, admin):

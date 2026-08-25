@@ -41,22 +41,34 @@ async def create_enrollment_token(
     label: str,
     expires_at: datetime.datetime | None = None,
     max_devices: int | None = None,
+    conn=None,
 ) -> str:
+    """`conn`, when given, is used directly instead of acquiring a new one --
+    so a caller running this inside an `audited()` block (see app/audit.py)
+    can pass `scope.conn` and keep the insert in the same transaction as its
+    audit row, rather than silently forking off a second connection."""
     token = _generate_token()
     if expires_at is None:
         expires_at = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(
             days=ENROLLMENT_TOKEN_DAYS
         )
-    async with pool.acquire() as conn:
-        async with conn.transaction():
-            await _scoped(conn, company_id)
-            await conn.execute(
-                "INSERT INTO enrollment_tokens "
-                "(company_id, token_hash, token_prefix, label, expires_at, max_devices) "
-                "VALUES ($1, $2, $3, $4, $5, $6)",
-                uuid.UUID(company_id), hash_api_key(token), token[:18],
-                label, expires_at, max_devices,
-            )
+
+    async def _insert(c):
+        await _scoped(c, company_id)
+        await c.execute(
+            "INSERT INTO enrollment_tokens "
+            "(company_id, token_hash, token_prefix, label, expires_at, max_devices) "
+            "VALUES ($1, $2, $3, $4, $5, $6)",
+            uuid.UUID(company_id), hash_api_key(token), token[:18],
+            label, expires_at, max_devices,
+        )
+
+    if conn is not None:
+        await _insert(conn)
+    else:
+        async with pool.acquire() as acquired:
+            async with acquired.transaction():
+                await _insert(acquired)
     return token
 
 
@@ -73,33 +85,55 @@ async def list_tokens(pool: asyncpg.Pool, company_id: str) -> list[dict]:
     return [dict(r) for r in rows]
 
 
-async def revoke_token(pool: asyncpg.Pool, company_id: str, token_id: str) -> None:
-    async with pool.acquire() as conn:
-        async with conn.transaction():
-            await _scoped(conn, company_id)
-            await conn.execute(
-                "UPDATE enrollment_tokens SET revoked_at = NOW() "
-                "WHERE company_id = $1 AND id = $2 AND revoked_at IS NULL",
-                uuid.UUID(company_id), uuid.UUID(token_id),
-            )
+async def revoke_token(pool: asyncpg.Pool, company_id: str, token_id: str, conn=None) -> None:
+    """See create_enrollment_token's docstring for what `conn` is for."""
+    async def _revoke(c):
+        await _scoped(c, company_id)
+        await c.execute(
+            "UPDATE enrollment_tokens SET revoked_at = NOW() "
+            "WHERE company_id = $1 AND id = $2 AND revoked_at IS NULL",
+            uuid.UUID(company_id), uuid.UUID(token_id),
+        )
+
+    if conn is not None:
+        await _revoke(conn)
+    else:
+        async with pool.acquire() as acquired:
+            async with acquired.transaction():
+                await _revoke(acquired)
 
 
 async def revoke_device_credential(
-    pool: asyncpg.Pool, company_id: str, serial_number: str
-) -> None:
+    pool: asyncpg.Pool, company_id: str, serial_number: str, conn=None
+) -> int:
+    """Returns the number of rows actually revoked (0 or 1) -- the caller
+    needs this, not just a fire-and-forget completion, so a revoke that
+    silently matched nothing (wrong serial, already revoked, wrong company)
+    can be told apart from one that actually took effect. See
+    create_enrollment_token's docstring for what `conn` is for."""
     # device_credentials.serial_number is stored normalised (see enroll_device
     # below) -- normalise the lookup key the same way, or a caller passing the
     # machine's real casing (e.g. from the devices table) would silently
     # match nothing and leave the credential live.
     normalized_serial = serial_number.strip().casefold()
-    async with pool.acquire() as conn:
-        async with conn.transaction():
-            await _scoped(conn, company_id)
-            await conn.execute(
-                "UPDATE device_credentials SET revoked_at = NOW() "
-                "WHERE company_id = $1 AND serial_number = $2 AND revoked_at IS NULL",
-                uuid.UUID(company_id), normalized_serial,
-            )
+
+    async def _revoke(c) -> int:
+        await _scoped(c, company_id)
+        status = await c.execute(
+            "UPDATE device_credentials SET revoked_at = NOW() "
+            "WHERE company_id = $1 AND serial_number = $2 AND revoked_at IS NULL",
+            uuid.UUID(company_id), normalized_serial,
+        )
+        # asyncpg's execute() returns a command tag like "UPDATE 1" -- the
+        # trailing token is the actual row count Postgres reports, which is
+        # the real signal (not an assumption that the WHERE clause matched).
+        return int(status.split()[-1])
+
+    if conn is not None:
+        return await _revoke(conn)
+    async with pool.acquire() as acquired:
+        async with acquired.transaction():
+            return await _revoke(acquired)
 
 
 async def list_device_credentials(pool: asyncpg.Pool, company_id: str) -> list[dict]:

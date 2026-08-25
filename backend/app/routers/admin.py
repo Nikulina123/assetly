@@ -20,7 +20,7 @@ from app.admin_auth import (
     consume_recovery_code,
     resolve_admin,
 )
-from app.audit import audited, record_audit
+from app.audit import audited, record_audit, record_audit_on_conn
 from app import mfa
 from app.auth import generate_api_key, hash_api_key
 from app.config import (
@@ -55,6 +55,7 @@ from app.field_config import (
     resolve_field_settings_for_admin,
     set_department_config,
     set_hardware_field_enabled,
+    slugify,
 )
 from app.macos_pkg import build_flat_package
 from app.schedule import (
@@ -431,11 +432,20 @@ async def companies_create(
     api_key = generate_api_key()
     key_hash = hash_api_key(api_key)
     pool = await get_pool()
-    async with pool.acquire() as conn:
-        await conn.execute(
-            "INSERT INTO companies (name, api_key_hash, api_key_prefix, notification_email) "
-            "VALUES ($1, $2, $3, $4)",
-            name, key_hash, api_key[:8], notification_email,
+    # Generated here, rather than left to companies.id's DEFAULT
+    # gen_random_uuid(), so it is known BEFORE the audited() block opens --
+    # audited()'s target_company_id/target_id are fixed at call time, not
+    # settable from inside the block once the row exists.
+    new_company_id = uuid.uuid4()
+    async with audited(
+        pool, request, admin, "company.created",
+        target_company_id=new_company_id, target_id=new_company_id,
+        metadata={"name": name},
+    ) as scope:
+        await scope.conn.execute(
+            "INSERT INTO companies (id, name, api_key_hash, api_key_prefix, notification_email) "
+            "VALUES ($1, $2, $3, $4, $5)",
+            new_company_id, name, key_hash, api_key[:8], notification_email,
         )
 
     companies = await _all_companies(pool, admin)
@@ -592,16 +602,20 @@ async def rotate_key(
 
     api_key = generate_api_key()
     key_hash = hash_api_key(api_key)
-    async with pool.acquire() as conn:
-        company = await conn.fetchrow(
+    async with audited(
+        pool, request, admin, "company.api_key_rotated",
+        target_company_id=company_id, target_id=company_id,
+        metadata={"key_prefix": api_key[:8]},
+    ) as scope:
+        company = await scope.conn.fetchrow(
             """
             UPDATE companies SET api_key_hash = $1, api_key_prefix = $2 WHERE id = $3
             RETURNING id, name, api_key_prefix, revoked_at, notification_email
             """,
             key_hash, api_key[:8], company_id,
         )
-    if company is None:
-        raise HTTPException(status_code=404, detail="Company not found")
+        if company is None:
+            raise HTTPException(status_code=404, detail="Company not found")
 
     field_settings = await resolve_field_settings_for_admin(pool, str(company_id))
     companies = await _all_companies(pool, admin)
@@ -631,21 +645,31 @@ async def revoke_company(
     pool = await get_pool()
     await _get_company_or_404(pool, company_id, admin)
 
-    async with pool.acquire() as conn:
-        company = await conn.fetchrow(
+    async with audited(
+        pool, request, admin, "company.revoked",
+        target_company_id=company_id, target_id=company_id,
+    ) as scope:
+        company = await scope.conn.fetchrow(
             """
             UPDATE companies SET revoked_at = NOW() WHERE id = $1 AND revoked_at IS NULL
             RETURNING id, name, api_key_prefix, revoked_at, notification_email
             """,
             company_id,
         )
-
-    if company is None:
-        # UPDATE's WHERE clause excludes already-revoked rows, so None here means
-        # either "already revoked" or "doesn't exist" — disambiguate with a plain
-        # lookup: 404s if truly missing, otherwise returns the existing (already-
-        # revoked) row so this stays idempotent instead of erroring on a re-click.
-        company = await _get_company_or_404(pool, company_id, admin)
+        scope.metadata["already_revoked"] = company is None
+        if company is None:
+            # UPDATE's WHERE clause excludes already-revoked rows, so None here
+            # means either "already revoked" or "doesn't exist" — disambiguate
+            # with a plain lookup on the SAME connection: 404s if truly missing,
+            # otherwise returns the existing (already-revoked) row so this stays
+            # idempotent instead of erroring on a re-click.
+            company = await scope.conn.fetchrow(
+                "SELECT id, name, api_key_prefix, revoked_at, notification_email "
+                "FROM companies WHERE id = $1",
+                company_id,
+            )
+            if company is None:
+                raise HTTPException(status_code=404, detail="Company not found")
 
     field_settings = await resolve_field_settings_for_admin(pool, str(company_id))
     companies = await _all_companies(pool, admin)
@@ -674,8 +698,12 @@ async def update_notification_email(
     _check_csrf(request, csrf_token)
     pool = await get_pool()
     await _get_company_or_404(pool, company_id, admin)
-    async with pool.acquire() as conn:
-        await conn.execute(
+    async with audited(
+        pool, request, admin, "company.notification_email_updated",
+        target_company_id=company_id, target_id=company_id,
+        metadata={"email": notification_email},
+    ) as scope:
+        await scope.conn.execute(
             "UPDATE companies SET notification_email = $1 WHERE id = $2",
             notification_email, company_id,
         )
@@ -741,7 +769,12 @@ async def update_schedule(
             request, "company_detail.html", context, status_code=200
         )
 
-    await set_schedule(pool, str(company_id), interval, cancel_retry_seconds)
+    async with audited(
+        pool, request, admin, "company.schedule_updated",
+        target_company_id=company_id, target_id=company_id,
+        metadata={"interval_seconds": interval, "cancel_retry_seconds": cancel_retry_seconds},
+    ) as scope:
+        await set_schedule(pool, str(company_id), interval, cancel_retry_seconds, conn=scope.conn)
     return RedirectResponse(f"/admin/companies/{company_id}", status_code=303)
 
 
@@ -768,7 +801,12 @@ async def update_agent_ui(
     submitted = {key: str(form[key]) for key in DEFAULT_AGENT_UI if key in form}
 
     try:
-        await set_agent_ui(pool, str(company_id), submitted)
+        async with audited(
+            pool, request, admin, "company.appearance_updated",
+            target_company_id=company_id, target_id=company_id,
+            metadata={"changed_keys": sorted(submitted.keys())},
+        ) as scope:
+            await set_agent_ui(pool, str(company_id), submitted, conn=scope.conn)
     except ValueError as exc:
         # Re-render in place with the message, as update_schedule does. The
         # rejected values ARE echoed back here, unlike the schedule form: a
@@ -818,10 +856,6 @@ async def update_hardware_fields(
     await _get_company_or_404(pool, company_id, admin)
 
     company_id_str = str(company_id)
-    for field_key, submitted_value in [
-        ("cpu", cpu), ("ram", ram), ("storage", storage), ("ip_address", ip_address),
-    ]:
-        await set_hardware_field_enabled(pool, company_id_str, field_key, submitted_value is not None)
 
     # Check if department_options was submitted in the form. In Starlette 1.6.0, empty form fields
     # may not appear in the Form() parameters, so we check the raw form data to distinguish
@@ -833,12 +867,30 @@ async def update_hardware_fields(
     else:
         options = None
 
-    await set_department_config(
-        pool, company_id_str,
-        enabled=department_enabled is not None,
-        required=department_required is not None,
-        options=options,
-    )
+    enabled_keys = [
+        key for key, submitted_value in
+        [("cpu", cpu), ("ram", ram), ("storage", storage), ("ip_address", ip_address)]
+        if submitted_value is not None
+    ]
+    async with audited(
+        pool, request, admin, "company.fields.hardware_updated",
+        target_company_id=company_id, target_id=company_id,
+        metadata={"enabled": enabled_keys},
+    ) as scope:
+        for field_key, submitted_value in [
+            ("cpu", cpu), ("ram", ram), ("storage", storage), ("ip_address", ip_address),
+        ]:
+            await set_hardware_field_enabled(
+                pool, company_id_str, field_key, submitted_value is not None, conn=scope.conn,
+            )
+
+        await set_department_config(
+            pool, company_id_str,
+            enabled=department_enabled is not None,
+            required=department_required is not None,
+            options=options,
+            conn=scope.conn,
+        )
 
     return RedirectResponse(f"/admin/companies/{company_id}", status_code=303)
 
@@ -856,7 +908,19 @@ async def add_custom_field_route(
     pool = await get_pool()
     company = await _get_company_or_404(pool, company_id, admin)
     try:
-        await add_custom_field(pool, str(company_id), label, required is not None)
+        async with audited(
+            pool, request, admin, "company.fields.custom_added",
+            # slugify is deterministic, so the field key add_custom_field will
+            # produce is knowable before the call -- add_custom_field itself
+            # re-validates it (reserved keys, empty slug) and is the actual
+            # authority; this is only for target_id, known ahead of time so it
+            # can be passed into audited() before the block opens.
+            target_company_id=company_id, target_id=slugify(label),
+            metadata={"field_key": slugify(label)},
+        ) as scope:
+            await add_custom_field(
+                pool, str(company_id), label, required is not None, conn=scope.conn,
+            )
     except ValueError as e:
         field_settings = await resolve_field_settings_for_admin(pool, str(company_id))
         companies = await _all_companies(pool, admin)
@@ -887,7 +951,11 @@ async def remove_custom_field_route(
     _check_csrf(request, csrf_token)
     pool = await get_pool()
     await _get_company_or_404(pool, company_id, admin)
-    await remove_custom_field(pool, str(company_id), field_key)
+    async with audited(
+        pool, request, admin, "company.fields.custom_removed",
+        target_company_id=company_id, target_id=field_key,
+    ) as scope:
+        await remove_custom_field(pool, str(company_id), field_key, conn=scope.conn)
     return RedirectResponse(f"/admin/companies/{company_id}", status_code=303)
 
 
@@ -906,7 +974,11 @@ async def revoke_enrollment_token(
     _check_csrf(request, csrf_token)
     pool = await get_pool()
     await _get_company_or_404(pool, company_id, admin)
-    await revoke_token(pool, str(company_id), str(token_id))
+    async with audited(
+        pool, request, admin, "enrollment_token.revoked",
+        target_company_id=company_id, target_id=token_id,
+    ) as scope:
+        await revoke_token(pool, str(company_id), str(token_id), conn=scope.conn)
     return RedirectResponse(f"/admin/companies/{company_id}", status_code=303)
 
 
@@ -928,7 +1000,17 @@ async def revoke_device(
     _check_csrf(request, csrf_token)
     pool = await get_pool()
     await _get_company_or_404(pool, company_id, admin)
-    await revoke_device_credential(pool, str(company_id), serial_number)
+    async with audited(
+        pool, request, admin, "device_credential.revoked",
+        target_company_id=company_id, target_id=serial_number,
+    ) as scope:
+        rows_matched = await revoke_device_credential(
+            pool, str(company_id), serial_number, conn=scope.conn,
+        )
+        # The exact signal that would have caught a Revoke button matching
+        # zero rows while still reporting success to the admin -- a real
+        # count from the UPDATE's own status tag, not a hardcoded 1.
+        scope.metadata["rows_matched"] = rows_matched
     return RedirectResponse(
         f"/admin/companies/{company_id}/computers/{quote(serial_number, safe='')}",
         status_code=303,
@@ -1092,10 +1174,26 @@ async def download_macos(
     postinstall_template = _load_installer_template("AssetlyAgent_macOS_postinstall.sh")
     agent_source = (REPO_ROOT / "inventory_agent.py").read_bytes()
     max_devices, expires_at = _installer_token_terms(device_count, token_days)
-    token = await create_enrollment_token(
-        pool, str(company_id), label=f"macOS installer ({device_count} devices)",
-        expires_at=expires_at, max_devices=max_devices,
-    )
+    async with audited(
+        pool, request, admin, "installer.downloaded",
+        target_company_id=company_id,
+        metadata={"platform": "macos", "max_devices": max_devices},
+    ) as scope:
+        token = await create_enrollment_token(
+            pool, str(company_id), label=f"macOS installer ({device_count} devices)",
+            expires_at=expires_at, max_devices=max_devices, conn=scope.conn,
+        )
+        # A second row in the SAME transaction, on the same connection --
+        # not a second audited() block, which would be a second connection
+        # acquire and would forfeit atomicity with the token insert above.
+        # target_id is the token's non-secret prefix (already stored as
+        # token_prefix and shown in the portal's tokens list), never the
+        # plaintext token itself.
+        await record_audit_on_conn(
+            scope.conn, request, admin, "enrollment_token.created",
+            target_company_id=company_id, target_id=token[:18],
+            metadata={"max_devices": max_devices, "expires_at": expires_at.isoformat()},
+        )
     postinstall = _render_installer_script(
         postinstall_template, CHECKIN_API_URL_FOR_DOWNLOAD, token
     )
@@ -1134,10 +1232,20 @@ async def download_linux(
     await _get_active_company_or_404(pool, company_id, admin)
     template_text = _load_installer_template("AssetlyAgent_Linux.sh")
     max_devices, expires_at = _installer_token_terms(device_count, token_days)
-    token = await create_enrollment_token(
-        pool, str(company_id), label=f"Linux installer ({device_count} devices)",
-        expires_at=expires_at, max_devices=max_devices,
-    )
+    async with audited(
+        pool, request, admin, "installer.downloaded",
+        target_company_id=company_id,
+        metadata={"platform": "linux", "max_devices": max_devices},
+    ) as scope:
+        token = await create_enrollment_token(
+            pool, str(company_id), label=f"Linux installer ({device_count} devices)",
+            expires_at=expires_at, max_devices=max_devices, conn=scope.conn,
+        )
+        await record_audit_on_conn(
+            scope.conn, request, admin, "enrollment_token.created",
+            target_company_id=company_id, target_id=token[:18],
+            metadata={"max_devices": max_devices, "expires_at": expires_at.isoformat()},
+        )
     script_text = _render_installer_script(template_text, CHECKIN_API_URL_FOR_DOWNLOAD, token)
     return Response(
         content=script_text,
@@ -1177,10 +1285,20 @@ async def download_windows(
     pool = await get_pool()
     await _get_active_company_or_404(pool, company_id, admin)
     max_devices, expires_at = _installer_token_terms(device_count, token_days)
-    token = await create_enrollment_token(
-        pool, str(company_id), label=f"Windows installer ({device_count} devices)",
-        expires_at=expires_at, max_devices=max_devices,
-    )
+    async with audited(
+        pool, request, admin, "installer.downloaded",
+        target_company_id=company_id,
+        metadata={"platform": "windows", "max_devices": max_devices},
+    ) as scope:
+        token = await create_enrollment_token(
+            pool, str(company_id), label=f"Windows installer ({device_count} devices)",
+            expires_at=expires_at, max_devices=max_devices, conn=scope.conn,
+        )
+        await record_audit_on_conn(
+            scope.conn, request, admin, "enrollment_token.created",
+            target_company_id=company_id, target_id=token[:18],
+            metadata={"max_devices": max_devices, "expires_at": expires_at.isoformat()},
+        )
 
     return Response(
         content=embed_windows_config(

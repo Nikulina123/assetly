@@ -148,3 +148,15 @@ async def record_audit(
         await _insert(
             conn, actor, action, target_company_id, target_id, request, metadata
         )
+
+
+async def record_audit_on_conn(
+    conn, request, actor, action, *,
+    target_company_id=None, target_id=None, metadata=None,
+):
+    """Writes a second audit row on a connection an `audited()` block already
+    handed out, so a route that needs more than one audit action for a single
+    mutation (e.g. an installer download that also mints an enrollment token)
+    can log both without opening a second connection -- which would be
+    exactly the pitfall `audited()`'s own docstring warns against."""
+    await _insert(conn, actor, action, target_company_id, target_id, request, metadata)

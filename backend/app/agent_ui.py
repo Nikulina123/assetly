@@ -271,23 +271,34 @@ async def resolve_agent_ui(pool: asyncpg.Pool, company_id: str) -> dict:
     return {**DEFAULT_AGENT_UI, **{k: v for k, v in stored.items() if k in DEFAULT_AGENT_UI}}
 
 
-async def set_agent_ui(pool: asyncpg.Pool, company_id: str, values: dict) -> None:
+async def set_agent_ui(pool: asyncpg.Pool, company_id: str, values: dict, conn=None) -> None:
     """Validates then replaces the company's appearance overrides.
 
     A whole-object replace, not a merge: the portal edits every key on one
     form, so a key the admin cleared has to go back to its default rather than
     keep its previous override.
+
+    `conn`, when given, is used directly instead of acquiring a new one --
+    see app/enrollment.py's create_enrollment_token for why (running inside
+    an audit.audited() block).
     """
     import json
 
     overrides = validate_agent_ui(values)
-    async with pool.acquire() as conn:
-        async with conn.transaction():
-            await conn.execute("SELECT set_config('app.company_id', $1, true)", company_id)
-            await conn.execute(
-                "UPDATE companies SET agent_ui = $2::jsonb WHERE id = $1",
-                uuid.UUID(company_id), json.dumps(overrides),
-            )
+
+    async def _write(c):
+        await c.execute("SELECT set_config('app.company_id', $1, true)", company_id)
+        await c.execute(
+            "UPDATE companies SET agent_ui = $2::jsonb WHERE id = $1",
+            uuid.UUID(company_id), json.dumps(overrides),
+        )
+
+    if conn is not None:
+        await _write(conn)
+    else:
+        async with pool.acquire() as acquired:
+            async with acquired.transaction():
+                await _write(acquired)
 
 
 async def resolve_agent_ui_for_admin(pool: asyncpg.Pool, company_id: str) -> dict:

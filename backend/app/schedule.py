@@ -139,16 +139,27 @@ async def set_schedule(
     company_id: str,
     checkin_interval_seconds: int,
     cancel_retry_seconds: int,
+    conn=None,
 ) -> None:
     """Writes both values together. Callers must have validated them via
     validate_schedule first -- the DB CHECK constraint is a backstop against
-    direct edits, not the user-facing error path."""
-    async with pool.acquire() as conn:
+    direct edits, not the user-facing error path.
+
+    `conn`, when given, is used directly instead of acquiring a new one --
+    see app/enrollment.py's create_enrollment_token for why."""
+    if conn is not None:
         await conn.execute(
             "UPDATE companies SET checkin_interval_seconds = $2, "
             "cancel_retry_seconds = $3 WHERE id = $1",
             uuid.UUID(company_id), checkin_interval_seconds, cancel_retry_seconds,
         )
+    else:
+        async with pool.acquire() as acquired:
+            await acquired.execute(
+                "UPDATE companies SET checkin_interval_seconds = $2, "
+                "cancel_retry_seconds = $3 WHERE id = $1",
+                uuid.UUID(company_id), checkin_interval_seconds, cancel_retry_seconds,
+            )
 
 
 def validate_schedule(checkin_interval_seconds: int, cancel_retry_seconds: int) -> None:
