@@ -98,13 +98,21 @@ def qr_svg(uri: str) -> str:
     return segno.make(uri, error="m").svg_inline(scale=5)
 
 
-def verify_totp(secret: str, code: str | None) -> bool:
+def verify_totp(secret: str, code: str | None, for_time: int | None = None) -> bool:
     """valid_window=1 allows one 30s step either side, for phone clock drift.
     Wider would meaningfully enlarge the guessing surface; narrower generates
-    support tickets."""
+    support tickets.
+
+    for_time is an optional override of "now", in epoch seconds. Production
+    callers never pass it -- it exists so tests can pin verification to a
+    fixed instant (e.g. an RFC 6238 vector's timestamp) without patching the
+    clock."""
     if not code or not _TOTP_CODE.fullmatch(code.strip() if isinstance(code, str) else ""):
         return False
-    return pyotp.TOTP(secret).verify(code.strip(), valid_window=1)
+    totp = pyotp.TOTP(secret)
+    if for_time is None:
+        return totp.verify(code.strip(), valid_window=1)
+    return totp.verify(code.strip(), for_time=for_time, valid_window=1)
 
 
 def looks_like_totp(value: str | None) -> bool:
