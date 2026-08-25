@@ -32,6 +32,19 @@ from app.rate_limit import client_ip
 _MAX_USER_AGENT = 500
 _MAX_TARGET_ID = 255
 
+# Bound on the serialized metadata JSON blob. Applied inside _insert, not at
+# each call site, so it covers every caller -- including future ones -- not
+# just the one that motivated it: admin.login.failed puts an unauthenticated,
+# un-length-checked `email: str = Form(...)` straight into metadata, and
+# audit_log is append-only by grant (no UPDATE/DELETE for the app role), so
+# the application itself can never prune an oversized row after the fact.
+_MAX_METADATA_JSON = 4096
+# Per-value cap applied before serialization, so a single oversized string
+# value gets truncated in place rather than the truncation landing mid-token
+# and producing invalid JSON (slicing a *serialized* JSON string at a fixed
+# byte offset can cut a value or a closing brace in half).
+_MAX_METADATA_VALUE = 1000
+
 _INSERT = """
     INSERT INTO audit_log (
         actor_admin_id, action, target_company_id, target_id,
@@ -65,9 +78,32 @@ def _request_fields(request) -> tuple[str | None, str | None]:
     return client_ip(request), user_agent
 
 
+def _bounded_metadata_json(metadata: dict) -> str:
+    """Serializes metadata to a JSON string that is always valid and always
+    within _MAX_METADATA_JSON -- never a substring slice of a larger valid
+    document, which could cut a value or a closing brace in half and turn a
+    long-but-legitimate value into an INSERT that fails the ::jsonb cast
+    (and, under this module's fail-closed policy, the whole request)."""
+    safe = {
+        str(key)[:200]: (
+            value[:_MAX_METADATA_VALUE] if isinstance(value, str) else value
+        )
+        for key, value in (metadata or {}).items()
+    }
+    encoded = json.dumps(safe)
+    if len(encoded) <= _MAX_METADATA_JSON:
+        return encoded
+    # Even after per-value truncation the whole object is still too big (many
+    # keys, say) -- fall back to a small, fixed-shape marker object instead
+    # of slicing the JSON text itself, so this branch can never itself
+    # produce invalid JSON.
+    return json.dumps({"_metadata_truncated": True, "key_count": len(safe)})
+
+
 async def _insert(conn, actor, action, target_company_id, target_id, request, metadata):
     ip_address, user_agent = _request_fields(request)
     actor_id = _actor_id(actor)
+    metadata_json = _bounded_metadata_json(metadata or {})
     await conn.execute(
         _INSERT,
         _uuid.UUID(str(actor_id)) if actor_id else None,
@@ -76,7 +112,7 @@ async def _insert(conn, actor, action, target_company_id, target_id, request, me
         str(target_id)[:_MAX_TARGET_ID] if target_id is not None else None,
         ip_address,
         user_agent,
-        json.dumps(metadata or {}),
+        metadata_json,
     )
 
 

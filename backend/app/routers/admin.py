@@ -82,6 +82,12 @@ class PendingLoginRequired(Exception):
     session. Handled like NotAuthenticated: bounce to /admin/login."""
 
 
+class _NoRecoveryCode(Exception):
+    """Used only to unwind out of an `audited()` block without it writing a
+    row, when the submitted recovery code turned out to be wrong. Caught
+    immediately by the caller; never escapes mfa_verify_submit."""
+
+
 async def require_admin(request: Request) -> AdminContext:
     """Identity comes from the signed cookie; role and scope come from the
     database on every request.
@@ -353,10 +359,26 @@ async def mfa_verify_submit(
         if mfa.verify_totp(secret, code):
             method = "totp"
     elif not mfa.looks_like_totp(code):
-        async with pool.acquire() as conn:
-            async with conn.transaction():
-                if await consume_recovery_code(conn, admin_id, code):
-                    method = "recovery"
+        # A recovery code is single-use: consuming it and recording that it
+        # was used must be one transaction, exactly like MFA enrollment. If
+        # they were split -- consume, commit, THEN write the audit row on a
+        # separate connection -- a crash or a failed insert between the two
+        # would burn the one-time credential with zero record it was ever
+        # used, which is precisely the question this table exists to answer
+        # during an incident. _NoRecoveryCode is how a *wrong* code rolls
+        # back cleanly without writing a row: audited() only writes on a
+        # clean exit, so raising inside the block (then swallowing outside
+        # it) is what makes "code was wrong" behave like "nothing happened",
+        # not like "code was consumed but not logged".
+        try:
+            async with audited(
+                pool, request, admin_id, "admin.mfa.recovery_code_used"
+            ) as scope:
+                if not await consume_recovery_code(scope.conn, admin_id, code):
+                    raise _NoRecoveryCode
+                method = "recovery"
+        except _NoRecoveryCode:
+            pass
 
     if method is None:
         # Never put the submitted code in metadata -- it is secret material
@@ -367,8 +389,13 @@ async def mfa_verify_submit(
             {"csrf_token": _new_csrf_token(request), "error": "Invalid code"},
         )
 
-    if method == "recovery":
-        await record_audit(pool, request, admin_id, "admin.mfa.recovery_code_used")
+    # admin.login.succeeded stays on record_audit (its own connection),
+    # deliberately NOT joined to the recovery-code transaction above: the
+    # session grant that follows is a Python-side session-cookie mutation
+    # with no database write of its own, so there is no mutation left here
+    # for an audit row to share a transaction with -- unlike
+    # admin.mfa.recovery_code_used, which sits alongside a real database
+    # mutation (consume_recovery_code) and must be joined to it.
     await record_audit(
         pool, request, admin_id, "admin.login.succeeded", metadata={"method": method}
     )
