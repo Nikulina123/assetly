@@ -31,7 +31,11 @@ async def test_login_page_loads():
     assert b"Log in" in resp.content or b"Login" in resp.content
 
 
-async def test_login_with_correct_credentials_redirects_to_companies(admin):
+async def test_login_with_correct_credentials_redirects_to_mfa_setup(admin):
+    """An admin with no MFA enrolled yet -- true of every admin that exists
+    today, since enrollment ships in this same change -- lands on setup, not
+    straight into the console. A correct password alone no longer reaches
+    anything: see test_admin_mfa_routes.py for the enrolled-admin path."""
     _, email, password = admin
     async with await _client() as client:
         resp = await client.post(
@@ -40,7 +44,7 @@ async def test_login_with_correct_credentials_redirects_to_companies(admin):
             follow_redirects=False,
         )
     assert resp.status_code == 303
-    assert resp.headers["location"] == "/admin/companies"
+    assert resp.headers["location"] == "/admin/mfa/setup"
     assert "session" in resp.cookies
 
 
@@ -80,7 +84,13 @@ async def test_login_rotates_session(admin):
     """A pre-login session must not survive authentication. Without
     session.clear(), an attacker who can fixate the victim's session cookie
     (e.g. plant a csrf_token before the victim logs in) still finds that
-    planted value in the session after login."""
+    planted value in the session after login.
+
+    Login now only reaches the PENDING state (no admin_id -- see
+    test_admin_mfa_routes.py for the full two-stage flow and the final
+    rotation at /admin/mfa/verify), but the rotation property itself must
+    still hold at this first step: the planted value must not survive.
+    """
     _, email, password = admin
     planted_cookie = _sign_session({"csrf_token": "attacker-planted-value"})
 
@@ -96,5 +106,5 @@ async def test_login_rotates_session(admin):
 
     assert after is not None
     session_data = _unsign_session(after)
-    assert session_data.get("admin_id") is not None
+    assert session_data.get("pending_admin_id") is not None
     assert session_data.get("csrf_token") != "attacker-planted-value"

@@ -21,9 +21,9 @@ async def _client():
     return AsyncClient(transport=transport, base_url="http://test")
 
 
-async def _logged_in_client(email, password):
+async def _logged_in_client(login_as, admin_tuple):
     client = await _client()
-    await client.post("/admin/login", data={"email": email, "password": password})
+    await login_as(client, admin_tuple)
     return client
 
 
@@ -32,10 +32,9 @@ async def _csrf(client, company_id):
     return resp.text.split('name="csrf_token" value="')[1].split('"')[0]
 
 
-async def test_settings_page_shows_schedule_card(admin, company):
-    _, email, password = admin
+async def test_settings_page_shows_schedule_card(login_as, enrolled_admin, company):
     company_id, _ = company
-    client = await _logged_in_client(email, password)
+    client = await _logged_in_client(login_as, enrolled_admin)
     try:
         resp = await client.get(f"/admin/companies/{company_id}")
     finally:
@@ -49,12 +48,11 @@ async def test_settings_page_shows_schedule_card(admin, company):
     assert b"prompted every 6 months" in resp.content
 
 
-async def test_preset_interval_persists(admin, company, db_pool):
+async def test_preset_interval_persists(login_as, enrolled_admin, company, db_pool):
     from app.schedule import resolve_schedule
 
-    _, email, password = admin
     company_id, _ = company
-    client = await _logged_in_client(email, password)
+    client = await _logged_in_client(login_as, enrolled_admin)
     try:
         token = await _csrf(client, company_id)
         resp = await client.post(
@@ -76,12 +74,11 @@ async def test_preset_interval_persists(admin, company, db_pool):
     assert schedule["cancel_retry_seconds"] == 3600
 
 
-async def test_custom_interval_persists(admin, company, db_pool):
+async def test_custom_interval_persists(login_as, enrolled_admin, company, db_pool):
     from app.schedule import resolve_schedule
 
-    _, email, password = admin
     company_id, _ = company
-    client = await _logged_in_client(email, password)
+    client = await _logged_in_client(login_as, enrolled_admin)
     try:
         token = await _csrf(client, company_id)
         await client.post(
@@ -101,7 +98,7 @@ async def test_custom_interval_persists(admin, company, db_pool):
     assert schedule["checkin_interval_seconds"] == 432000
 
 
-async def test_unknown_custom_unit_is_rejected(admin, company, db_pool):
+async def test_unknown_custom_unit_is_rejected(login_as, enrolled_admin, company, db_pool):
     """A unit outside UNIT_SECONDS is its own branch of parse_interval.
 
     This case used to stand in for the floor check, which it never reached:
@@ -110,9 +107,8 @@ async def test_unknown_custom_unit_is_rejected(admin, company, db_pool):
     """
     from app.schedule import resolve_schedule
 
-    _, email, password = admin
     company_id, _ = company
-    client = await _logged_in_client(email, password)
+    client = await _logged_in_client(login_as, enrolled_admin)
     try:
         token = await _csrf(client, company_id)
         resp = await client.post(
@@ -134,7 +130,7 @@ async def test_unknown_custom_unit_is_rejected(admin, company, db_pool):
     assert schedule["checkin_interval_seconds"] == 15552000  # unchanged
 
 
-async def test_interval_below_floor_is_rejected(admin, company, db_pool):
+async def test_interval_below_floor_is_rejected(login_as, enrolled_admin, company, db_pool):
     """Rejected at the app layer with a readable message -- the DB CHECK
     constraint must never be what reports a user error.
 
@@ -145,9 +141,8 @@ async def test_interval_below_floor_is_rejected(admin, company, db_pool):
     """
     from app.schedule import resolve_schedule
 
-    _, email, password = admin
     company_id, _ = company
-    client = await _logged_in_client(email, password)
+    client = await _logged_in_client(login_as, enrolled_admin)
     try:
         token = await _csrf(client, company_id)
         resp = await client.post(
@@ -167,17 +162,14 @@ async def test_interval_below_floor_is_rejected(admin, company, db_pool):
     assert schedule["checkin_interval_seconds"] == 15552000  # unchanged
 
 
-async def test_over_cap_custom_interval_is_reported_as_a_form_error(
-    admin, company, db_pool
-):
+async def test_over_cap_custom_interval_is_reported_as_a_form_error(login_as, enrolled_admin, company, db_pool):
     """A value past int4 made asyncpg raise DataError -- not a ValueError --
     so it escaped update_schedule's handler as an unhandled 500. It must come
     back as an ordinary readable form error instead."""
     from app.schedule import resolve_schedule
 
-    _, email, password = admin
     company_id, _ = company
-    client = await _logged_in_client(email, password)
+    client = await _logged_in_client(login_as, enrolled_admin)
     try:
         token = await _csrf(client, company_id)
         resp = await client.post(
@@ -199,16 +191,15 @@ async def test_over_cap_custom_interval_is_reported_as_a_form_error(
     assert schedule["checkin_interval_seconds"] == 15552000  # unchanged
 
 
-async def test_custom_interval_is_preselected_when_the_form_reloads(admin, company):
+async def test_custom_interval_is_preselected_when_the_form_reloads(login_as, enrolled_admin, company):
     """The bug this pins is data loss, not cosmetics.
 
     With no option carrying `selected`, the browser selects the first one
     ("12 hours"), so an admin who reopened Settings to change only the retry
     silently overwrote their custom interval on save.
     """
-    _, email, password = admin
     company_id, _ = company
-    client = await _logged_in_client(email, password)
+    client = await _logged_in_client(login_as, enrolled_admin)
     try:
         token = await _csrf(client, company_id)
         await client.post(
@@ -236,11 +227,10 @@ async def test_custom_interval_is_preselected_when_the_form_reloads(admin, compa
     assert b'value="43200" selected' not in resp.content
 
 
-async def test_preset_interval_leaves_custom_unselected(admin, company):
+async def test_preset_interval_leaves_custom_unselected(login_as, enrolled_admin, company):
     """The other half of the same invariant: exactly one selected option."""
-    _, email, password = admin
     company_id, _ = company
-    client = await _logged_in_client(email, password)
+    client = await _logged_in_client(login_as, enrolled_admin)
     try:
         token = await _csrf(client, company_id)
         await client.post(
@@ -261,12 +251,11 @@ async def test_preset_interval_leaves_custom_unselected(admin, company):
     assert b'value="custom" selected' not in resp.content
 
 
-async def test_retry_longer_than_interval_is_rejected(admin, company, db_pool):
+async def test_retry_longer_than_interval_is_rejected(login_as, enrolled_admin, company, db_pool):
     from app.schedule import resolve_schedule
 
-    _, email, password = admin
     company_id, _ = company
-    client = await _logged_in_client(email, password)
+    client = await _logged_in_client(login_as, enrolled_admin)
     try:
         token = await _csrf(client, company_id)
         resp = await client.post(
@@ -286,10 +275,9 @@ async def test_retry_longer_than_interval_is_rejected(admin, company, db_pool):
     assert schedule["checkin_interval_seconds"] == 15552000  # unchanged
 
 
-async def test_schedule_post_requires_csrf(admin, company):
-    _, email, password = admin
+async def test_schedule_post_requires_csrf(login_as, enrolled_admin, company):
     company_id, _ = company
-    client = await _logged_in_client(email, password)
+    client = await _logged_in_client(login_as, enrolled_admin)
     try:
         resp = await client.post(
             f"/admin/companies/{company_id}/schedule",

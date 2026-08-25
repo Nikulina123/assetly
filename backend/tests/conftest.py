@@ -179,3 +179,34 @@ async def scoped_admin(db_pool, company):
     finally:
         await admin_conn.close()
     return str(row["id"]), email, password, secret, company_id
+
+
+@pytest.fixture
+def login_as():
+    # Plain @pytest.fixture, not @pytest_asyncio.fixture: the fixture itself is
+    # synchronous and merely RETURNS an async callable.
+    """Returns an async callable that drives the full two-stage login for an
+    httpx client, so route tests do not each re-implement it. Takes the client
+    and an (admin_id, email, password, secret) tuple as produced by the
+    enrolled_admin / support_admin / scoped_admin fixtures."""
+    import json
+    from base64 import b64decode
+    import itsdangerous
+    import pyotp
+    from app.config import SESSION_SECRET_KEY
+
+    async def _login(client, admin_tuple):
+        _admin_id, email, password, secret = admin_tuple[:4]
+        await client.post("/admin/login", data={"email": email, "password": password})
+        await client.get("/admin/mfa/verify")
+        signer = itsdangerous.TimestampSigner(str(SESSION_SECRET_KEY))
+        session = json.loads(b64decode(signer.unsign(client.cookies["session"].encode())))
+        resp = await client.post(
+            "/admin/mfa/verify",
+            data={"code": pyotp.TOTP(secret).now(), "csrf_token": session["csrf_token"]},
+            follow_redirects=False,
+        )
+        assert resp.status_code == 303, f"login failed: {resp.status_code}"
+        return client
+
+    return _login

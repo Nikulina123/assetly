@@ -19,16 +19,15 @@ async def _client():
     return AsyncClient(transport=transport, base_url="http://test")
 
 
-async def _logged_in_client(email, password):
+async def _logged_in_client(login_as, admin_tuple):
     client = await _client()
-    await client.post("/admin/login", data={"email": email, "password": password})
+    await login_as(client, admin_tuple)
     return client
 
 
-async def test_company_detail_shows_check_in_fields_section(admin, company):
-    _, email, password = admin
+async def test_company_detail_shows_check_in_fields_section(login_as, enrolled_admin, company):
     company_id, _ = company
-    client = await _logged_in_client(email, password)
+    client = await _logged_in_client(login_as, enrolled_admin)
     try:
         resp = await client.get(f"/admin/companies/{company_id}")
     finally:
@@ -38,12 +37,11 @@ async def test_company_detail_shows_check_in_fields_section(admin, company):
     assert b"Coming soon" not in resp.content
 
 
-async def test_update_hardware_fields_persists(admin, company, db_pool):
+async def test_update_hardware_fields_persists(login_as, enrolled_admin, company, db_pool):
     from app.field_config import resolve_field_config
 
-    _, email, password = admin
     company_id, _ = company
-    client = await _logged_in_client(email, password)
+    client = await _logged_in_client(login_as, enrolled_admin)
     try:
         get_resp = await client.get(f"/admin/companies/{company_id}")
         csrf_token = get_resp.text.split('name="csrf_token" value="')[1].split('"')[0]
@@ -68,12 +66,11 @@ async def test_update_hardware_fields_persists(admin, company, db_pool):
     assert "department" not in [f["key"] for f in config["user_fields"]]
 
 
-async def test_add_and_remove_custom_field_via_admin(admin, company, db_pool):
+async def test_add_and_remove_custom_field_via_admin(login_as, enrolled_admin, company, db_pool):
     from app.field_config import resolve_field_config
 
-    _, email, password = admin
     company_id, _ = company
-    client = await _logged_in_client(email, password)
+    client = await _logged_in_client(login_as, enrolled_admin)
     try:
         get_resp = await client.get(f"/admin/companies/{company_id}")
         csrf_token = get_resp.text.split('name="csrf_token" value="')[1].split('"')[0]
@@ -99,7 +96,7 @@ async def test_add_and_remove_custom_field_via_admin(admin, company, db_pool):
     assert "cost_center" not in [f["key"] for f in config["user_fields"]]
 
 
-async def test_department_form_round_trips_through_admin_ui(admin, company, db_pool):
+async def test_department_form_round_trips_through_admin_ui(login_as, enrolled_admin, company, db_pool):
     """Regression test for a silent-disable failure mode: the admin.py Form
     parameter names and the company_detail.html checkbox `name` attributes
     must match exactly (FastAPI binds form fields by name). If either side
@@ -114,9 +111,8 @@ async def test_department_form_round_trips_through_admin_ui(admin, company, db_p
     """
     from app.field_config import resolve_field_settings_for_admin
 
-    _, email, password = admin
     company_id, _ = company
-    client = await _logged_in_client(email, password)
+    client = await _logged_in_client(login_as, enrolled_admin)
     try:
         get_resp = await client.get(f"/admin/companies/{company_id}")
         csrf_token = get_resp.text.split('name="csrf_token" value="')[1].split('"')[0]
@@ -172,15 +168,14 @@ async def test_department_form_round_trips_through_admin_ui(admin, company, db_p
     assert settings["department_required"] is False
 
 
-async def test_department_options_round_trip_through_admin_ui(admin, company, db_pool):
+async def test_department_options_round_trip_through_admin_ui(login_as, enrolled_admin, company, db_pool):
     """Same silent-drift risk as the checkboxes above: the textarea's `name`
     and admin.py's Form parameter must match, and the rendered page has to
     show the saved list back or an admin editing it would wipe it."""
     from app.field_config import DEFAULT_DEPARTMENT_OPTIONS, resolve_field_config
 
-    _, email, password = admin
     company_id, _ = company
-    client = await _logged_in_client(email, password)
+    client = await _logged_in_client(login_as, enrolled_admin)
     try:
         get_resp = await client.get(f"/admin/companies/{company_id}")
         assert 'name="department_options"' in get_resp.text
@@ -227,10 +222,9 @@ async def test_department_options_round_trip_through_admin_ui(admin, company, db
     assert department["options"] == DEFAULT_DEPARTMENT_OPTIONS
 
 
-async def test_add_custom_field_with_reserved_label_shows_error(admin, company):
-    _, email, password = admin
+async def test_add_custom_field_with_reserved_label_shows_error(login_as, enrolled_admin, company):
     company_id, _ = company
-    client = await _logged_in_client(email, password)
+    client = await _logged_in_client(login_as, enrolled_admin)
     try:
         get_resp = await client.get(f"/admin/companies/{company_id}")
         csrf_token = get_resp.text.split('name="csrf_token" value="')[1].split('"')[0]

@@ -27,9 +27,9 @@ async def _client():
     return AsyncClient(transport=transport, base_url="http://test")
 
 
-async def _logged_in_client(email, password):
+async def _logged_in_client(login_as, admin_tuple):
     client = await _client()
-    await client.post("/admin/login", data={"email": email, "password": password})
+    await login_as(client, admin_tuple)
     return client
 
 
@@ -200,10 +200,9 @@ async def test_config_endpoint_serves_the_palette(db_pool, company):
 
 # ── The portal form ───────────────────────────────────────────────────────────
 
-async def test_company_detail_shows_the_appearance_card(admin, company):
-    _, email, password = admin
+async def test_company_detail_shows_the_appearance_card(login_as, enrolled_admin, company):
     company_id, _ = company
-    client = await _logged_in_client(email, password)
+    client = await _logged_in_client(login_as, enrolled_admin)
     try:
         resp = await client.get(f"/admin/companies/{company_id}")
     finally:
@@ -213,10 +212,9 @@ async def test_company_detail_shows_the_appearance_card(admin, company):
     assert b"no new download needed" in resp.content
 
 
-async def test_saving_appearance_from_the_portal_reaches_the_agent(admin, company, db_pool):
-    _, email, password = admin
+async def test_saving_appearance_from_the_portal_reaches_the_agent(login_as, enrolled_admin, company, db_pool):
     company_id, api_key = company
-    client = await _logged_in_client(email, password)
+    client = await _logged_in_client(login_as, enrolled_admin)
     try:
         detail = await client.get(f"/admin/companies/{company_id}")
         csrf_token = detail.text.split('name="csrf_token" value="')[1].split('"')[0]
@@ -239,12 +237,11 @@ async def test_saving_appearance_from_the_portal_reaches_the_agent(admin, compan
     assert agent_view.json()["ui"]["blue"] == "#9C3FBF"
 
 
-async def test_a_rejected_palette_is_re_rendered_in_place_with_the_typed_values(admin, company):
+async def test_a_rejected_palette_is_re_rendered_in_place_with_the_typed_values(login_as, enrolled_admin, company):
     """The admin's other nineteen hand-picked values must survive the error, or
     fixing one bad colour means retyping the whole palette."""
-    _, email, password = admin
     company_id, _ = company
-    client = await _logged_in_client(email, password)
+    client = await _logged_in_client(login_as, enrolled_admin)
     try:
         detail = await client.get(f"/admin/companies/{company_id}")
         csrf_token = detail.text.split('name="csrf_token" value="')[1].split('"')[0]
@@ -264,10 +261,9 @@ async def test_a_rejected_palette_is_re_rendered_in_place_with_the_typed_values(
     assert b'value="#FFFFFF"' in resp.content
 
 
-async def test_appearance_requires_a_valid_csrf_token(admin, company):
-    _, email, password = admin
+async def test_appearance_requires_a_valid_csrf_token(login_as, enrolled_admin, company):
     company_id, _ = company
-    client = await _logged_in_client(email, password)
+    client = await _logged_in_client(login_as, enrolled_admin)
     try:
         resp = await client.post(
             f"/admin/companies/{company_id}/appearance",

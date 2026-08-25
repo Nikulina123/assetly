@@ -16,10 +16,6 @@ async def _reset_app_pool():
     await db_module.close_pool()
 
 
-async def _login(client, email, password):
-    return await client.post("/admin/login", data={"email": email, "password": password})
-
-
 async def _submit(client, api_key, serial_number, hostname):
     return await client.post(
         "/api/v1/inventory/checkin",
@@ -56,37 +52,32 @@ async def test_dashboard_requires_login(db_pool, company):
     assert "/admin/login" in resp.headers["location"]
 
 
-async def test_unknown_company_is_404(db_pool, admin):
-    _, email, password = admin
+async def test_unknown_company_is_404(db_pool, login_as, enrolled_admin):
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test", follow_redirects=True) as client:
-        await _login(client, email, password)
+        await login_as(client, enrolled_admin)
         resp = await client.get(f"/admin/companies/{uuid.uuid4()}/dashboard")
     assert resp.status_code == 404
 
 
-async def test_dashboard_renders_for_admin(db_pool, company, admin):
+async def test_dashboard_renders_for_admin(db_pool, company, login_as, enrolled_admin):
     company_id, api_key = company
-    _, email, password = admin
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test", follow_redirects=True) as client:
         await _submit(client, api_key, "SN-001", "host-1")
-        await _login(client, email, password)
+        await login_as(client, enrolled_admin)
         resp = await client.get(f"/admin/companies/{company_id}/dashboard")
     assert resp.status_code == 200
     assert "Total Devices" in resp.text
 
 
-async def test_dashboard_online_label_reflects_the_configured_interval(
-    db_pool, company, admin
-):
+async def test_dashboard_online_label_reflects_the_configured_interval(db_pool, company, login_as, enrolled_admin):
     """The "Online" count is proportional to this company's interval (see
     device_status.py), so its caption must name that interval. It read
     "checked in within 6 months" for every company, which is actively wrong
     for anyone who changed the setting -- a 24-hour count under a 6-month label.
     """
     company_id, api_key = company
-    _, email, password = admin
     async with db_pool.acquire() as conn:
         await conn.execute(
             "UPDATE companies SET checkin_interval_seconds = $2, "
@@ -96,25 +87,24 @@ async def test_dashboard_online_label_reflects_the_configured_interval(
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test", follow_redirects=True) as client:
         await _submit(client, api_key, "SN-001", "host-1")
-        await _login(client, email, password)
+        await login_as(client, enrolled_admin)
         resp = await client.get(f"/admin/companies/{company_id}/dashboard")
     assert resp.status_code == 200
     assert "checked in within 1 week" in resp.text
     assert "6 months" not in resp.text
 
 
-async def test_computers_page_does_not_leak_other_company_devices(db_pool, company, admin):
+async def test_computers_page_does_not_leak_other_company_devices(db_pool, company, login_as, enrolled_admin):
     """RLS must scope every portal read to the company in the URL. This is the
     first place a path segment picks a tenant, so a regression here is a
     cross-tenant data leak, not a rendering bug."""
     company_a_id, key_a = company
     company_b_id, key_b = await _second_company(db_pool)
-    _, email, password = admin
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test", follow_redirects=True) as client:
         await _submit(client, key_a, "SN-AAA", "alpha-host")
         await _submit(client, key_b, "SN-BBB", "bravo-host")
-        await _login(client, email, password)
+        await login_as(client, enrolled_admin)
         resp = await client.get(f"/admin/companies/{company_a_id}/computers")
     assert resp.status_code == 200
     assert "alpha-host" in resp.text
@@ -122,50 +112,46 @@ async def test_computers_page_does_not_leak_other_company_devices(db_pool, compa
     assert "SN-BBB" not in resp.text
 
 
-async def test_device_detail_renders(db_pool, company, admin):
+async def test_device_detail_renders(db_pool, company, login_as, enrolled_admin):
     company_id, api_key = company
-    _, email, password = admin
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test", follow_redirects=True) as client:
         await _submit(client, api_key, "SN-001", "host-1")
-        await _login(client, email, password)
+        await login_as(client, enrolled_admin)
         resp = await client.get(f"/admin/companies/{company_id}/computers/SN-001")
     assert resp.status_code == 200
     assert "SN-001" in resp.text
 
 
-async def test_device_detail_unknown_serial_is_404(db_pool, company, admin):
+async def test_device_detail_unknown_serial_is_404(db_pool, company, login_as, enrolled_admin):
     company_id, _ = company
-    _, email, password = admin
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test", follow_redirects=True) as client:
-        await _login(client, email, password)
+        await login_as(client, enrolled_admin)
         resp = await client.get(f"/admin/companies/{company_id}/computers/NOPE")
     assert resp.status_code == 404
 
 
-async def test_dashboard_renders_empty_state_for_company_with_no_devices(db_pool, company, admin):
+async def test_dashboard_renders_empty_state_for_company_with_no_devices(db_pool, company, login_as, enrolled_admin):
     """Guards the by_os division-by-zero path in portal_dashboard.html: a
     company with zero devices must render the empty state, not crash computing
     a percentage width from stats['total'] == 0."""
     company_id, _ = company
-    _, email, password = admin
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test", follow_redirects=True) as client:
-        await _login(client, email, password)
+        await login_as(client, enrolled_admin)
         resp = await client.get(f"/admin/companies/{company_id}/dashboard")
     assert resp.status_code == 200
     assert "Total Devices" in resp.text
     assert "No devices yet" in resp.text
 
 
-async def test_device_pages_render_with_missing_optional_fields(db_pool, company, admin):
+async def test_device_pages_render_with_missing_optional_fields(db_pool, company, login_as, enrolled_admin):
     """cpu, ram, storage, ip_address, department, and agent_version are all
     optional on CheckinRequest. Submitting without them must not raise in
     either the Computers list or the device detail template (both use
     `or '—'` guards and a conditional strftime for None values)."""
     company_id, api_key = company
-    _, email, password = admin
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test", follow_redirects=True) as client:
         resp = await client.post(
@@ -180,7 +166,7 @@ async def test_device_pages_render_with_missing_optional_fields(db_pool, company
             headers={"Authorization": f"Bearer {api_key}"},
         )
         assert resp.status_code == 200
-        await _login(client, email, password)
+        await login_as(client, enrolled_admin)
         computers_resp = await client.get(f"/admin/companies/{company_id}/computers")
         device_resp = await client.get(f"/admin/companies/{company_id}/computers/SN-BARE")
     assert computers_resp.status_code == 200
@@ -188,7 +174,7 @@ async def test_device_pages_render_with_missing_optional_fields(db_pool, company
     assert "SN-BARE" in device_resp.text
 
 
-async def test_device_detail_finds_preexisting_unnormalised_credential(db_pool, company, admin):
+async def test_device_detail_finds_preexisting_unnormalised_credential(db_pool, company, login_as, enrolled_admin):
     """A device_credentials row written before serials were casefolded at
     enrollment (simulated here by inserting directly with real-world casing)
     must still be found by device_detail's credential lookup -- otherwise the
@@ -197,7 +183,6 @@ async def test_device_detail_finds_preexisting_unnormalised_credential(db_pool, 
     from app.auth import generate_api_key, hash_api_key
 
     company_id, api_key = company
-    _, email, password = admin
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test", follow_redirects=True) as client:
         await _submit(client, api_key, "ABC-123", "raw-host")
@@ -211,7 +196,7 @@ async def test_device_detail_finds_preexisting_unnormalised_credential(db_pool, 
             )
         from tests.test_enrollment import _run_migration_015
         await _run_migration_015(db_pool)
-        await _login(client, email, password)
+        await login_as(client, enrolled_admin)
         resp = await client.get(f"/admin/companies/{company_id}/computers/ABC-123")
     assert resp.status_code == 200
     assert "No enrollment credential on file" not in resp.text

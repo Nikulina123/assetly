@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Two-factor authentication — Assetly</title>
+<link rel="stylesheet" href="/static/assetly.css">
+</head>
+<body>
+<div style="display:flex;min-height:100vh;align-items:center;justify-content:center">
+  <div style="width:100%;max-width:380px">
+    <div class="sidebar-logo" style="justify-content:center;padding-bottom:20px">
+      <span style="font-size:22px">asset<span class="ly">ly</span></span>
+    </div>
+    <div class="display" style="text-align:center;font-size:24px;margin-bottom:26px">
+      Two-factor authentication
+    </div>
+    <div class="card">
+      {% if error %}
+      <div class="banner" style="background:rgba(239,68,68,0.08);border:1px solid rgba(239,68,68,0.25);color:#EF4444">{{ error }}</div>
+      {% endif %}
+      <form method="post" action="/admin/mfa/verify">
+        <label class="label" for="code">6-digit code from your authenticator, or a recovery code</label>
+        <input class="input" id="code" type="text" name="code" required
+               inputmode="numeric" autocomplete="one-time-code"
+               style="width:100%;margin-bottom:20px">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <button type="submit" class="btn" style="width:100%">Verify</button>
+      </form>
+    </div>
+  </div>
+</div>
+</body>
+</html>

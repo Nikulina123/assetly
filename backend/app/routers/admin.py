@@ -2,6 +2,7 @@ import datetime
 import hashlib
 import json
 import re
+import time
 import uuid
 from pathlib import Path
 from urllib.parse import quote
@@ -10,7 +11,16 @@ from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
 
-from app.admin_auth import resolve_admin
+from app.admin_auth import (
+    AdminContext,
+    load_admin_context,
+    get_mfa_secret,
+    set_mfa_secret,
+    replace_recovery_codes,
+    consume_recovery_code,
+    resolve_admin,
+)
+from app import mfa
 from app.auth import generate_api_key, hash_api_key
 from app.config import (
     CHECKIN_API_URL_FOR_DOWNLOAD,
@@ -18,7 +28,9 @@ from app.config import (
     INSTALLER_TOKEN_DAYS,
     MACOS_PKG_IDENTIFIER,
     MACOS_PKG_VERSION,
+    PENDING_LOGIN_MAX_AGE_SECONDS,
     RATE_LIMIT_LOGIN,
+    RATE_LIMIT_MFA,
     REPO_ROOT,
     WINDOWS_EXE_PATH,
 )
@@ -63,10 +75,36 @@ class NotAuthenticated(Exception):
     pass
 
 
+class PendingLoginRequired(Exception):
+    """Raised when a pending-login route is reached without a live pending
+    session. Handled like NotAuthenticated: bounce to /admin/login."""
+
+
 async def require_admin(request: Request) -> str:
     admin_id = request.session.get("admin_id")
     if not admin_id:
         raise NotAuthenticated()
+    return admin_id
+
+
+def _pending_admin_id(request: Request) -> str:
+    """The admin whose password has been verified but whose second factor has
+    not. This is NOT a logged-in session: it carries no admin_id, so
+    require_admin refuses it exactly like an anonymous request.
+
+    Expiry is checked here against a timestamp inside the session rather than
+    being left to the cookie's own max_age, because the cookie's lifetime is
+    the full 8-hour admin session -- leaving a half-authenticated state lying
+    around that long would turn "attacker got the password" into an 8-hour
+    window to also get the code.
+    """
+    admin_id = request.session.get("pending_admin_id")
+    started = request.session.get("pending_at", 0)
+    if not admin_id:
+        raise PendingLoginRequired()
+    if int(time.time()) - int(started) > PENDING_LOGIN_MAX_AGE_SECONDS:
+        request.session.clear()
+        raise PendingLoginRequired()
     return admin_id
 
 
@@ -108,20 +146,152 @@ async def login_submit(request: Request, email: str = Form(...), password: str =
         return templates.TemplateResponse(
             request, "login.html", {"error": "Invalid email or password"}
         )
-    # Clear before writing admin_id: these are client-side signed cookies, so
-    # the pre-login session is attacker-fixable. Clearing also drops the
-    # pre-auth csrf_token, which _new_csrf_token then re-mints on the next
-    # authenticated render -- so the token an authenticated form carries was
-    # never visible to anyone before authentication.
+    # A correct password no longer grants access -- it grants the RIGHT TO
+    # ATTEMPT the second factor. Clearing first is the session-fixation fix
+    # (these are client-side signed cookies, so the pre-login session is
+    # attacker-fixable) and it also drops any pre-auth csrf_token, so the
+    # token the MFA form carries was minted after the password check.
     request.session.clear()
-    request.session["admin_id"] = admin_id
-    return RedirectResponse("/admin/companies", status_code=303)
+    request.session["pending_admin_id"] = admin_id
+    request.session["pending_at"] = int(time.time())
+    ctx = await load_admin_context(pool, admin_id)
+    if ctx is not None and ctx.mfa_enrolled:
+        return RedirectResponse("/admin/mfa/verify", status_code=303)
+    return RedirectResponse("/admin/mfa/setup", status_code=303)
 
 
 @router.post("/logout")
 async def logout(request: Request):
     request.session.clear()
     return RedirectResponse("/admin/login", status_code=303)
+
+
+@router.get("/mfa/setup")
+async def mfa_setup_form(request: Request):
+    pool = await get_pool()
+    admin_id = _pending_admin_id(request)
+    ctx = await load_admin_context(pool, admin_id)
+    if ctx is None:
+        request.session.clear()
+        raise PendingLoginRequired()
+    if ctx.mfa_enrolled:
+        # Otherwise this route is an MFA bypass: anyone holding the password
+        # could re-enroll their own authenticator and walk straight in.
+        # Re-enrollment for a locked-out admin is an operator action.
+        return RedirectResponse("/admin/mfa/verify", status_code=303)
+
+    # The unconfirmed secret lives in the pending session, not in the database,
+    # so a half-enrolled row -- a secret set that no authenticator actually
+    # holds -- cannot exist. It is written only once a live code proves the
+    # authenticator has it.
+    secret = request.session.get("pending_secret")
+    if not secret:
+        secret = mfa.generate_secret()
+        request.session["pending_secret"] = secret
+
+    uri = mfa.provisioning_uri(secret, ctx.email)
+    return templates.TemplateResponse(
+        request,
+        "mfa_setup.html",
+        {
+            "qr_svg": mfa.qr_svg(uri),
+            "secret": secret,
+            "csrf_token": _new_csrf_token(request),
+        },
+    )
+
+
+@router.post("/mfa/setup")
+async def mfa_setup_submit(
+    request: Request, code: str = Form(...), csrf_token: str = Form(...)
+):
+    _check_csrf(request, csrf_token)
+    pool = await get_pool()
+    admin_id = _pending_admin_id(request)
+    ctx = await load_admin_context(pool, admin_id)
+    if ctx is None or ctx.mfa_enrolled:
+        request.session.clear()
+        raise PendingLoginRequired()
+
+    secret = request.session.get("pending_secret")
+    if not secret or not mfa.verify_totp(secret, code):
+        uri = mfa.provisioning_uri(secret or mfa.generate_secret(), ctx.email)
+        return templates.TemplateResponse(
+            request,
+            "mfa_setup.html",
+            {
+                "qr_svg": mfa.qr_svg(uri),
+                "secret": secret,
+                "csrf_token": _new_csrf_token(request),
+                "error": "That code did not match. Check your device clock and try again.",
+            },
+        )
+
+    codes = mfa.generate_recovery_codes()
+    # One transaction: secret and codes land together or not at all.
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            await set_mfa_secret(conn, admin_id, secret)
+            await replace_recovery_codes(conn, admin_id, codes)
+
+    request.session.clear()
+    request.session["admin_id"] = admin_id
+    return templates.TemplateResponse(
+        request,
+        "mfa_recovery_codes.html",
+        {"codes": codes, "csrf_token": _new_csrf_token(request)},
+    )
+
+
+@router.get("/mfa/verify")
+async def mfa_verify_form(request: Request):
+    _pending_admin_id(request)
+    return templates.TemplateResponse(
+        request, "mfa_verify.html", {"csrf_token": _new_csrf_token(request)}
+    )
+
+
+@router.post("/mfa/verify")
+async def mfa_verify_submit(
+    request: Request, code: str = Form(...), csrf_token: str = Form(...)
+):
+    _check_csrf(request, csrf_token)
+    pool = await get_pool()
+    admin_id = _pending_admin_id(request)
+
+    # Its own buckets, enforced BEFORE any comparison. A 6-digit code is a far
+    # weaker secret than a password, so this is tighter than RATE_LIMIT_LOGIN.
+    #
+    # Keyed on the ADMIN ID, never on the session: abandoning the login and
+    # starting again produces a new cookie and a new CSRF token but the same
+    # admin, so the counter does not reset. That reset is the bypass this
+    # bucket exists to prevent -- see the test named for it.
+    limit, window = RATE_LIMIT_MFA
+    await enforce_rate_limit(pool, hashed_bucket("mfa:admin", admin_id), limit, window)
+    await enforce_rate_limit(pool, f"mfa:ip:{client_ip(request)}", limit, window)
+
+    secret = await get_mfa_secret(pool, admin_id)
+    method = None
+    if secret and mfa.looks_like_totp(code):
+        if mfa.verify_totp(secret, code):
+            method = "totp"
+    elif not mfa.looks_like_totp(code):
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                if await consume_recovery_code(conn, admin_id, code):
+                    method = "recovery"
+
+    if method is None:
+        return templates.TemplateResponse(
+            request, "mfa_verify.html",
+            {"csrf_token": _new_csrf_token(request), "error": "Invalid code"},
+        )
+
+    # Rotate at the point access is actually granted, not merely at the
+    # password step.
+    request.session.clear()
+    request.session["admin_id"] = admin_id
+    return RedirectResponse("/admin/companies", status_code=303)
 
 
 @router.get("/companies")

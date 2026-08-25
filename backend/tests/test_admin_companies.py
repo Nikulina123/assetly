@@ -19,9 +19,9 @@ async def _client():
     return AsyncClient(transport=transport, base_url="http://test")
 
 
-async def _logged_in_client(email, password):
+async def _logged_in_client(login_as, admin_tuple):
     client = await _client()
-    await client.post("/admin/login", data={"email": email, "password": password})
+    await login_as(client, admin_tuple)
     return client
 
 
@@ -31,10 +31,9 @@ async def test_companies_list_requires_login():
     assert resp.status_code == 303
 
 
-async def test_companies_list_shows_existing_companies(admin, company):
-    _, email, password = admin
+async def test_companies_list_shows_existing_companies(login_as, enrolled_admin, company):
     _, _ = company
-    client = await _logged_in_client(email, password)
+    client = await _logged_in_client(login_as, enrolled_admin)
     try:
         resp = await client.get("/admin/companies")
     finally:
@@ -43,9 +42,8 @@ async def test_companies_list_shows_existing_companies(admin, company):
     assert b"Test Co" in resp.content
 
 
-async def test_create_company_shows_new_api_key_once(admin, db_pool):
-    _, email, password = admin
-    client = await _logged_in_client(email, password)
+async def test_create_company_shows_new_api_key_once(login_as, enrolled_admin, db_pool):
+    client = await _logged_in_client(login_as, enrolled_admin)
     try:
         get_resp = await client.get("/admin/companies")
         csrf_token = get_resp.text.split('name="csrf_token" value="')[1].split('"')[0]
@@ -69,9 +67,8 @@ async def test_create_company_shows_new_api_key_once(admin, db_pool):
     assert row is not None
 
 
-async def test_create_company_without_csrf_token_is_rejected(admin):
-    _, email, password = admin
-    client = await _logged_in_client(email, password)
+async def test_create_company_without_csrf_token_is_rejected(login_as, enrolled_admin):
+    client = await _logged_in_client(login_as, enrolled_admin)
     try:
         resp = await client.post("/admin/companies", data={"name": "No CSRF Co"})
     finally:
@@ -79,10 +76,9 @@ async def test_create_company_without_csrf_token_is_rejected(admin):
     assert resp.status_code == 422  # FastAPI rejects the missing required Form field
 
 
-async def test_company_detail_shows_company_info(admin, company):
-    _, email, password = admin
+async def test_company_detail_shows_company_info(login_as, enrolled_admin, company):
     company_id, _ = company
-    client = await _logged_in_client(email, password)
+    client = await _logged_in_client(login_as, enrolled_admin)
     try:
         resp = await client.get(f"/admin/companies/{company_id}")
     finally:
@@ -91,9 +87,8 @@ async def test_company_detail_shows_company_info(admin, company):
     assert b"Test Co" in resp.content
 
 
-async def test_company_detail_404_for_unknown_id(admin):
-    _, email, password = admin
-    client = await _logged_in_client(email, password)
+async def test_company_detail_404_for_unknown_id(login_as, enrolled_admin):
+    client = await _logged_in_client(login_as, enrolled_admin)
     try:
         resp = await client.get("/admin/companies/00000000-0000-0000-0000-000000000000")
     finally:
@@ -101,12 +96,11 @@ async def test_company_detail_404_for_unknown_id(admin):
     assert resp.status_code == 404
 
 
-async def test_rotate_key_invalidates_old_key_and_activates_new(admin, company, db_pool):
+async def test_rotate_key_invalidates_old_key_and_activates_new(login_as, enrolled_admin, company, db_pool):
     from app.auth import resolve_company_id
 
-    _, email, password = admin
     company_id, old_api_key = company
-    client = await _logged_in_client(email, password)
+    client = await _logged_in_client(login_as, enrolled_admin)
     try:
         get_resp = await client.get(f"/admin/companies/{company_id}")
         csrf_token = get_resp.text.split('name="csrf_token" value="')[1].split('"')[0]
@@ -128,12 +122,11 @@ async def test_rotate_key_invalidates_old_key_and_activates_new(admin, company, 
     assert new_resolved == company_id
 
 
-async def test_revoke_company_stops_key_from_resolving(admin, company, db_pool):
+async def test_revoke_company_stops_key_from_resolving(login_as, enrolled_admin, company, db_pool):
     from app.auth import resolve_company_id
 
-    _, email, password = admin
     company_id, api_key = company
-    client = await _logged_in_client(email, password)
+    client = await _logged_in_client(login_as, enrolled_admin)
     try:
         get_resp = await client.get(f"/admin/companies/{company_id}")
         csrf_token = get_resp.text.split('name="csrf_token" value="')[1].split('"')[0]
@@ -151,10 +144,9 @@ async def test_revoke_company_stops_key_from_resolving(admin, company, db_pool):
     assert resolved is None
 
 
-async def test_revoke_is_idempotent(admin, company):
-    _, email, password = admin
+async def test_revoke_is_idempotent(login_as, enrolled_admin, company):
     company_id, _ = company
-    client = await _logged_in_client(email, password)
+    client = await _logged_in_client(login_as, enrolled_admin)
     try:
         get_resp = await client.get(f"/admin/companies/{company_id}")
         csrf_token = get_resp.text.split('name="csrf_token" value="')[1].split('"')[0]
@@ -171,9 +163,8 @@ async def test_revoke_is_idempotent(admin, company):
     assert second.status_code == 200
 
 
-async def test_create_company_requires_notification_email(admin):
-    _, email, password = admin
-    client = await _logged_in_client(email, password)
+async def test_create_company_requires_notification_email(login_as, enrolled_admin):
+    client = await _logged_in_client(login_as, enrolled_admin)
     try:
         get_resp = await client.get("/admin/companies")
         csrf_token = get_resp.text.split('name="csrf_token" value="')[1].split('"')[0]
@@ -187,9 +178,8 @@ async def test_create_company_requires_notification_email(admin):
     assert resp.status_code == 422  # FastAPI's own Form(...) validation
 
 
-async def test_create_company_stores_notification_email(admin, db_pool):
-    _, email, password = admin
-    client = await _logged_in_client(email, password)
+async def test_create_company_stores_notification_email(login_as, enrolled_admin, db_pool):
+    client = await _logged_in_client(login_as, enrolled_admin)
     try:
         get_resp = await client.get("/admin/companies")
         csrf_token = get_resp.text.split('name="csrf_token" value="')[1].split('"')[0]
@@ -213,10 +203,9 @@ async def test_create_company_stores_notification_email(admin, db_pool):
     assert row["notification_email"] == "owner@notifyco.example"
 
 
-async def test_update_notification_email(admin, company, db_pool):
-    _, email, password = admin
+async def test_update_notification_email(login_as, enrolled_admin, company, db_pool):
     company_id, _ = company
-    client = await _logged_in_client(email, password)
+    client = await _logged_in_client(login_as, enrolled_admin)
     try:
         get_resp = await client.get(f"/admin/companies/{company_id}")
         csrf_token = get_resp.text.split('name="csrf_token" value="')[1].split('"')[0]

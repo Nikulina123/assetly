@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Save your recovery codes — Assetly</title>
+<link rel="stylesheet" href="/static/assetly.css">
+</head>
+<body>
+<div style="display:flex;min-height:100vh;align-items:center;justify-content:center">
+  <div style="width:100%;max-width:420px">
+    <div class="sidebar-logo" style="justify-content:center;padding-bottom:20px">
+      <span style="font-size:22px">asset<span class="ly">ly</span></span>
+    </div>
+    <div class="display" style="text-align:center;font-size:22px;margin-bottom:26px">
+      Save your recovery codes
+    </div>
+    <div class="card">
+      <div class="banner" style="background:rgba(239,68,68,0.08);border:1px solid rgba(239,68,68,0.25);color:#EF4444">
+        These codes are shown once. Each one works once. They are the only
+        way back into your account if you lose your authenticator.
+      </div>
+
+      <ul style="list-style:none;padding:0;margin:20px 0;font-family:monospace">
+        {% for code in codes %}
+        <li class="recovery-code" style="padding:6px 0">{{ code }}</li>
+        {% endfor %}
+      </ul>
+
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <a class="btn" style="width:100%;display:block;text-align:center;text-decoration:none" href="/admin/companies">Continue to the console</a>
+    </div>
+  </div>
+</div>
+</body>
+</html>

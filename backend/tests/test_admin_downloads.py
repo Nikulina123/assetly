@@ -31,9 +31,9 @@ async def _client():
     return AsyncClient(transport=transport, base_url="http://test")
 
 
-async def _logged_in_client(email, password):
+async def _logged_in_client(login_as, admin_tuple):
     client = await _client()
-    await client.post("/admin/login", data={"email": email, "password": password})
+    await login_as(client, admin_tuple)
     return client
 
 
@@ -53,7 +53,7 @@ async def test_download_macos_requires_login(company):
     assert resp.status_code == 303
 
 
-async def test_download_macos_embeds_a_fresh_enrollment_token(admin, company, db_pool):
+async def test_download_macos_embeds_a_fresh_enrollment_token(login_as, enrolled_admin, company, db_pool):
     """Downloads used to rotate the shared company key (invalidating every
     previously-downloaded installer); they now mint an additive enrollment
     token instead. Assert the new contract: a fresh, working token is
@@ -62,9 +62,8 @@ async def test_download_macos_embeds_a_fresh_enrollment_token(admin, company, db
     from app.auth import resolve_company_id
     from app.enrollment import enroll_device
 
-    _, email, password = admin
     company_id, old_api_key = company
-    client = await _logged_in_client(email, password)
+    client = await _logged_in_client(login_as, enrolled_admin)
     try:
         csrf_token = await _get_csrf_token(client, company_id)
         resp = await client.post(
@@ -98,13 +97,12 @@ async def test_download_macos_embeds_a_fresh_enrollment_token(admin, company, db
     assert old_resolved == company_id
 
 
-async def test_download_linux_embeds_a_fresh_enrollment_token(admin, company, db_pool):
+async def test_download_linux_embeds_a_fresh_enrollment_token(login_as, enrolled_admin, company, db_pool):
     from app.auth import resolve_company_id
     from app.enrollment import enroll_device
 
-    _, email, password = admin
     company_id, old_api_key = company
-    client = await _logged_in_client(email, password)
+    client = await _logged_in_client(login_as, enrolled_admin)
     try:
         csrf_token = await _get_csrf_token(client, company_id)
         resp = await client.post(
@@ -127,10 +125,9 @@ async def test_download_linux_embeds_a_fresh_enrollment_token(admin, company, db
     assert old_resolved == company_id
 
 
-async def test_download_blocked_for_revoked_company(admin, company, db_pool):
-    _, email, password = admin
+async def test_download_blocked_for_revoked_company(login_as, enrolled_admin, company, db_pool):
     company_id, _ = company
-    client = await _logged_in_client(email, password)
+    client = await _logged_in_client(login_as, enrolled_admin)
     try:
         # Fetch the CSRF token BEFORE revoking, so this test isolates "is the
         # download blocked for a revoked company" from any side effect of
@@ -149,10 +146,9 @@ async def test_download_blocked_for_revoked_company(admin, company, db_pool):
     assert resp.status_code == 404
 
 
-async def test_download_without_csrf_token_is_rejected(admin, company):
-    _, email, password = admin
+async def test_download_without_csrf_token_is_rejected(login_as, enrolled_admin, company):
     company_id, _ = company
-    client = await _logged_in_client(email, password)
+    client = await _logged_in_client(login_as, enrolled_admin)
     try:
         resp = await client.post(f"/admin/companies/{company_id}/download/macos", data={})
     finally:
@@ -160,16 +156,15 @@ async def test_download_without_csrf_token_is_rejected(admin, company):
     assert resp.status_code == 422
 
 
-async def test_download_windows_without_exe_returns_clear_error(admin, company, monkeypatch):
+async def test_download_windows_without_exe_returns_clear_error(login_as, enrolled_admin, company, monkeypatch):
     from pathlib import Path
 
     import app.routers.admin as admin_module
 
     monkeypatch.setattr(admin_module, "WINDOWS_EXE_PATH", Path("/nonexistent/AssetlyAgent_Windows.exe"))
 
-    _, email, password = admin
     company_id, _ = company
-    client = await _logged_in_client(email, password)
+    client = await _logged_in_client(login_as, enrolled_admin)
     try:
         csrf_token = await _get_csrf_token(client, company_id)
         resp = await client.post(
@@ -191,9 +186,7 @@ def _embedded_windows_config(exe_bytes: bytes) -> dict:
     return json.loads(match.group(1))
 
 
-async def test_download_windows_serves_one_exe_with_config_embedded(
-    admin, company, db_pool, tmp_path, monkeypatch
-):
+async def test_download_windows_serves_one_exe_with_config_embedded(login_as, enrolled_admin, company, db_pool, tmp_path, monkeypatch):
     """A single file, not a zip of two: the config rides on the end of the PE
     image so there is nothing for a deployer to separate it from."""
     import app.routers.admin as admin_module
@@ -204,9 +197,8 @@ async def test_download_windows_serves_one_exe_with_config_embedded(
     placeholder.write_bytes(b"PLACEHOLDER-EXE-BYTES-NOT-A-REAL-BINARY")
     monkeypatch.setattr(admin_module, "WINDOWS_EXE_PATH", placeholder)
 
-    _, email, password = admin
     company_id, old_api_key = company
-    client = await _logged_in_client(email, password)
+    client = await _logged_in_client(login_as, enrolled_admin)
     try:
         csrf_token = await _get_csrf_token(client, company_id)
         resp = await client.post(
@@ -236,7 +228,7 @@ async def test_download_windows_serves_one_exe_with_config_embedded(
     assert old_resolved == company_id
 
 
-async def test_download_windows_does_not_mint_token_when_exe_missing(admin, company, db_pool, monkeypatch):
+async def test_download_windows_does_not_mint_token_when_exe_missing(login_as, enrolled_admin, company, db_pool, monkeypatch):
     """The exe-missing check must happen BEFORE any token is minted -- verify
     no token was created (and the legacy key is unaffected either way, since
     downloads no longer touch it)."""
@@ -248,9 +240,8 @@ async def test_download_windows_does_not_mint_token_when_exe_missing(admin, comp
 
     monkeypatch.setattr(admin_module, "WINDOWS_EXE_PATH", Path("/nonexistent/AssetlyAgent_Windows.exe"))
 
-    _, email, password = admin
     company_id, old_api_key = company
-    client = await _logged_in_client(email, password)
+    client = await _logged_in_client(login_as, enrolled_admin)
     try:
         csrf_token = await _get_csrf_token(client, company_id)
         resp = await client.post(
@@ -266,16 +257,15 @@ async def test_download_windows_does_not_mint_token_when_exe_missing(admin, comp
     assert await list_tokens(db_pool, str(company_id)) == []
 
 
-async def test_downloading_two_platforms_leaves_both_installers_working(admin, company, db_pool):
+async def test_downloading_two_platforms_leaves_both_installers_working(login_as, enrolled_admin, company, db_pool):
     """The bug this whole design exists to fix: downloading macOS then Linux
     used to invalidate the macOS installer's key (both installers embedded
     the single shared company key, and each download rotated it). Tokens are
     additive, so both must now enroll successfully."""
     from app.enrollment import list_device_credentials
 
-    _, email, password = admin
     company_id, _ = company
-    client = await _logged_in_client(email, password)
+    client = await _logged_in_client(login_as, enrolled_admin)
     try:
         csrf_token = await _get_csrf_token(client, company_id)
         mac = await client.post(
@@ -305,10 +295,9 @@ async def test_downloading_two_platforms_leaves_both_installers_working(admin, c
     assert len(await list_device_credentials(db_pool, company_id)) == 2
 
 
-async def test_company_detail_shows_download_buttons(admin, company):
-    _, email, password = admin
+async def test_company_detail_shows_download_buttons(login_as, enrolled_admin, company):
     company_id, _ = company
-    client = await _logged_in_client(email, password)
+    client = await _logged_in_client(login_as, enrolled_admin)
     try:
         resp = await client.get(f"/admin/companies/{company_id}")
     finally:
@@ -329,15 +318,14 @@ async def test_company_detail_shows_download_buttons(admin, company):
     assert b"invalidat" not in resp.content.lower()
 
 
-async def test_diagnostics_reports_what_is_on_disk(admin, company):
+async def test_diagnostics_reports_what_is_on_disk(login_as, enrolled_admin, company):
     """Guards the deploy check itself: it is only useful if it reports the
     real size and hash of the artifacts the download routes read."""
     import hashlib
 
     from app.config import REPO_ROOT
 
-    _, email, password = admin
-    client = await _logged_in_client(email, password)
+    client = await _logged_in_client(login_as, enrolled_admin)
     try:
         resp = await client.get("/admin/diagnostics")
     finally:
@@ -358,15 +346,14 @@ async def test_diagnostics_requires_login():
     assert resp.status_code == 303
 
 
-async def test_download_mints_a_capped_token(admin, company, db_pool):
+async def test_download_mints_a_capped_token(login_as, enrolled_admin, company, db_pool):
     """Unlimited devices for 90 days makes a leaked installer maximally
     valuable and gives no natural expiry pressure."""
     import datetime
     import uuid
 
-    _, email, password = admin
     company_id, _ = company
-    client = await _logged_in_client(email, password)
+    client = await _logged_in_client(login_as, enrolled_admin)
     try:
         csrf_token = await _get_csrf_token(client, company_id)
         resp = await client.post(
@@ -389,10 +376,9 @@ async def test_download_mints_a_capped_token(admin, company, db_pool):
     assert 13 <= lifetime.days <= 14
 
 
-async def test_download_rejects_a_bad_device_count(admin, company):
-    _, email, password = admin
+async def test_download_rejects_a_bad_device_count(login_as, enrolled_admin, company):
     company_id, _ = company
-    client = await _logged_in_client(email, password)
+    client = await _logged_in_client(login_as, enrolled_admin)
     try:
         csrf_token = await _get_csrf_token(client, company_id)
         resp = await client.post(
@@ -404,10 +390,9 @@ async def test_download_rejects_a_bad_device_count(admin, company):
     assert resp.status_code == 400
 
 
-async def test_download_rejects_an_unlisted_lifetime(admin, company):
-    _, email, password = admin
+async def test_download_rejects_an_unlisted_lifetime(login_as, enrolled_admin, company):
     company_id, _ = company
-    client = await _logged_in_client(email, password)
+    client = await _logged_in_client(login_as, enrolled_admin)
     try:
         csrf_token = await _get_csrf_token(client, company_id)
         resp = await client.post(
