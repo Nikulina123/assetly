@@ -250,8 +250,16 @@ psql -1 -f backend/migrations/014_auth_failure_digest.sql "$DATABASE_URL"
 psql -1 -f backend/migrations/015_normalise_credential_serials.sql "$DATABASE_URL"
 psql -1 -f backend/migrations/016_admin_mfa_rbac_audit.sql "$DATABASE_URL"
 psql -1 -f backend/migrations/017_audit_log_viewer_indexes.sql "$DATABASE_URL"
+# confirm MFA_SECRET_KEY is set in the target environment before promoting --
+# see "Required production environment" and "Sessions issued before the MFA
+# deploy" above. Do not promote on the assumption it can be added later; it
+# must be in place before any future SESSION_SECRET_KEY rotation, and the
+# cheapest time to guarantee that is now, alongside this deploy.
 # only then deploy/promote the new application code
 ```
+
+Immediately after this deploy, every admin must enroll in MFA — see "Rollout:
+mandatory enrollment window" below.
 
 **Sessions issued before the MFA deploy.** Enforcing MFA at login does not
 retroactively re-authenticate anyone. An admin session minted before this
@@ -267,14 +275,92 @@ a `SESSION_SECRET_KEY` rotation. Rotating that key invalidates every existing
 signed cookie at once and forces everyone through the new flow immediately,
 closing the window instead of waiting it out.
 
-Rotation has a documented, deliberate consequence (see the module docstring in
-`backend/app/mfa.py`): the TOTP encryption key is derived from
-`SESSION_SECRET_KEY` via HKDF, so rotating it also makes every **stored TOTP
-secret** undecryptable. `decrypt_secret` returns `None` rather than raising
-precisely so this degrades to "not enrolled", which routes those admins to
-`/admin/mfa/setup` to re-enroll — a forced re-enrollment, never a lockout.
-**Recovery codes are unaffected**: they are bcrypt-hashed independently of this
-key and keep working across the rotation.
+**This rotation is only safe if `MFA_SECRET_KEY` is already set.** Read this
+paragraph before rotating, not after.
+
+By default (no `MFA_SECRET_KEY`), the TOTP encryption key is derived from
+`SESSION_SECRET_KEY` via HKDF (see the module docstring in `backend/app/mfa.py`).
+Rotating `SESSION_SECRET_KEY` in that configuration also makes every **stored
+TOTP secret** undecryptable: `decrypt_secret` returns `None`, and
+`load_admin_context` reports `mfa_enrolled=False` for every admin, indistinguishable
+from an admin who never enrolled. `login_submit` routes anyone it thinks is
+unenrolled to `/admin/mfa/setup`, where a password alone is sufficient to enroll
+a new authenticator — that page has no way to tell "never enrolled" apart from
+"key rotated out from under them". If the threat you are rotating for is a
+**stolen password**, this is the opposite of remediation: the rotation strips
+every admin's enrolled status, and the attacker walks the stolen password straight
+through self-enrollment into durable MFA-backed access, using the exact page this
+deploy just added. Recovery codes do not help here — they gate *login*, not
+*enrollment*, and an unenrolled-looking admin is sent to setup before recovery
+codes ever come into play.
+
+**With `MFA_SECRET_KEY` set**, the TOTP encryption key is independent of
+`SESSION_SECRET_KEY`. Rotating `SESSION_SECRET_KEY` then does exactly and only
+what it is supposed to: it invalidates every existing signed cookie. Stored TOTP
+secrets stay decryptable, `mfa_enrolled` stays accurate, and the self-enrollment
+bypass above does not apply. **Recovery codes are unaffected** either way — they
+are bcrypt-hashed independently of both keys and keep working across the
+rotation.
+
+Operationally: set `MFA_SECRET_KEY` at or before this deploy, confirm it is set
+(`echo $MFA_SECRET_KEY` on the target environment, not just in a local `.env`),
+and only then rotate `SESSION_SECRET_KEY` if the incident calls for it. Rotating
+without `MFA_SECRET_KEY` set is the failure mode this whole section exists to
+prevent -- do not do it, even under incident-response time pressure.
+
+**Rollout: mandatory enrollment window.** The self-enrollment bypass above is
+not limited to the rotation scenario -- it is the ordinary state of any admin
+who has not yet enrolled. Every admin must enroll in MFA immediately after this
+deploy. Until an individual admin enrolls, a password stolen at any point
+*before* the deploy converts directly into attacker-controlled MFA the next
+time that admin (or the attacker, using the stolen password) hits
+`/admin/mfa/setup` -- the same mechanism as the rotation case, just without a
+rotation needed to trigger it. Treat the enrollment window as an active
+exposure to be closed, not a housekeeping item: notify every admin as part of
+the deploy, and follow up on anyone who has not enrolled within the first
+working day. An unexpected `admin.mfa.enrolled` row in the audit log for an
+admin who was not expected to enroll at that time (outside the initial rollout
+window, or for an account nobody actioned) should be treated as an incident --
+it is the observable signature of this exact attack.
+
+**Recovery: admin locked out with no authenticator and no recovery codes.**
+`backend/app/routers/admin.py` notes in a comment that "re-enrollment for a
+locked-out admin is an operator action" without saying what that action is.
+This is it. It is deliberately not self-service, for the same reason
+`/admin/mfa/setup` is dangerous above: an endpoint that lets an admin clear
+their own MFA state is an endpoint that lets a stolen password clear MFA state.
+
+1. Verify the requester's identity out-of-band (known-voice call, video call,
+   or equivalent -- not email or chat alone, since those are exactly the
+   channels a compromised account can use to ask for its own recovery).
+2. Run the following as the `admin` superuser role -- **not** `assetly`, which
+   holds only a column-level `UPDATE` grant and is not sufficient for this:
+
+   ```sql
+   UPDATE admins
+   SET mfa_secret = NULL, mfa_enrolled_at = NULL
+   WHERE email = '<admin-email>';
+   ```
+
+3. Tell the admin to log in with their existing password and enroll a new
+   authenticator at `/admin/mfa/setup` immediately.
+
+This procedure *is* the self-enrollment path described above, deliberately
+reopened for one identity-verified admin. That is exactly why step 1 is not
+optional: skip it, or accept a request that only claims to be the admin, and
+this becomes the same bypass an attacker with a stolen password would use.
+Never run this against a request received only through a channel the
+requester's own compromised credentials could have produced.
+
+**Role and scope changes are not audited.** `scripts/set_admin_role.py` (see
+"Admin tiers and per-company scope" below) writes `admins.role` and
+`admins.company_id` directly as the superuser, outside the application and
+outside the `audited()` transaction wrapper the admin router uses for its own
+mutations. These changes do **not** produce an `audit_log` row. An operator
+reviewing the audit log after an incident must not assume a role escalation
+would show up there -- it will not. If role changes need an audit trail,
+that requires a separate, deliberate change (e.g. having the script write its
+own row), not an assumption the log already covers it.
 
 **Audit log retention.** Indefinite, by policy and by grant: `audit_log`
 carries no `DELETE` grant for the application role (`assetly`), so the app
@@ -344,8 +430,19 @@ already exist — accounts are still created by `scripts/seed_admin.py` first.
 
 ## Required production environment
 
-Required in production: `ENVIRONMENT=production` and `SESSION_COOKIE_SECURE=true`.
+Required in production: `ENVIRONMENT=production`, `SESSION_COOKIE_SECURE=true`,
+and `MFA_SECRET_KEY`.
 The application refuses to start without the second when the first is set.
+
+`MFA_SECRET_KEY` overrides the default HKDF derivation described in
+`backend/app/mfa.py`, which otherwise derives the TOTP-secret encryption key
+from `SESSION_SECRET_KEY`. Setting it explicitly at deploy time decouples the
+two keys, which is what makes a later `SESSION_SECRET_KEY` rotation safe to
+perform -- see "Sessions issued before the MFA deploy" below. It does not need
+to be set before the first deploy to avoid breaking admin login (that is the
+point of the derivation fallback); it needs to be set before the *first time
+anyone rotates* `SESSION_SECRET_KEY`, and the deploy checklist below treats it
+that way.
 
 ## Device lifecycle
 
