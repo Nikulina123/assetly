@@ -29,3 +29,15 @@ jinja2==3.1.6
 # Updated to 0.0.31 to fix PYSEC-2026-3040 and related vulnerabilities
 python-multipart==0.0.31
 itsdangerous==2.2.0
+# TOTP (RFC 6238) for admin MFA. Hand-rolling the HMAC is ~40 lines, but the
+# QR encoder next to it is not, and a subtly wrong provisioning URI is a
+# silently broken enrollment that only shows up when someone is locked out.
+pyotp==2.9.0
+# Pure-Python QR encoder, no Pillow and no native code. Renders the
+# otpauth:// URI as an inline <svg> so enrollment needs no CDN fetch and no
+# image endpoint.
+segno==1.6.1
+# Fernet, for encrypting stored TOTP seeds. Was previously dev-only (used by
+# scripts/sign_release.py); it is a runtime dependency now that app/mfa.py
+# imports it. Ships manylinux wheels, so the Vercel build is unaffected.
+cryptography==43.0.1

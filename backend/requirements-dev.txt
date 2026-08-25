@@ -7,9 +7,7 @@
 pytest==8.3.3
 pytest-asyncio==0.24.0
 httpx==0.27.2
-# Used only by backend/scripts/sign_release.py, which runs on a release
-# owner's machine and never in CI or in the deployed function. Deliberately
-# NOT in the root requirements.txt: the agents verify signatures with stdlib
-# only, and the backend only ever reads an already-signed manifest.
-cryptography==43.0.1
+# cryptography moved to the root requirements.txt -- app/mfa.py now imports
+# it at runtime (Fernet, for encrypting stored TOTP seeds). Still available
+# here via the `-r ../requirements.txt` chain above.
 pip-audit==2.7.3
