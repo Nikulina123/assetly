@@ -20,6 +20,7 @@ from app.admin_auth import (
     consume_recovery_code,
     resolve_admin,
 )
+from app.audit import audited, record_audit
 from app import mfa
 from app.auth import generate_api_key, hash_api_key
 from app.config import (
@@ -187,6 +188,12 @@ async def login_submit(request: Request, email: str = Form(...), password: str =
 
     admin_id = await resolve_admin(pool, email, password)
     if admin_id is None:
+        # Recorded in clear, deliberately -- unlike the rate-limit buckets,
+        # which are hashed. This table's job is answering "who was targeted,
+        # from where" during an incident, and a hash cannot answer that.
+        await record_audit(
+            pool, request, None, "admin.login.failed", metadata={"email": email}
+        )
         return templates.TemplateResponse(
             request, "login.html", {"error": "Invalid email or password"}
         )
@@ -206,6 +213,10 @@ async def login_submit(request: Request, email: str = Form(...), password: str =
 
 @router.post("/logout")
 async def logout(request: Request):
+    admin_id = request.session.get("admin_id")
+    if admin_id:
+        pool = await get_pool()
+        await record_audit(pool, request, admin_id, "admin.logout")
     request.session.clear()
     return RedirectResponse("/admin/login", status_code=303)
 
@@ -281,11 +292,12 @@ async def mfa_setup_submit(
         )
 
     codes = mfa.generate_recovery_codes()
-    # One transaction: secret and codes land together or not at all.
-    async with pool.acquire() as conn:
-        async with conn.transaction():
-            await set_mfa_secret(conn, admin_id, secret)
-            await replace_recovery_codes(conn, admin_id, codes)
+    # One transaction: secret, codes, and the audit row land together or not
+    # at all. Never put the secret or the recovery codes themselves in
+    # metadata.
+    async with audited(pool, request, admin_id, "admin.mfa.enrolled") as scope:
+        await set_mfa_secret(scope.conn, admin_id, secret)
+        await replace_recovery_codes(scope.conn, admin_id, codes)
 
     request.session.clear()
     request.session["admin_id"] = admin_id
@@ -347,10 +359,19 @@ async def mfa_verify_submit(
                     method = "recovery"
 
     if method is None:
+        # Never put the submitted code in metadata -- it is secret material
+        # for the six-digit TOTP window it was valid in.
+        await record_audit(pool, request, admin_id, "admin.mfa.failed")
         return templates.TemplateResponse(
             request, "mfa_verify.html",
             {"csrf_token": _new_csrf_token(request), "error": "Invalid code"},
         )
+
+    if method == "recovery":
+        await record_audit(pool, request, admin_id, "admin.mfa.recovery_code_used")
+    await record_audit(
+        pool, request, admin_id, "admin.login.succeeded", metadata={"method": method}
+    )
 
     # Rotate at the point access is actually granted, not merely at the
     # password step.
@@ -940,6 +961,9 @@ async def diagnostics(request: Request, admin: AdminContext = Depends(require_fu
     are included so a served artifact can be compared with `sha256sum` against
     a local checkout without downloading anything.
     """
+    pool = await get_pool()
+    await record_audit(pool, request, admin, "admin.diagnostics_viewed")
+
     def describe(path: Path) -> dict:
         if not path.is_file():
             return {"path": str(path), "exists": False}
