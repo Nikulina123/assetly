@@ -822,3 +822,17 @@ async def test_audit_viewer_scopes_a_scoped_admin_to_their_own_company(
     assert "admin.login.succeeded" not in body, (
         "a scoped admin must not see actor-level events with no tenant scope"
     )
+
+    # The <tbody> slice above only pins the ROW query. The action-filter
+    # <select> is a separate query (SELECT DISTINCT action) rendered before
+    # <table>, entirely outside <tbody> -- so it needs its own assertion, or
+    # losing that query's scope predicate (exactly the leak this task found
+    # in the brief's draft) would go completely undetected. admin.login.
+    # succeeded is a good probe here too: login_as() generates one, and it
+    # carries a NULL target_company_id, so a correctly scoped dropdown must
+    # never offer it as a filter option to a scoped admin.
+    dropdown = resp.text.split('name="action"')[1].split("</select>")[0]
+    assert "admin.login.succeeded" not in dropdown, (
+        "a scoped admin's action filter must not list actions from events "
+        "outside their own tenant"
+    )
