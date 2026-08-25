@@ -31,6 +31,7 @@ from app.config import (
     PENDING_LOGIN_MAX_AGE_SECONDS,
     RATE_LIMIT_LOGIN,
     RATE_LIMIT_MFA,
+    RATE_LIMIT_MFA_IP,
     REPO_ROOT,
     WINDOWS_EXE_PATH,
 )
@@ -214,8 +215,17 @@ async def mfa_setup_submit(
         raise PendingLoginRequired()
 
     secret = request.session.get("pending_secret")
-    if not secret or not mfa.verify_totp(secret, code):
-        uri = mfa.provisioning_uri(secret or mfa.generate_secret(), ctx.email)
+    if not secret:
+        # No pending secret means this POST did not follow a GET of this form
+        # in the same session. Fabricating one here would render a QR for a
+        # secret nothing is tracking, next to a blank manual-entry key -- an
+        # unusable page that invites the admin to scan a code that can never
+        # verify. Send them back to restart the flow instead.
+        request.session.clear()
+        raise PendingLoginRequired()
+
+    if not mfa.verify_totp(secret, code):
+        uri = mfa.provisioning_uri(secret, ctx.email)
         return templates.TemplateResponse(
             request,
             "mfa_setup.html",
@@ -236,10 +246,11 @@ async def mfa_setup_submit(
 
     request.session.clear()
     request.session["admin_id"] = admin_id
+    # No csrf_token in the context: this page has no form. Its only control is
+    # a plain GET link to the console, and the next authenticated render mints
+    # a token of its own.
     return templates.TemplateResponse(
-        request,
-        "mfa_recovery_codes.html",
-        {"codes": codes, "csrf_token": _new_csrf_token(request)},
+        request, "mfa_recovery_codes.html", {"codes": codes}
     )
 
 
@@ -259,16 +270,27 @@ async def mfa_verify_submit(
     pool = await get_pool()
     admin_id = _pending_admin_id(request)
 
-    # Its own buckets, enforced BEFORE any comparison. A 6-digit code is a far
-    # weaker secret than a password, so this is tighter than RATE_LIMIT_LOGIN.
+    # Two buckets, both enforced BEFORE any comparison. A 6-digit code is a far
+    # weaker secret than a password, so these are tighter than RATE_LIMIT_LOGIN.
     #
-    # Keyed on the ADMIN ID, never on the session: abandoning the login and
-    # starting again produces a new cookie and a new CSRF token but the same
-    # admin, so the counter does not reset. That reset is the bypass this
-    # bucket exists to prevent -- see the test named for it.
+    # THE ADMIN-ID BUCKET IS THE LOAD-BEARING CONTROL. It is keyed on the admin
+    # id, never on the session: abandoning the login and starting again produces
+    # a new cookie and a new CSRF token but the same admin, so the counter does
+    # not reset. That reset is the bypass this bucket exists to prevent -- see
+    # test_restarting_the_login_does_not_reset_the_mfa_limit, which pins each
+    # attempt to a distinct IP precisely so that only THIS bucket can produce
+    # the 429 it asserts.
+    #
+    # The IP bucket is only a coarse guard against one address hammering many
+    # different accounts, and is deliberately much looser (RATE_LIMIT_MFA_IP).
+    # It is NOT defence in its own right: off Vercel, client_ip() falls through
+    # to the last x-forwarded-for entry, which an attacker on a direct
+    # connection rotates at will. Tightening it to the admin limit would buy no
+    # security and would let admins behind one office NAT lock each other out.
     limit, window = RATE_LIMIT_MFA
     await enforce_rate_limit(pool, hashed_bucket("mfa:admin", admin_id), limit, window)
-    await enforce_rate_limit(pool, f"mfa:ip:{client_ip(request)}", limit, window)
+    ip_limit, ip_window = RATE_LIMIT_MFA_IP
+    await enforce_rate_limit(pool, f"mfa:ip:{client_ip(request)}", ip_limit, ip_window)
 
     secret = await get_mfa_secret(pool, admin_id)
     method = None

@@ -299,19 +299,39 @@ async def test_mfa_verification_is_rate_limited(enrolled_admin):
 
 async def test_restarting_the_login_does_not_reset_the_mfa_limit(enrolled_admin):
     """The bypass this bucket exists to prevent. Keyed on the admin id, so a
-    fresh session -- new cookie, new CSRF token -- is the same bucket."""
+    fresh session -- new cookie, new CSRF token -- is the same bucket.
+
+    Each attempt is pinned to a DISTINCT source IP so that the per-IP bucket
+    can never be what produces the 429: with every request on its own address,
+    and RATE_LIMIT_MFA_IP far looser than RATE_LIMIT_MFA anyway, the only
+    counter that accumulates across these seven attempts is the admin-id one.
+    Without this the test passes even with the admin-id bucket deleted, since
+    a single ASGI client shares one client_ip and would trip the IP bucket at
+    the same iteration -- proving nothing about the property it is named for.
+
+    client_ip() takes the LAST x-forwarded-for entry (the only one a client
+    cannot forge through a real proxy), so a single-entry header per request
+    is what actually selects the bucket here.
+    """
     _admin_id, email, password, secret = enrolled_admin
 
-    async def burn_one():
+    async def burn_one(source_ip):
         async with await _client() as client:
-            await client.post("/admin/login", data={"email": email, "password": password})
-            await client.get("/admin/mfa/verify")
+            headers = {"x-forwarded-for": source_ip}
+            await client.post(
+                "/admin/login",
+                data={"email": email, "password": password},
+                headers=headers,
+            )
+            await client.get("/admin/mfa/verify", headers=headers)
             csrf = _unsign_session(client.cookies["session"])["csrf_token"]
             return await client.post(
-                "/admin/mfa/verify", data={"code": "000000", "csrf_token": csrf}
+                "/admin/mfa/verify",
+                data={"code": "000000", "csrf_token": csrf},
+                headers=headers,
             )
 
-    statuses = [(await burn_one()).status_code for _ in range(7)]
+    statuses = [(await burn_one(f"10.0.0.{i}")).status_code for i in range(7)]
     assert 429 in statuses, (
         f"restarting the login reset the counter -- statuses {statuses}"
     )

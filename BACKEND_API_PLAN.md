@@ -243,6 +243,29 @@ psql -1 -f backend/migrations/016_admin_mfa_rbac_audit.sql "$DATABASE_URL"
 # only then deploy/promote the new application code
 ```
 
+**Sessions issued before the MFA deploy.** Enforcing MFA at login does not
+retroactively re-authenticate anyone. An admin session minted before this
+change carries `admin_id` directly in its signed cookie and therefore reaches
+every admin route without ever presenting a second factor, for the remainder of
+its 8-hour `SESSION_MAX_AGE_SECONDS` lifetime. The new two-stage flow only
+governs logins that happen after the deploy.
+
+If the threat model includes an **already-compromised session** — as it does
+whenever MFA is being rolled out in response to a suspected or confirmed
+credential compromise, rather than as routine hardening — pair this deploy with
+a `SESSION_SECRET_KEY` rotation. Rotating that key invalidates every existing
+signed cookie at once and forces everyone through the new flow immediately,
+closing the window instead of waiting it out.
+
+Rotation has a documented, deliberate consequence (see the module docstring in
+`backend/app/mfa.py`): the TOTP encryption key is derived from
+`SESSION_SECRET_KEY` via HKDF, so rotating it also makes every **stored TOTP
+secret** undecryptable. `decrypt_secret` returns `None` rather than raising
+precisely so this degrades to "not enrolled", which routes those admins to
+`/admin/mfa/setup` to re-enroll — a forced re-enrollment, never a lockout.
+**Recovery codes are unaffected**: they are bcrypt-hashed independently of this
+key and keep working across the rotation.
+
 **Audit log retention.** Indefinite, by policy and by grant: `audit_log`
 carries no `DELETE` grant for the application role (`assetly`), so the app
 cannot prune it even if a future bug tried to. Any pruning is an operator
