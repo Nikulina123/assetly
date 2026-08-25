@@ -36,7 +36,7 @@ def _session_csrf(client) -> str:
     return session["csrf_token"]
 
 
-READ_ROUTES = ["/admin/companies"]
+READ_ROUTES = ["/admin/companies", "/admin/companies/{company_id}"]
 
 # Every state-changing route, plus the three installer downloads (they are
 # POSTs and they MINT ENROLLMENT TOKENS, which is exactly the capability
@@ -63,10 +63,11 @@ def _write_routes(company_id, token_id, serial):
 
 
 async def test_support_admin_can_read(support_admin, company, login_as):
+    company_id, _api_key = company
     async with await _client() as client:
         await login_as(client, support_admin)
         for path in READ_ROUTES:
-            resp = await client.get(path)
+            resp = await client.get(path.format(company_id=company_id))
             assert resp.status_code == 200, f"{path} -> {resp.status_code}"
 
 
@@ -134,3 +135,89 @@ async def test_a_deleted_admin_cookie_authenticates_nobody(db_pool, enrolled_adm
         resp = await client.get("/admin/companies", follow_redirects=False)
     assert resp.status_code == 303
     assert resp.headers["location"] == "/admin/login"
+
+
+async def test_a_global_admin_still_sees_every_company(db_pool, enrolled_admin, company, login_as):
+    """The rollout guarantee: company_id IS NULL for every admin that exists
+    today, so nothing about their view may change."""
+    company_id, _api_key = company
+    async with await _client() as client:
+        await login_as(client, enrolled_admin)
+        resp = await client.get("/admin/companies")
+    assert resp.status_code == 200
+    assert company_id.encode() in resp.content or b"Test Co" in resp.content
+
+
+async def test_a_scoped_admin_sees_only_its_own_company(db_pool, scoped_admin, login_as):
+    from app.auth import generate_api_key, hash_api_key
+
+    _admin_id, _email, _password, _secret, company_id = scoped_admin
+    other_key = generate_api_key()
+    async with db_pool.acquire() as conn:
+        other = await conn.fetchrow(
+            "INSERT INTO companies (name, api_key_hash, api_key_prefix) "
+            "VALUES ('Other Co', $1, $2) RETURNING id",
+            hash_api_key(other_key), other_key[:8],
+        )
+    async with await _client() as client:
+        await login_as(client, scoped_admin)
+        resp = await client.get("/admin/companies")
+    assert b"Other Co" not in resp.content
+    assert b"Test Co" in resp.content
+
+
+async def test_a_scoped_admin_gets_404_not_403_for_another_company(db_pool, scoped_admin, login_as):
+    """404, not 403: a 403 confirms the company exists, which is a disclosure
+    to an admin who is not supposed to know that tenant is a customer."""
+    from app.auth import generate_api_key, hash_api_key
+
+    _admin_id, _email, _password, _secret, _own = scoped_admin
+    other_key = generate_api_key()
+    async with db_pool.acquire() as conn:
+        other = await conn.fetchrow(
+            "INSERT INTO companies (name, api_key_hash, api_key_prefix) "
+            "VALUES ('Other Co', $1, $2) RETURNING id",
+            hash_api_key(other_key), other_key[:8],
+        )
+    other_id = str(other["id"])
+    async with await _client() as client:
+        await login_as(client, scoped_admin)
+        # login_as leaves no csrf_token in the session until a form-rendering
+        # GET happens (the two-stage login's final redirect carries none) --
+        # so a form-carrying POST below needs this GET first.
+        await client.get("/admin/companies")
+        csrf = _session_csrf(client)
+        assert (await client.get(f"/admin/companies/{other_id}")).status_code == 404
+        rotate = await client.post(
+            f"/admin/companies/{other_id}/rotate-key", data={"csrf_token": csrf}
+        )
+        assert rotate.status_code == 404
+        # device_count is required by the route's Form(...) declaration; a
+        # missing value would 422 from validation before the scope check in
+        # the handler body ever runs, which would prove nothing about scoping.
+        download = await client.post(
+            f"/admin/companies/{other_id}/download/linux",
+            data={"csrf_token": csrf, "device_count": 5},
+        )
+        assert download.status_code == 404
+
+
+async def test_a_scoped_admin_can_still_work_on_its_own_company(scoped_admin, login_as):
+    _admin_id, _email, _password, _secret, company_id = scoped_admin
+    async with await _client() as client:
+        await login_as(client, scoped_admin)
+        assert (await client.get(f"/admin/companies/{company_id}")).status_code == 200
+
+
+async def test_a_scoped_admin_cannot_create_a_company(scoped_admin, login_as):
+    """It would create a company it then could not see."""
+    _admin_id, _email, _password, _secret, _company_id = scoped_admin
+    async with await _client() as client:
+        await login_as(client, scoped_admin)
+        # See the comment in test_a_scoped_admin_gets_404_not_403_for_another_company:
+        # login_as alone leaves no csrf_token in the session.
+        await client.get("/admin/companies")
+        resp = await client.post(
+            "/admin/companies", data={"name": "New Co", "csrf_token": _session_csrf(client)}
+        )
+    assert resp.status_code == 403

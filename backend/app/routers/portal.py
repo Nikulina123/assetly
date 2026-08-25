@@ -9,6 +9,7 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.templating import Jinja2Templates
 
+from app.admin_auth import AdminContext
 from app.db import get_pool
 from app.devices import dashboard_stats, get_checkin_history, get_device, list_devices
 from app.enrollment import list_device_credentials
@@ -21,12 +22,12 @@ templates = Jinja2Templates(
 )
 
 
-async def _shell(request: Request, company_id: uuid.UUID):
+async def _shell(request: Request, company_id: uuid.UUID, admin: AdminContext):
     """Context every portal screen needs: the company itself plus the sidebar's
     company switcher."""
     pool = await get_pool()
-    company = await _get_company_or_404(pool, company_id)
-    companies = await _all_companies(pool)
+    company = await _get_company_or_404(pool, company_id, admin)
+    companies = await _all_companies(pool, admin)
     return pool, {
         "request": request,
         "company": company,
@@ -37,9 +38,9 @@ async def _shell(request: Request, company_id: uuid.UUID):
 
 @router.get("/{company_id}/dashboard")
 async def dashboard(
-    request: Request, company_id: uuid.UUID, admin_id: str = Depends(require_admin)
+    request: Request, company_id: uuid.UUID, admin: AdminContext = Depends(require_admin)
 ):
-    pool, context = await _shell(request, company_id)
+    pool, context = await _shell(request, company_id, admin)
     context["stats"] = await dashboard_stats(pool, str(company_id))
     context["devices"] = await list_devices(pool, str(company_id))
     # The "Online" band is proportional to this company's interval (see
@@ -55,9 +56,9 @@ async def dashboard(
 
 @router.get("/{company_id}/computers")
 async def computers(
-    request: Request, company_id: uuid.UUID, admin_id: str = Depends(require_admin)
+    request: Request, company_id: uuid.UUID, admin: AdminContext = Depends(require_admin)
 ):
-    pool, context = await _shell(request, company_id)
+    pool, context = await _shell(request, company_id, admin)
     context["devices"] = await list_devices(pool, str(company_id))
     context["nav_active"] = "computers"
     return templates.TemplateResponse(request, "portal_computers.html", context)
@@ -68,9 +69,9 @@ async def device_detail(
     request: Request,
     company_id: uuid.UUID,
     serial_number: str,
-    admin_id: str = Depends(require_admin),
+    admin: AdminContext = Depends(require_admin),
 ):
-    pool, context = await _shell(request, company_id)
+    pool, context = await _shell(request, company_id, admin)
     device = await get_device(pool, str(company_id), serial_number)
     if device is None:
         raise HTTPException(status_code=404, detail="Device not found")

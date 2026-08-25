@@ -271,6 +271,54 @@ carries no `DELETE` grant for the application role (`assetly`), so the app
 cannot prune it even if a future bug tried to. Any pruning is an operator
 action, run directly as the `admin` role.
 
+## Admin tiers and per-company scope
+
+Two independent axes on `admins`, both added by migration 016 and both
+writable only by the `admin` superuser role (the `assetly` app role has no
+grant on either column — see the column-level `UPDATE (mfa_secret,
+mfa_enrolled_at)` grant in that migration, which is deliberately narrower):
+
+- **`role`** — `admin` (full: can create/modify/revoke companies, rotate keys,
+  mint installer tokens, change schedules and field config) or `support`
+  (read-only: can view company lists and detail pages, nothing else).
+  `require_full_admin` enforces this on every state-changing route, on the
+  three installer downloads (they mint enrollment tokens), and on
+  `/admin/diagnostics` (it discloses server filesystem paths). Hiding the
+  buttons in the template is a nicety, not the control.
+- **`company_id`** — `NULL` means global (sees and can act on every company,
+  the behaviour every admin account had before this feature existed); a UUID
+  scopes the admin to exactly one company. `require_admin` reads both columns
+  from the database on every request (not from the session cookie), so a
+  role or scope change — or an account deletion — takes effect on the very
+  next request rather than waiting out the 8-hour session.
+
+Scoping is enforced in SQL, not in the template: `_all_companies` filters its
+query by `company_id` when the caller is scoped, and `_get_company_or_404` /
+`_get_active_company_or_404` reject out-of-scope ids **before** touching the
+database, with a 404 — never a 403. A 403 would confirm the row exists, which
+discloses to a scoped admin that a tenant they cannot see is a customer of
+ours; a 404 is indistinguishable from "no such id". A scoped admin also
+cannot create new companies (`require_global_admin` on `POST
+/admin/companies`) — a company they create would immediately be one they
+cannot themselves see afterward.
+
+**Assigning role and scope: `backend/scripts/set_admin_role.py`.** There is
+no UI for this, on purpose: role and `company_id` are the two columns that
+decide what an admin account can see and do, and if changing them went
+through the admin router, a bug there — a missing dependency, a mis-wired
+form field — could be used to escalate an account's own privileges. Instead
+this is an operator action, run directly against the database as the `admin`
+superuser:
+
+```
+cd backend && source venv/bin/activate
+python3 -m scripts.set_admin_role --email admin@assetly.com --role admin --company-id global
+python3 -m scripts.set_admin_role --email support@assetly.com --role support --company-id <company-uuid>
+```
+
+It fails loudly (nonzero exit, message to stderr) if the email does not
+already exist — accounts are still created by `scripts/seed_admin.py` first.
+
 ## Required production environment
 
 Required in production: `ENVIRONMENT=production` and `SESSION_COOKIE_SECURE=true`.

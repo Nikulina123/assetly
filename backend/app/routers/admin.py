@@ -154,9 +154,19 @@ def _check_csrf(request: Request, csrf_token: str) -> None:
         raise HTTPException(status_code=403, detail="Invalid CSRF token")
 
 
-async def _all_companies(pool):
+async def _all_companies(pool, admin: AdminContext):
+    """A scoped admin's list is filtered in SQL rather than in the template --
+    the template is presentation, and a value that never leaves the database
+    cannot leak through a context that some other view forgets to filter."""
     async with pool.acquire() as conn:
-        return await conn.fetch("SELECT id, name, revoked_at FROM companies ORDER BY name")
+        if admin.is_global:
+            return await conn.fetch(
+                "SELECT id, name, revoked_at FROM companies ORDER BY name"
+            )
+        return await conn.fetch(
+            "SELECT id, name, revoked_at FROM companies WHERE id = $1 ORDER BY name",
+            uuid.UUID(admin.company_id),
+        )
 
 
 @router.get("/login")
@@ -352,7 +362,7 @@ async def mfa_verify_submit(
 @router.get("/companies")
 async def companies_list(request: Request, admin: AdminContext = Depends(require_admin)):
     pool = await get_pool()
-    companies = await _all_companies(pool)
+    companies = await _all_companies(pool, admin)
     return templates.TemplateResponse(
         request,
         "companies_list.html",
@@ -380,7 +390,7 @@ async def companies_create(
             name, key_hash, api_key[:8], notification_email,
         )
 
-    companies = await _all_companies(pool)
+    companies = await _all_companies(pool, admin)
     return templates.TemplateResponse(
         request,
         "companies_list.html",
@@ -393,7 +403,12 @@ async def companies_create(
     )
 
 
-async def _get_company_or_404(pool, company_id: uuid.UUID):
+async def _get_company_or_404(pool, company_id: uuid.UUID, admin: AdminContext):
+    # 404 rather than 403, and checked before the lookup: a 403 (or a 404 whose
+    # timing differs from a real miss) confirms the company exists, which tells
+    # a scoped admin that a tenant they are not entitled to see is a customer.
+    if not admin.is_global and str(company_id) != admin.company_id:
+        raise HTTPException(status_code=404, detail="Company not found")
     async with pool.acquire() as conn:
         company = await conn.fetchrow(
             "SELECT id, name, api_key_prefix, revoked_at, notification_email FROM companies WHERE id = $1",
@@ -498,9 +513,9 @@ async def company_detail(
     request: Request, company_id: uuid.UUID, admin: AdminContext = Depends(require_admin)
 ):
     pool = await get_pool()
-    company = await _get_company_or_404(pool, company_id)
+    company = await _get_company_or_404(pool, company_id, admin)
     field_settings = await resolve_field_settings_for_admin(pool, str(company_id))
-    companies = await _all_companies(pool)
+    companies = await _all_companies(pool, admin)
     context = {
         "request": request,
         "companies": companies,
@@ -525,6 +540,7 @@ async def rotate_key(
 ):
     _check_csrf(request, csrf_token)
     pool = await get_pool()
+    await _get_company_or_404(pool, company_id, admin)
 
     api_key = generate_api_key()
     key_hash = hash_api_key(api_key)
@@ -540,7 +556,7 @@ async def rotate_key(
         raise HTTPException(status_code=404, detail="Company not found")
 
     field_settings = await resolve_field_settings_for_admin(pool, str(company_id))
-    companies = await _all_companies(pool)
+    companies = await _all_companies(pool, admin)
     context = {
         "request": request,
         "companies": companies,
@@ -565,6 +581,7 @@ async def revoke_company(
 ):
     _check_csrf(request, csrf_token)
     pool = await get_pool()
+    await _get_company_or_404(pool, company_id, admin)
 
     async with pool.acquire() as conn:
         company = await conn.fetchrow(
@@ -580,10 +597,10 @@ async def revoke_company(
         # either "already revoked" or "doesn't exist" — disambiguate with a plain
         # lookup: 404s if truly missing, otherwise returns the existing (already-
         # revoked) row so this stays idempotent instead of erroring on a re-click.
-        company = await _get_company_or_404(pool, company_id)
+        company = await _get_company_or_404(pool, company_id, admin)
 
     field_settings = await resolve_field_settings_for_admin(pool, str(company_id))
-    companies = await _all_companies(pool)
+    companies = await _all_companies(pool, admin)
     context = {
         "request": request,
         "companies": companies,
@@ -608,7 +625,7 @@ async def update_notification_email(
 ):
     _check_csrf(request, csrf_token)
     pool = await get_pool()
-    await _get_company_or_404(pool, company_id)
+    await _get_company_or_404(pool, company_id, admin)
     async with pool.acquire() as conn:
         await conn.execute(
             "UPDATE companies SET notification_email = $1 WHERE id = $2",
@@ -634,7 +651,7 @@ async def update_schedule(
 ):
     _check_csrf(request, csrf_token)
     pool = await get_pool()
-    await _get_company_or_404(pool, company_id)
+    await _get_company_or_404(pool, company_id, admin)
 
     try:
         if interval_preset == "custom":
@@ -656,8 +673,8 @@ async def update_schedule(
         # the deliberate choice -- a rejected value is by definition one that
         # cannot be stored, and redisplaying it invites a second save of the
         # same bad input, while the stored values are what is still in force.
-        company = await _get_company_or_404(pool, company_id)
-        companies = await _all_companies(pool)
+        company = await _get_company_or_404(pool, company_id, admin)
+        companies = await _all_companies(pool, admin)
         field_settings = await resolve_field_settings_for_admin(pool, str(company_id))
         context = {
             "request": request,
@@ -696,7 +713,7 @@ async def update_agent_ui(
     form = await request.form()
     _check_csrf(request, str(form.get("csrf_token", "")))
     pool = await get_pool()
-    await _get_company_or_404(pool, company_id)
+    await _get_company_or_404(pool, company_id, admin)
 
     # Absent keys mean "leave at default"; the template posts every key, so in
     # practice absence only happens for a form from an older page load.
@@ -711,8 +728,8 @@ async def update_agent_ui(
         # hand-picked, and re-reading the stored palette would throw all of
         # that away to show the failure. The card renders from `agent_ui_form`
         # when present, so the admin can fix the one bad value in place.
-        company = await _get_company_or_404(pool, company_id)
-        companies = await _all_companies(pool)
+        company = await _get_company_or_404(pool, company_id, admin)
+        companies = await _all_companies(pool, admin)
         field_settings = await resolve_field_settings_for_admin(pool, str(company_id))
         context = {
             "request": request,
@@ -750,7 +767,7 @@ async def update_hardware_fields(
 ):
     _check_csrf(request, csrf_token)
     pool = await get_pool()
-    await _get_company_or_404(pool, company_id)
+    await _get_company_or_404(pool, company_id, admin)
 
     company_id_str = str(company_id)
     for field_key, submitted_value in [
@@ -789,12 +806,12 @@ async def add_custom_field_route(
 ):
     _check_csrf(request, csrf_token)
     pool = await get_pool()
-    company = await _get_company_or_404(pool, company_id)
+    company = await _get_company_or_404(pool, company_id, admin)
     try:
         await add_custom_field(pool, str(company_id), label, required is not None)
     except ValueError as e:
         field_settings = await resolve_field_settings_for_admin(pool, str(company_id))
-        companies = await _all_companies(pool)
+        companies = await _all_companies(pool, admin)
         context = {
             "request": request,
             "companies": companies,
@@ -821,7 +838,7 @@ async def remove_custom_field_route(
 ):
     _check_csrf(request, csrf_token)
     pool = await get_pool()
-    await _get_company_or_404(pool, company_id)
+    await _get_company_or_404(pool, company_id, admin)
     await remove_custom_field(pool, str(company_id), field_key)
     return RedirectResponse(f"/admin/companies/{company_id}", status_code=303)
 
@@ -840,7 +857,7 @@ async def revoke_enrollment_token(
     itself."""
     _check_csrf(request, csrf_token)
     pool = await get_pool()
-    await _get_company_or_404(pool, company_id)
+    await _get_company_or_404(pool, company_id, admin)
     await revoke_token(pool, str(company_id), str(token_id))
     return RedirectResponse(f"/admin/companies/{company_id}", status_code=303)
 
@@ -862,7 +879,7 @@ async def revoke_device(
     segment for us by the time `serial_number` reaches this function)."""
     _check_csrf(request, csrf_token)
     pool = await get_pool()
-    await _get_company_or_404(pool, company_id)
+    await _get_company_or_404(pool, company_id, admin)
     await revoke_device_credential(pool, str(company_id), serial_number)
     return RedirectResponse(
         f"/admin/companies/{company_id}/computers/{quote(serial_number, safe='')}",
@@ -870,11 +887,11 @@ async def revoke_device(
     )
 
 
-async def _get_active_company_or_404(pool, company_id: uuid.UUID):
+async def _get_active_company_or_404(pool, company_id: uuid.UUID, admin: AdminContext):
     """Like _get_company_or_404, but also blocks revoked companies -- a
     downloadable installer whose key immediately 401s is worse than no
     download button."""
-    company = await _get_company_or_404(pool, company_id)
+    company = await _get_company_or_404(pool, company_id, admin)
     if company["revoked_at"] is not None:
         raise HTTPException(status_code=404, detail="Company not found")
     return company
@@ -1020,7 +1037,7 @@ async def download_macos(
     """
     _check_csrf(request, csrf_token)
     pool = await get_pool()
-    await _get_active_company_or_404(pool, company_id)
+    await _get_active_company_or_404(pool, company_id, admin)
     postinstall_template = _load_installer_template("AssetlyAgent_macOS_postinstall.sh")
     agent_source = (REPO_ROOT / "inventory_agent.py").read_bytes()
     max_devices, expires_at = _installer_token_terms(device_count, token_days)
@@ -1063,7 +1080,7 @@ async def download_linux(
 ):
     _check_csrf(request, csrf_token)
     pool = await get_pool()
-    await _get_active_company_or_404(pool, company_id)
+    await _get_active_company_or_404(pool, company_id, admin)
     template_text = _load_installer_template("AssetlyAgent_Linux.sh")
     max_devices, expires_at = _installer_token_terms(device_count, token_days)
     token = await create_enrollment_token(
@@ -1107,7 +1124,7 @@ async def download_windows(
         )
     exe_bytes = WINDOWS_EXE_PATH.read_bytes()
     pool = await get_pool()
-    await _get_active_company_or_404(pool, company_id)
+    await _get_active_company_or_404(pool, company_id, admin)
     max_devices, expires_at = _installer_token_terms(device_count, token_days)
     token = await create_enrollment_token(
         pool, str(company_id), label=f"Windows installer ({device_count} devices)",
