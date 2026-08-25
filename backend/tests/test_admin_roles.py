@@ -139,13 +139,31 @@ async def test_a_deleted_admin_cookie_authenticates_nobody(db_pool, enrolled_adm
 
 async def test_a_global_admin_still_sees_every_company(db_pool, enrolled_admin, company, login_as):
     """The rollout guarantee: company_id IS NULL for every admin that exists
-    today, so nothing about their view may change."""
+    today, so nothing about their view may change. Two companies, not one --
+    with a single company this test cannot tell "sees every company" apart
+    from "sees at least one company", so it would catch a total leak (an
+    empty list, a 500) but not a partial one, e.g. a future
+    `WHERE id = ANY(...)` that silently drops a row."""
+    from app.auth import generate_api_key, hash_api_key
+
     company_id, _api_key = company
+    other_key = generate_api_key()
+    async with db_pool.acquire() as conn:
+        other = await conn.fetchrow(
+            "INSERT INTO companies (name, api_key_hash, api_key_prefix) "
+            "VALUES ('Other Co', $1, $2) RETURNING id",
+            hash_api_key(other_key), other_key[:8],
+        )
+    other_id = str(other["id"])
     async with await _client() as client:
         await login_as(client, enrolled_admin)
         resp = await client.get("/admin/companies")
     assert resp.status_code == 200
-    assert company_id.encode() in resp.content or b"Test Co" in resp.content
+    # Asserted on raw ids, not a name-based fallback: a fallback like
+    # `or b"Test Co"` would keep passing even if the template ever stopped
+    # rendering ids at all, silently carrying the test on the wrong evidence.
+    assert company_id.encode() in resp.content
+    assert other_id.encode() in resp.content
 
 
 async def test_a_scoped_admin_sees_only_its_own_company(db_pool, scoped_admin, login_as):
@@ -200,6 +218,14 @@ async def test_a_scoped_admin_gets_404_not_403_for_another_company(db_pool, scop
             data={"csrf_token": csrf, "device_count": 5},
         )
         assert download.status_code == 404
+        # revoke_company does its own raw UPDATE rather than going through a
+        # shared helper first -- this is the assertion that pins that fix in
+        # place. Without it, deleting the _get_company_or_404 call at the top
+        # of revoke_company still leaves the whole suite green.
+        revoke = await client.post(
+            f"/admin/companies/{other_id}/revoke", data={"csrf_token": csrf}
+        )
+        assert revoke.status_code == 404
 
 
 async def test_a_scoped_admin_can_still_work_on_its_own_company(scoped_admin, login_as):
@@ -217,7 +243,18 @@ async def test_a_scoped_admin_cannot_create_a_company(scoped_admin, login_as):
         # See the comment in test_a_scoped_admin_gets_404_not_403_for_another_company:
         # login_as alone leaves no csrf_token in the session.
         await client.get("/admin/companies")
+        # notification_email is also required by companies_create's
+        # Form(...) declaration; omitting it would 422 from request
+        # validation before require_global_admin's 403 is ever reached --
+        # true today only because FastAPI resolves dependencies before body
+        # validation, so it's one framework-ordering change from a false
+        # green. Supply it so the 403 is actually pinned to the dependency.
         resp = await client.post(
-            "/admin/companies", data={"name": "New Co", "csrf_token": _session_csrf(client)}
+            "/admin/companies",
+            data={
+                "name": "New Co",
+                "notification_email": "new-co@example.com",
+                "csrf_token": _session_csrf(client),
+            },
         )
     assert resp.status_code == 403

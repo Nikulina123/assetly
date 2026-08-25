@@ -201,3 +201,45 @@ async def test_device_detail_finds_preexisting_unnormalised_credential(db_pool, 
     assert resp.status_code == 200
     assert "No enrollment credential on file" not in resp.text
     assert "/revoke" in resp.text
+
+
+async def test_scoped_admin_gets_404_on_another_companys_portal_pages(
+    db_pool, company, login_as, scoped_admin
+):
+    """The most valuable finding in Task 6: before per-company scoping was
+    threaded through portal.py's _shell, any admin -- including one scoped to
+    a single tenant -- could read another tenant's dashboard, device
+    inventory, and check-in history simply by putting that tenant's
+    company_id in the URL. scoped_admin is scoped to `company` (see the
+    fixture), so `other_id` here is genuinely out of its scope."""
+    other_id, other_key = await _second_company(db_pool, name="Other Co")
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test", follow_redirects=True) as client:
+        await _submit(client, other_key, "OTHER-SN-1", "other-host")
+        await login_as(client, scoped_admin)
+        dashboard_resp = await client.get(f"/admin/companies/{other_id}/dashboard")
+        computers_resp = await client.get(f"/admin/companies/{other_id}/computers")
+        device_resp = await client.get(f"/admin/companies/{other_id}/computers/OTHER-SN-1")
+    assert dashboard_resp.status_code == 404
+    assert computers_resp.status_code == 404
+    assert device_resp.status_code == 404
+
+
+async def test_global_admin_still_gets_200_on_the_same_portal_pages(
+    db_pool, company, login_as, enrolled_admin
+):
+    """The mirror of the test above: proves the 404s are about scope and not
+    about something else being broken for everyone -- a route typo or a
+    dropped dependency here would show up as a failure instead of a false
+    pass."""
+    company_id, api_key = company
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test", follow_redirects=True) as client:
+        await _submit(client, api_key, "SN-GLOBAL-1", "global-host")
+        await login_as(client, enrolled_admin)
+        dashboard_resp = await client.get(f"/admin/companies/{company_id}/dashboard")
+        computers_resp = await client.get(f"/admin/companies/{company_id}/computers")
+        device_resp = await client.get(f"/admin/companies/{company_id}/computers/SN-GLOBAL-1")
+    assert dashboard_resp.status_code == 200
+    assert computers_resp.status_code == 200
+    assert device_resp.status_code == 200

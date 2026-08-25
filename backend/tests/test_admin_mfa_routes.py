@@ -5,6 +5,7 @@ Before this change, `POST /admin/login` with the right password handed over a
 console that can rotate any company's API key and mint enrollment tokens for
 any tenant.
 """
+import asyncio
 import json
 import time
 from base64 import b64decode, b64encode
@@ -314,6 +315,27 @@ async def test_restarting_the_login_does_not_reset_the_mfa_limit(enrolled_admin)
     is what actually selects the bucket here.
     """
     _admin_id, email, password, secret = enrolled_admin
+
+    # This test's whole premise is that all 7 attempts land in the SAME fixed
+    # window (RATE_LIMIT_MFA's 900-second bucket, from _window_start in
+    # app/rate_limit.py). If the window boundary falls between attempt 5 and
+    # attempt 6, the admin-id counter resets mid-burst and 6/7 come back 200
+    # instead of 429 -- a real flake (~1-in-450 runs at this test's ~2s
+    # runtime), not a bug in the rate limiter. Rather than freezing the clock
+    # (no freezegun dependency here) or retrying on failure (which could just
+    # as easily mask a real regression), wait out a near-boundary window
+    # before starting the burst so the whole sequence always lands in one
+    # window.
+    import datetime as _datetime
+    from app.rate_limit import _window_start
+
+    _WINDOW_SECONDS = 900
+    _SAFETY_MARGIN_SECONDS = 15  # generous vs. this test's ~2s of bcrypt work
+    now = _datetime.datetime.now(_datetime.timezone.utc)
+    window_start = _window_start(_WINDOW_SECONDS, now)
+    remaining = _WINDOW_SECONDS - (now - window_start).total_seconds()
+    if remaining < _SAFETY_MARGIN_SECONDS:
+        await asyncio.sleep(remaining + 0.5)
 
     async def burn_one(source_ip):
         async with await _client() as client:
