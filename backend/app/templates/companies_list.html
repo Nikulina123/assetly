@@ -8,6 +8,7 @@
 </div>
 {% endif %}
 
+{% if admin.is_full_admin %}
 <div class="card" style="max-width:460px">
   <div class="section-title" style="margin-top:0">New company</div>
   <form method="post" action="/admin/companies">
@@ -19,4 +20,5 @@
     <button type="submit" class="btn">Create company</button>
   </form>
 </div>
+{% endif %}
 {% endblock %}

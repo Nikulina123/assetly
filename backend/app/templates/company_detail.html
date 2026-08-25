@@ -25,6 +25,7 @@
 <div class="card flush">
   <div class="card-header"><div class="card-title">{{ icons.icon('mail', 14, extra_class='spec-row-icon') }}&nbsp;Notification email</div></div>
   <div class="card-body">
+    {% if admin.is_full_admin %}
     <form method="post" action="/admin/companies/{{ company['id'] }}/notification-email">
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
       <div style="display:flex;gap:10px;flex-wrap:wrap">
@@ -33,12 +34,16 @@
         <button type="submit" class="btn">Update</button>
       </div>
     </form>
+    {% else %}
+    <div class="muted">{{ company['notification_email'] or '—' }}</div>
+    {% endif %}
   </div>
 </div>
 
 <div class="card flush">
   <div class="card-header"><div class="card-title">{{ icons.icon('key', 14, extra_class='spec-row-icon') }}&nbsp;API key</div></div>
   <div class="card-body">
+    {% if admin.is_full_admin %}
     <div style="display:flex;gap:10px;flex-wrap:wrap">
       <form method="post" action="/admin/companies/{{ company['id'] }}/rotate-key">
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
@@ -51,6 +56,9 @@
       </form>
       {% endif %}
     </div>
+    {% else %}
+    <div class="muted">Read-only — full admin required to rotate or revoke.</div>
+    {% endif %}
   </div>
 </div>
 
@@ -61,6 +69,7 @@
     <div class="banner banner-error">{{ schedule_error }}</div>
     {% endif %}
     <div class="banner">{{ schedule_summary }}</div>
+    {% if admin.is_full_admin %}
     <form method="post" action="/admin/companies/{{ company['id'] }}/schedule">
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
 
@@ -95,12 +104,14 @@
 
       <button type="submit" class="btn" style="margin-top:12px">Save check-in schedule</button>
     </form>
+    {% endif %}
   </div>
 </div>
 
 <div class="card flush">
   <div class="card-header"><div class="card-title">{{ icons.icon('settings', 14, extra_class='spec-row-icon') }}&nbsp;Check-in fields</div></div>
   <div class="card-body">
+    {% if admin.is_full_admin %}
     <form method="post" action="/admin/companies/{{ company['id'] }}/fields/hardware">
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
       {% for f in field_settings['hardware_field_options'] %}
@@ -120,6 +131,7 @@
 {% endfor %}</textarea>
       <button type="submit" class="btn" style="margin-top:8px">Save check-in fields</button>
     </form>
+    {% endif %}
   </div>
 </div>
 
@@ -134,12 +146,15 @@
       <span style="flex:1">{{ cf['label'] }}
         <span class="muted">({% if cf['required'] %}required{% else %}optional{% endif %})</span>
       </span>
+      {% if admin.is_full_admin %}
       <form method="post" action="/admin/companies/{{ company['id'] }}/fields/custom/{{ cf['key'] }}/remove">
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
         <button type="submit" class="btn btn-danger">Remove</button>
       </form>
+      {% endif %}
     </div>
     {% endfor %}
+    {% if admin.is_full_admin %}
     <form method="post" action="/admin/companies/{{ company['id'] }}/fields/custom" style="margin-top:14px">
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
       <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
@@ -148,6 +163,7 @@
         <button type="submit" class="btn">Add custom field</button>
       </div>
     </form>
+    {% endif %}
   </div>
 </div>
 
@@ -170,6 +186,7 @@
       Everything is currently at its built-in default.
       {% endif %}
     </div>
+    {% if admin.is_full_admin %}
     <form method="post" action="/admin/companies/{{ company['id'] }}/appearance">
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
 
@@ -218,6 +235,7 @@
         Clear any box and save to put that one setting back to its built-in default.
       </div>
     </form>
+    {% endif %}
   </div>
 </div>
 
@@ -226,6 +244,8 @@
   <div class="card-body">
     {% if company['revoked_at'] %}
     <div class="muted">Company is revoked — downloads are disabled.</div>
+    {% elif not admin.is_full_admin %}
+    <div class="muted">Read-only — full admin required to download installers.</div>
     {% else %}
     <div class="banner">
       Each download embeds a fresh enrollment token. Downloading one platform does
@@ -294,7 +314,7 @@
             <span class="badge {% if t['status'] == 'active' %}online{% elif t['status'] == 'revoked' %}offline{% else %}pending{% endif %}">{{ t['status'] | capitalize }}</span>
           </td>
           <td>
-            {% if t['status'] == 'active' %}
+            {% if t['status'] == 'active' and admin.is_full_admin %}
             <form method="post" action="/admin/companies/{{ company['id'] }}/tokens/{{ t['id'] }}/revoke">
               <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
               <button type="submit" class="btn btn-danger">Revoke</button>

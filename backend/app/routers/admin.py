@@ -81,11 +81,44 @@ class PendingLoginRequired(Exception):
     session. Handled like NotAuthenticated: bounce to /admin/login."""
 
 
-async def require_admin(request: Request) -> str:
+async def require_admin(request: Request) -> AdminContext:
+    """Identity comes from the signed cookie; role and scope come from the
+    database on every request.
+
+    That one indexed primary-key lookup is what makes a demotion, a scope
+    change, or a deleted account take effect immediately rather than at cookie
+    expiry -- and it means an already-issued cookie is no longer authoritative
+    for anything but which admin it names. That is a partial answer to M-3
+    (no server-side session revocation), which otherwise remains open.
+    """
     admin_id = request.session.get("admin_id")
     if not admin_id:
         raise NotAuthenticated()
-    return admin_id
+    ctx = await load_admin_context(await get_pool(), admin_id)
+    if ctx is None:
+        request.session.clear()
+        raise NotAuthenticated()
+    return ctx
+
+
+async def require_full_admin(admin: AdminContext = Depends(require_admin)) -> AdminContext:
+    """Read-only `support` admins are refused. Applied to every state-changing
+    route, to the three installer downloads (they mint enrollment tokens), and
+    to /admin/diagnostics (it discloses server filesystem paths).
+
+    The templates also hide these controls, but THIS is the enforcement -- a
+    hidden button is not an authorisation control, it is a nicety."""
+    if not admin.is_full_admin:
+        raise HTTPException(status_code=403, detail="Insufficient privileges")
+    return admin
+
+
+async def require_global_admin(admin: AdminContext = Depends(require_full_admin)) -> AdminContext:
+    """For routes that make no sense scoped -- creating a company a scoped
+    admin would then be unable to see."""
+    if not admin.is_global:
+        raise HTTPException(status_code=403, detail="Insufficient privileges")
+    return admin
 
 
 def _pending_admin_id(request: Request) -> str:
@@ -317,13 +350,13 @@ async def mfa_verify_submit(
 
 
 @router.get("/companies")
-async def companies_list(request: Request, admin_id: str = Depends(require_admin)):
+async def companies_list(request: Request, admin: AdminContext = Depends(require_admin)):
     pool = await get_pool()
     companies = await _all_companies(pool)
     return templates.TemplateResponse(
         request,
         "companies_list.html",
-        {"companies": companies, "csrf_token": _new_csrf_token(request)},
+        {"companies": companies, "csrf_token": _new_csrf_token(request), "admin": admin},
     )
 
 
@@ -333,7 +366,7 @@ async def companies_create(
     name: str = Form(...),
     notification_email: str = Form(...),
     csrf_token: str = Form(...),
-    admin_id: str = Depends(require_admin),
+    admin: AdminContext = Depends(require_global_admin),
 ):
     _check_csrf(request, csrf_token)
 
@@ -355,6 +388,7 @@ async def companies_create(
             "companies": companies,
             "csrf_token": _new_csrf_token(request),
             "new_api_key": api_key,
+            "admin": admin,
         },
     )
 
@@ -461,7 +495,7 @@ async def _agent_ui_context(pool, company_id: uuid.UUID) -> dict:
 
 @router.get("/companies/{company_id}")
 async def company_detail(
-    request: Request, company_id: uuid.UUID, admin_id: str = Depends(require_admin)
+    request: Request, company_id: uuid.UUID, admin: AdminContext = Depends(require_admin)
 ):
     pool = await get_pool()
     company = await _get_company_or_404(pool, company_id)
@@ -475,6 +509,7 @@ async def company_detail(
         "field_settings": field_settings,
         "tokens": await _tokens_for_display(pool, str(company_id)),
         "nav_active": "settings",
+        "admin": admin,
     }
     context.update(await _schedule_context(pool, company_id))
     context.update(await _agent_ui_context(pool, company_id))
@@ -486,7 +521,7 @@ async def rotate_key(
     request: Request,
     company_id: uuid.UUID,
     csrf_token: str = Form(...),
-    admin_id: str = Depends(require_admin),
+    admin: AdminContext = Depends(require_full_admin),
 ):
     _check_csrf(request, csrf_token)
     pool = await get_pool()
@@ -514,6 +549,7 @@ async def rotate_key(
         "new_api_key": api_key,
         "field_settings": field_settings,
         "tokens": await _tokens_for_display(pool, str(company_id)),
+        "admin": admin,
     }
     context.update(await _schedule_context(pool, company_id))
     context.update(await _agent_ui_context(pool, company_id))
@@ -525,7 +561,7 @@ async def revoke_company(
     request: Request,
     company_id: uuid.UUID,
     csrf_token: str = Form(...),
-    admin_id: str = Depends(require_admin),
+    admin: AdminContext = Depends(require_full_admin),
 ):
     _check_csrf(request, csrf_token)
     pool = await get_pool()
@@ -555,6 +591,7 @@ async def revoke_company(
         "csrf_token": _new_csrf_token(request),
         "field_settings": field_settings,
         "tokens": await _tokens_for_display(pool, str(company_id)),
+        "admin": admin,
     }
     context.update(await _schedule_context(pool, company_id))
     context.update(await _agent_ui_context(pool, company_id))
@@ -567,7 +604,7 @@ async def update_notification_email(
     company_id: uuid.UUID,
     notification_email: str = Form(...),
     csrf_token: str = Form(...),
-    admin_id: str = Depends(require_admin),
+    admin: AdminContext = Depends(require_full_admin),
 ):
     _check_csrf(request, csrf_token)
     pool = await get_pool()
@@ -593,7 +630,7 @@ async def update_schedule(
     # ordinary preset save would fail.
     custom_count: str | None = Form(None),
     custom_unit: str | None = Form(None),
-    admin_id: str = Depends(require_admin),
+    admin: AdminContext = Depends(require_full_admin),
 ):
     _check_csrf(request, csrf_token)
     pool = await get_pool()
@@ -631,6 +668,7 @@ async def update_schedule(
             "csrf_token": _new_csrf_token(request),
             "nav_active": "settings",
             "schedule_error": str(exc),
+            "admin": admin,
         }
         context.update(await _schedule_context(pool, company_id))
         context.update(await _agent_ui_context(pool, company_id))
@@ -646,7 +684,7 @@ async def update_schedule(
 async def update_agent_ui(
     request: Request,
     company_id: uuid.UUID,
-    admin_id: str = Depends(require_admin),
+    admin: AdminContext = Depends(require_full_admin),
 ):
     """Saves the agent window's copy and colours.
 
@@ -686,6 +724,7 @@ async def update_agent_ui(
             "nav_active": "settings",
             "agent_ui_error": str(exc),
             "agent_ui_form": submitted,
+            "admin": admin,
         }
         context.update(await _schedule_context(pool, company_id))
         context.update(await _agent_ui_context(pool, company_id))
@@ -707,7 +746,7 @@ async def update_hardware_fields(
     ip_address: str | None = Form(None),
     department_enabled: str | None = Form(None),
     department_required: str | None = Form(None),
-    admin_id: str = Depends(require_admin),
+    admin: AdminContext = Depends(require_full_admin),
 ):
     _check_csrf(request, csrf_token)
     pool = await get_pool()
@@ -746,7 +785,7 @@ async def add_custom_field_route(
     label: str = Form(...),
     required: str | None = Form(None),
     csrf_token: str = Form(...),
-    admin_id: str = Depends(require_admin),
+    admin: AdminContext = Depends(require_full_admin),
 ):
     _check_csrf(request, csrf_token)
     pool = await get_pool()
@@ -764,6 +803,7 @@ async def add_custom_field_route(
             "field_settings": field_settings,
             "field_error": str(e),
             "tokens": await _tokens_for_display(pool, str(company_id)),
+            "admin": admin,
         }
         context.update(await _schedule_context(pool, company_id))
         context.update(await _agent_ui_context(pool, company_id))
@@ -777,7 +817,7 @@ async def remove_custom_field_route(
     company_id: uuid.UUID,
     field_key: str,
     csrf_token: str = Form(...),
-    admin_id: str = Depends(require_admin),
+    admin: AdminContext = Depends(require_full_admin),
 ):
     _check_csrf(request, csrf_token)
     pool = await get_pool()
@@ -792,7 +832,7 @@ async def revoke_enrollment_token(
     company_id: uuid.UUID,
     token_id: uuid.UUID,
     csrf_token: str = Form(...),
-    admin_id: str = Depends(require_admin),
+    admin: AdminContext = Depends(require_full_admin),
 ):
     """Blocks future enrollments with this token. Devices that already
     enrolled through it keep their own credential and are untouched -- the
@@ -811,7 +851,7 @@ async def revoke_device(
     company_id: uuid.UUID,
     serial_number: str,
     csrf_token: str = Form(...),
-    admin_id: str = Depends(require_admin),
+    admin: AdminContext = Depends(require_full_admin),
 ):
     """Revokes exactly one machine's credential. Every other device in the
     company -- including ones enrolled through the same token -- keeps
@@ -872,7 +912,7 @@ def _render_installer_script(template_text: str, checkin_api_url: str, enrollmen
 
 
 @router.get("/diagnostics")
-async def diagnostics(request: Request, admin_id: str = Depends(require_admin)):
+async def diagnostics(request: Request, admin: AdminContext = Depends(require_full_admin)):
     """Reports what this instance actually has on disk.
 
     Every file a download route reads is committed to the repository, which
@@ -969,7 +1009,7 @@ async def download_macos(
     csrf_token: str = Form(...),
     device_count: int = Form(...),
     token_days: int = Form(INSTALLER_TOKEN_DAYS),
-    admin_id: str = Depends(require_admin),
+    admin: AdminContext = Depends(require_full_admin),
 ):
     """Serves a double-clickable installer package rather than a shell script.
 
@@ -1019,7 +1059,7 @@ async def download_linux(
     csrf_token: str = Form(...),
     device_count: int = Form(...),
     token_days: int = Form(INSTALLER_TOKEN_DAYS),
-    admin_id: str = Depends(require_admin),
+    admin: AdminContext = Depends(require_full_admin),
 ):
     _check_csrf(request, csrf_token)
     pool = await get_pool()
@@ -1045,7 +1085,7 @@ async def download_windows(
     csrf_token: str = Form(...),
     device_count: int = Form(...),
     token_days: int = Form(INSTALLER_TOKEN_DAYS),
-    admin_id: str = Depends(require_admin),
+    admin: AdminContext = Depends(require_full_admin),
 ):
     """Serves one self-contained .exe instead of an exe plus a config file.
 
