@@ -18,6 +18,7 @@ from app.admin_auth import (
     set_mfa_secret,
     replace_recovery_codes,
     consume_recovery_code,
+    count_unused_recovery_codes,
     resolve_admin,
 )
 from app.audit import audited, record_audit, record_audit_on_conn
@@ -407,6 +408,120 @@ async def mfa_verify_submit(
     request.session.clear()
     request.session["admin_id"] = admin_id
     return RedirectResponse("/admin/companies", status_code=303)
+
+
+@router.get("/mfa/recovery-codes")
+async def recovery_codes_status(
+    request: Request, admin: AdminContext = Depends(require_admin)
+):
+    """Shows how many codes remain, never the codes themselves -- they are
+    displayed exactly once, at generation. Anything else turns a live session
+    into a way to read the standing backup credential.
+
+    Uses `require_admin`, not `require_full_admin`: these are the admin's OWN
+    credentials, not a privileged action against a tenant, so `support`
+    admins can reach this too.
+    """
+    pool = await get_pool()
+    return templates.TemplateResponse(
+        request,
+        "mfa_recovery_codes.html",
+        {
+            "remaining": await count_unused_recovery_codes(pool, admin.id),
+            "csrf_token": _new_csrf_token(request),
+            "admin": admin,
+        },
+    )
+
+
+@router.post("/mfa/recovery-codes")
+async def regenerate_recovery_codes(
+    request: Request,
+    csrf_token: str = Form(...),
+    admin: AdminContext = Depends(require_admin),
+):
+    """Regenerates and REPLACES the admin's own recovery-code set. Available
+    to `support` as well as full admins for the same reason as the GET above."""
+    _check_csrf(request, csrf_token)
+    pool = await get_pool()
+    codes = mfa.generate_recovery_codes()
+    # replace_recovery_codes runs on scope.conn, never a second acquired
+    # connection -- see app/audit.py's docstring on why that would silently
+    # forfeit atomicity between the DELETE/INSERT and the audit row.
+    async with audited(
+        pool, request, admin, "admin.mfa.recovery_codes_regenerated"
+    ) as scope:
+        await replace_recovery_codes(scope.conn, admin.id, codes)
+    return templates.TemplateResponse(
+        request,
+        "mfa_recovery_codes.html",
+        {"codes": codes, "csrf_token": _new_csrf_token(request), "admin": admin},
+    )
+
+
+@router.get("/audit")
+async def audit_log_view(
+    request: Request,
+    company_id: uuid.UUID | None = None,
+    action: str | None = None,
+    before: int | None = None,
+    admin: AdminContext = Depends(require_full_admin),
+):
+    """Read-only by construction: the application holds no UPDATE or DELETE
+    grant on audit_log (migration 016), so there is no write path to omit here.
+
+    Keyset pagination on the primary key rather than OFFSET: the log only grows,
+    and OFFSET pagination re-scans everything before the page on every request.
+    """
+    pool = await get_pool()
+    # A scoped admin sees only their own tenant's entries. A scoped admin's
+    # company_id is never NULL, so the `$1::uuid IS NULL OR ...` clause below
+    # requires an exact target_company_id match for them -- which also
+    # excludes actor-level events (logins, MFA, recovery-code events) that
+    # carry no target_company_id at all, without any extra code.
+    scope_company = company_id if admin.is_global else uuid.UUID(admin.company_id)
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT a.id, a.actor_admin_id, ad.email AS actor_email, a.action,
+                   a.target_company_id, c.name AS target_company_name,
+                   a.target_id, a.ip_address, a.occurred_at, a.metadata
+            FROM audit_log a
+            -- LEFT JOIN, because actor_admin_id has no foreign key on purpose:
+            -- the log outlives the accounts it describes, so a missing admin is
+            -- an expected row, not an error.
+            LEFT JOIN admins    ad ON ad.id = a.actor_admin_id
+            LEFT JOIN companies c  ON c.id  = a.target_company_id
+            WHERE ($1::uuid IS NULL OR a.target_company_id = $1)
+              AND ($2::text IS NULL OR a.action = $2)
+              AND ($3::bigint IS NULL OR a.id < $3)
+            ORDER BY a.id DESC
+            LIMIT 50
+            """,
+            scope_company, action, before,
+        )
+        # Scoped the same way as the row query: a scoped admin should not
+        # even see the ACTION NAMES of events outside their own tenant listed
+        # in the filter dropdown -- that discloses activity elsewhere.
+        actions = await conn.fetch(
+            "SELECT DISTINCT action FROM audit_log a "
+            "WHERE ($1::uuid IS NULL OR a.target_company_id = $1) ORDER BY action",
+            scope_company,
+        )
+    return templates.TemplateResponse(
+        request,
+        "audit_log.html",
+        {
+            "rows": rows,
+            "actions": [r["action"] for r in actions],
+            "companies": await _all_companies(pool, admin),
+            "filter_action": action,
+            "filter_company_id": company_id,
+            "next_before": rows[-1]["id"] if len(rows) == 50 else None,
+            "admin": admin,
+            "csrf_token": _new_csrf_token(request),
+        },
+    )
 
 
 @router.get("/companies")

@@ -357,3 +357,126 @@ async def test_restarting_the_login_does_not_reset_the_mfa_limit(enrolled_admin)
     assert 429 in statuses, (
         f"restarting the login reset the counter -- statuses {statuses}"
     )
+
+
+# --- /admin/mfa/recovery-codes: self-service regeneration ------------------
+#
+# NOTE ON CSRF: as above, the session's csrf_token does not survive
+# login_as() -- MFA verification clears the session before writing admin_id.
+# GET the recovery-codes page first (a page every logged-in admin, support
+# included, can reach) and scrape the token from its rendered form.
+
+
+async def test_recovery_codes_page_shows_the_remaining_count(db_pool, enrolled_admin, login_as):
+    from app.admin_auth import replace_recovery_codes
+    from app import mfa as mfa_module
+
+    admin_id, _email, _password, _secret = enrolled_admin
+    codes = mfa_module.generate_recovery_codes()
+    async with db_pool.acquire() as conn:
+        await replace_recovery_codes(conn, admin_id, codes)
+    async with await _client() as client:
+        await login_as(client, enrolled_admin)
+        resp = await client.get("/admin/mfa/recovery-codes")
+    assert resp.status_code == 200
+    assert b"10" in resp.content
+    for code in codes:
+        assert code.encode() not in resp.content, "codes are shown once, at generation, only"
+
+
+async def test_support_admin_can_reach_the_recovery_codes_page(support_admin, login_as):
+    """These are the admin's OWN credentials, not a privileged action against
+    a tenant, so support (read-only for tenant data) must not be blocked."""
+    async with await _client() as client:
+        await login_as(client, support_admin)
+        resp = await client.get("/admin/mfa/recovery-codes")
+    assert resp.status_code == 200
+
+
+async def test_regenerating_replaces_the_old_set(db_pool, enrolled_admin, login_as):
+    """An old printout must stop working the moment a new set is issued."""
+    from app.admin_auth import consume_recovery_code, replace_recovery_codes
+    from app import mfa as mfa_module
+
+    admin_id, _email, _password, _secret = enrolled_admin
+    old = mfa_module.generate_recovery_codes()
+    async with db_pool.acquire() as conn:
+        await replace_recovery_codes(conn, admin_id, old)
+    async with await _client() as client:
+        await login_as(client, enrolled_admin)
+        page = await client.get("/admin/mfa/recovery-codes")
+        csrf = page.text.split('name="csrf_token" value="')[1].split('"')[0]
+        resp = await client.post(
+            "/admin/mfa/recovery-codes", data={"csrf_token": csrf}
+        )
+    assert resp.status_code == 200
+    assert resp.content.count(b"recovery-code") >= 10
+    async with db_pool.acquire() as conn:
+        assert await consume_recovery_code(conn, admin_id, old[0]) is False, (
+            "a code from the replaced set must no longer authenticate"
+        )
+
+
+async def test_regeneration_requires_csrf_and_a_real_session(enrolled_admin, login_as):
+    async with await _client() as client:
+        anon = await client.post("/admin/mfa/recovery-codes", data={"csrf_token": "x"},
+                                 follow_redirects=False)
+        assert anon.status_code == 303
+        await login_as(client, enrolled_admin)
+        page = await client.get("/admin/mfa/recovery-codes")
+        assert page.status_code == 200
+        bad = await client.post("/admin/mfa/recovery-codes", data={"csrf_token": "wrong"})
+    assert bad.status_code == 403
+
+
+async def test_regeneration_is_audited(db_pool, enrolled_admin, login_as):
+    async with await _client() as client:
+        await login_as(client, enrolled_admin)
+        page = await client.get("/admin/mfa/recovery-codes")
+        csrf = page.text.split('name="csrf_token" value="')[1].split('"')[0]
+        await client.post("/admin/mfa/recovery-codes", data={"csrf_token": csrf})
+    async with db_pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT * FROM audit_log WHERE action = 'admin.mfa.recovery_codes_regenerated'"
+        )
+    assert len(rows) == 1
+
+
+async def test_a_failing_audit_insert_rolls_regeneration_back(
+    db_pool, enrolled_admin, login_as, monkeypatch
+):
+    """Pins `conn=scope.conn` at this route's call site (see
+    test_a_failing_audit_insert_rolls_a_real_route_back in test_audit_log.py
+    for the full rationale). Force the audit insert to fail and prove the old
+    recovery-code set survives -- that can only happen if replace_recovery_codes
+    ran on scope.conn, sharing the audit row's transaction."""
+    from app.admin_auth import consume_recovery_code, replace_recovery_codes
+    from app import mfa as mfa_module
+
+    admin_id, _email, _password, _secret = enrolled_admin
+    old = mfa_module.generate_recovery_codes()
+    async with db_pool.acquire() as conn:
+        await replace_recovery_codes(conn, admin_id, old)
+
+    import app.audit as audit_module
+
+    real_insert = audit_module._insert
+
+    async def _exploding_insert(conn, actor, written_action, *args, **kwargs):
+        if written_action == "admin.mfa.recovery_codes_regenerated":
+            raise RuntimeError("audit insert failed")
+        return await real_insert(conn, actor, written_action, *args, **kwargs)
+
+    monkeypatch.setattr(audit_module, "_insert", _exploding_insert)
+
+    async with await _client() as client:
+        await login_as(client, enrolled_admin)
+        page = await client.get("/admin/mfa/recovery-codes")
+        csrf = page.text.split('name="csrf_token" value="')[1].split('"')[0]
+        with pytest.raises(RuntimeError):
+            await client.post("/admin/mfa/recovery-codes", data={"csrf_token": csrf})
+
+    async with db_pool.acquire() as conn:
+        assert await consume_recovery_code(conn, admin_id, old[0]) is True, (
+            "the old set must still be live -- regeneration is not atomic with its audit row"
+        )

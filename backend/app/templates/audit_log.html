@@ -1,0 +1,66 @@
+{% extends "base.html" %}
+{% block title %}Audit log — Assetly{% endblock %}
+{% block heading %}Audit log{% endblock %}
+{% block content %}
+<form method="get" action="/admin/audit" style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:16px">
+  {% if admin.is_global %}
+  <select class="input" name="company_id" style="min-width:200px">
+    <option value="">All companies</option>
+    {% for c in companies %}
+    <option value="{{ c['id'] }}" {% if filter_company_id and filter_company_id | string == c['id'] | string %}selected{% endif %}>{{ c['name'] }}</option>
+    {% endfor %}
+  </select>
+  {% endif %}
+  <select class="input" name="action" style="min-width:220px">
+    <option value="">All actions</option>
+    {% for a in actions %}
+    <option value="{{ a }}" {% if filter_action == a %}selected{% endif %}>{{ a }}</option>
+    {% endfor %}
+  </select>
+  <button type="submit" class="btn btn-secondary">Filter</button>
+</form>
+
+<div class="card flush" style="overflow-x:auto">
+  <table class="table">
+    <thead>
+      <tr>
+        <th>Time</th><th>Actor</th><th>Action</th><th>Target company</th>
+        <th>Target id</th><th>IP</th><th>Metadata</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in rows %}
+      <tr>
+        <td class="muted mono">{{ row['occurred_at'].strftime('%Y-%m-%d %H:%M:%S') if row['occurred_at'] else '—' }}</td>
+        <td>
+          {% if row['actor_email'] %}
+          {{ row['actor_email'] }}
+          {% elif row['actor_admin_id'] %}
+          <span class="muted mono" title="Admin account no longer exists">{{ row['actor_admin_id'] }}</span>
+          {% else %}
+          <span class="muted">—</span>
+          {% endif %}
+        </td>
+        <td>{{ row['action'] }}</td>
+        <td>{{ row['target_company_name'] or (row['target_company_id'] or '—') }}</td>
+        <td class="muted mono">{{ row['target_id'] or '—' }}</td>
+        <td class="muted mono">{{ row['ip_address'] or '—' }}</td>
+        <td class="muted mono" style="max-width:320px;white-space:pre-wrap;word-break:break-word">{{ row['metadata'] or '—' }}</td>
+      </tr>
+      {% endfor %}
+      {% if not rows %}
+      <tr><td colspan="7" class="muted">No audit entries match this filter.</td></tr>
+      {% endif %}
+    </tbody>
+  </table>
+</div>
+
+{% if next_before %}
+<div style="margin-top:16px">
+  <a class="btn btn-secondary"
+     href="/admin/audit?before={{ next_before }}{% if filter_action %}&action={{ filter_action }}{% endif %}{% if filter_company_id %}&company_id={{ filter_company_id }}{% endif %}">
+    Load older
+  </a>
+</div>
+{% endif %}
+{% endblock %}

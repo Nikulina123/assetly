@@ -3,10 +3,17 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Save your recovery codes — Assetly</title>
+<title>{% if codes %}Save your recovery codes{% else %}Recovery codes{% endif %} — Assetly</title>
 <link rel="stylesheet" href="/static/assetly.css">
 </head>
 <body>
+{% if codes %}
+{# One-time display, immediately after generation. This is the ONLY place
+   these codes are ever rendered -- see the "remaining count only" branch
+   below for every later visit. Kept as a standalone centered page, matching
+   the look this had before regeneration existed, because it is also shown
+   mid-enrollment, before an admin session (and the console shell around it)
+   exists. #}
 <div style="display:flex;min-height:100vh;align-items:center;justify-content:center">
   <div style="width:100%;max-width:420px">
     <div class="sidebar-logo" style="justify-content:center;padding-bottom:20px">
@@ -31,5 +38,54 @@
     </div>
   </div>
 </div>
+{% else %}
+{# Every later visit: the count only, never the codes -- see the route
+   docstring in app/routers/admin.py for why. #}
+<div class="shell">
+  <aside class="sidebar">
+    <div class="sidebar-logo">
+      <span>asset<span class="ly">ly</span></span>
+    </div>
+    <a class="nav-item" href="/admin/companies">Companies</a>
+    <a class="nav-item" href="/admin/mfa/recovery-codes">Recovery codes</a>
+    {% if admin and admin.is_full_admin %}
+    <a class="nav-item" href="/admin/audit">Audit log</a>
+    {% endif %}
+  </aside>
+  <div class="main">
+    <header class="topbar">
+      <h1>Recovery codes</h1>
+      <div style="display:flex;align-items:center;gap:12px">
+        {% if admin and not admin.is_full_admin %}
+        <span class="badge" title="Support role: read-only access">Read-only</span>
+        {% endif %}
+        <form method="post" action="/admin/logout">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <button type="submit" class="btn btn-secondary">Log out</button>
+        </form>
+      </div>
+    </header>
+    <main class="content">
+      <div class="card" style="max-width:460px">
+        <div class="section-title" style="margin-top:0">Recovery codes</div>
+        <p class="muted">
+          You have <strong>{{ remaining }}</strong> unused recovery code{{ '' if remaining == 1 else 's' }} remaining.
+          Codes are shown only once, at the moment they are generated -- this
+          page never displays the codes themselves again.
+        </p>
+        <div class="banner" style="background:rgba(239,68,68,0.08);border:1px solid rgba(239,68,68,0.25);color:#EF4444">
+          Regenerating creates a brand new set of ten codes and immediately
+          invalidates every code from the current set, including any you have
+          printed or saved elsewhere.
+        </div>
+        <form method="post" action="/admin/mfa/recovery-codes">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <button type="submit" class="btn btn-secondary">Regenerate recovery codes</button>
+        </form>
+      </div>
+    </main>
+  </div>
+</div>
+{% endif %}
 </body>
 </html>

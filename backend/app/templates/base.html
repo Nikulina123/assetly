@@ -24,6 +24,10 @@
     <a class="nav-item" href="/admin/companies/{{ c['id'] }}">{{ c['name'] }}{% if c['revoked_at'] %} (revoked){% endif %}</a>
     {% endfor %}
     <div style="margin-top:auto"></div>
+    <a class="nav-item" href="/admin/mfa/recovery-codes">Recovery codes</a>
+    {% if admin and admin.is_full_admin %}
+    <a class="nav-item" href="/admin/audit">Audit log</a>
+    {% endif %}
     <a class="nav-item" href="/admin/companies">+ New company</a>
   </aside>
   <div class="main">

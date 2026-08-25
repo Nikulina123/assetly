@@ -271,6 +271,19 @@ carries no `DELETE` grant for the application role (`assetly`), so the app
 cannot prune it even if a future bug tried to. Any pruning is an operator
 action, run directly as the `admin` role.
 
+**Reading the log.** `GET /admin/audit` (full admins only) is a read-only
+viewer over the table above — filterable by company and action, keyset-paginated
+on the primary key. It requires no direct database access for incident
+response, which is the reason the table exists in the first place. A scoped
+admin sees only rows whose `target_company_id` matches their own company;
+actor-level events with no target company (logins, MFA, recovery-code events)
+are excluded for scoped admins by the same filter, since those rows carry no
+tenant scope to check against. `GET`/`POST /admin/mfa/recovery-codes` lets any
+logged-in admin (support included — these are their own credentials, not a
+privileged action against a tenant) see their remaining recovery-code count
+and regenerate the set; regenerating replaces the old set outright, so a
+previously printed code stops working the moment a new set is issued.
+
 ## Admin tiers and per-company scope
 
 Two independent axes on `admins`, both added by migration 016 and both

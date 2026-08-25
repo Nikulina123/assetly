@@ -701,3 +701,116 @@ async def test_no_audit_metadata_contains_secret_material(db_pool, admin, compan
                 assert value not in blob, (
                     f"{row['action']} {column} contains the {label} value {value!r}"
                 )
+
+
+# --- /admin/audit: the read-only viewer (H-4) -------------------------------
+#
+# NOTE ON CSRF: the brief's own draft of these tests read the csrf_token by
+# unsigning the session cookie immediately after login_as(). That does not
+# work -- the MFA-verify route clears the session before writing admin_id
+# (session-fixation hardening), so no csrf_token key survives into the
+# authenticated session until something mints one. Following the pattern
+# Task 8 already established (test_a_failing_audit_insert_rolls_a_real_route_back
+# and the credential-literal sweep above): GET an authenticated page and
+# scrape the token out of the rendered form.
+
+
+async def test_audit_viewer_lists_recent_actions(db_pool, enrolled_admin, company, login_as):
+    _admin_id, email, _password, _secret = enrolled_admin
+    company_id, _api_key = company
+    async with await _client() as client:
+        await login_as(client, enrolled_admin)
+        detail = await client.get(f"/admin/companies/{company_id}")
+        csrf = detail.text.split('name="csrf_token" value="')[1].split('"')[0]
+        await client.post(f"/admin/companies/{company_id}/rotate-key", data={"csrf_token": csrf})
+        resp = await client.get("/admin/audit")
+    assert resp.status_code == 200
+    assert b"company.api_key_rotated" in resp.content
+    assert email.encode() in resp.content, "the actor must be resolvable to an email"
+
+
+async def test_audit_viewer_is_refused_to_support_admins(support_admin, login_as):
+    async with await _client() as client:
+        await login_as(client, support_admin)
+        resp = await client.get("/admin/audit")
+    assert resp.status_code == 403
+
+
+async def test_audit_viewer_filters_by_action(db_pool, enrolled_admin, company, login_as):
+    _admin_id, _email, _password, _secret = enrolled_admin
+    company_id, _api_key = company
+    async with await _client() as client:
+        await login_as(client, enrolled_admin)
+        detail = await client.get(f"/admin/companies/{company_id}")
+        csrf = detail.text.split('name="csrf_token" value="')[1].split('"')[0]
+        await client.post(f"/admin/companies/{company_id}/rotate-key", data={"csrf_token": csrf})
+        resp = await client.get("/admin/audit?action=company.api_key_rotated")
+    assert b"company.api_key_rotated" in resp.content
+    # Scoped to the table body, not the whole page: the filter <select> is
+    # legitimately populated with every distinct action name this admin can
+    # filter by (including admin.login.succeeded, produced by login_as()
+    # itself above), so the interesting assertion is that the ROWS are
+    # filtered, not that the string never appears anywhere on the page.
+    body = resp.text.split("<tbody>")[1].split("</tbody>")[0]
+    assert "admin.login.succeeded" not in body
+
+
+async def test_audit_viewer_survives_a_deleted_actor(db_pool, enrolled_admin, login_as):
+    """The log outlives the accounts it describes -- there is deliberately no
+    foreign key. The viewer must render such a row, not 500 on it."""
+    import asyncpg
+    from tests.conftest import ADMIN_TEST_DATABASE_URL
+
+    _admin_id, _email, _password, _secret = enrolled_admin
+    async with await _client() as client:
+        await login_as(client, enrolled_admin)
+        conn = await asyncpg.connect(ADMIN_TEST_DATABASE_URL)
+        try:
+            await conn.execute(
+                "INSERT INTO audit_log (actor_admin_id, action) "
+                "VALUES ('00000000-0000-0000-0000-000000000000', 'ghost.action')"
+            )
+        finally:
+            await conn.close()
+        resp = await client.get("/admin/audit")
+    assert resp.status_code == 200
+    assert b"ghost.action" in resp.content
+
+
+async def test_audit_viewer_scopes_a_scoped_admin_to_their_own_company(
+    db_pool, scoped_admin, company, login_as
+):
+    """A scoped full admin must never see another tenant's audit history, nor
+    another admin's actor-level events (logins)."""
+    admin_id, _email, _password, _secret, own_company_id = scoped_admin
+
+    async with db_pool.acquire() as conn:
+        other_company_id = await conn.fetchval(
+            "INSERT INTO companies (name, api_key_hash, api_key_prefix) "
+            "VALUES ('Other Co', 'x', 'x') RETURNING id"
+        )
+        await conn.execute(
+            "INSERT INTO audit_log (target_company_id, action) VALUES ($1, 'company.api_key_rotated')",
+            other_company_id,
+        )
+        await conn.execute(
+            "INSERT INTO audit_log (target_company_id, action) VALUES ($1, 'company.api_key_rotated')",
+            own_company_id,
+        )
+        # An actor-level event (a login) with no target_company_id -- this is
+        # the admin's OWN login, but it carries no tenant scope at all, and
+        # the viewer must not show it to a scoped admin either.
+        await conn.execute(
+            "INSERT INTO audit_log (actor_admin_id, action) VALUES ($1, 'admin.login.succeeded')",
+            admin_id,
+        )
+
+    async with await _client() as client:
+        await login_as(client, scoped_admin)
+        resp = await client.get("/admin/audit")
+    assert resp.status_code == 200
+    assert str(own_company_id).encode() in resp.content
+    assert str(other_company_id).encode() not in resp.content
+    assert b"admin.login.succeeded" not in resp.content, (
+        "a scoped admin must not see actor-level events with no tenant scope"
+    )
