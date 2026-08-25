@@ -48,6 +48,7 @@ from app.agent_ui import (
     DEFAULT_AGENT_UI,
     resolve_agent_ui_for_admin,
     set_agent_ui,
+    validate_agent_ui,
 )
 from app.field_config import (
     add_custom_field,
@@ -801,6 +802,12 @@ async def update_agent_ui(
     submitted = {key: str(form[key]) for key in DEFAULT_AGENT_UI if key in form}
 
     try:
+        # Validated BEFORE the transaction opens, not inside it. set_agent_ui
+        # validates again and remains the authority -- this is a pre-flight so
+        # that a rejected palette (which is pure Python: hex parsing, length
+        # checks, WCAG contrast maths over ~14 pairs) never holds one of only
+        # two pooled connections while being refused.
+        validate_agent_ui(submitted)
         async with audited(
             pool, request, admin, "company.appearance_updated",
             target_company_id=company_id, target_id=company_id,
@@ -1174,6 +1181,11 @@ async def download_macos(
     postinstall_template = _load_installer_template("AssetlyAgent_macOS_postinstall.sh")
     agent_source = (REPO_ROOT / "inventory_agent.py").read_bytes()
     max_devices, expires_at = _installer_token_terms(device_count, token_days)
+    # Minted here rather than left to the column DEFAULT so the id is known
+    # before the audit row is written: enrollment_token.created and
+    # enrollment_token.revoked must share a target_id, or the token lifecycle
+    # cannot be queried from one end to the other.
+    new_token_id = uuid.uuid4()
     async with audited(
         pool, request, admin, "installer.downloaded",
         target_company_id=company_id,
@@ -1182,17 +1194,20 @@ async def download_macos(
         token = await create_enrollment_token(
             pool, str(company_id), label=f"macOS installer ({device_count} devices)",
             expires_at=expires_at, max_devices=max_devices, conn=scope.conn,
+            token_id=new_token_id,
         )
         # A second row in the SAME transaction, on the same connection --
         # not a second audited() block, which would be a second connection
         # acquire and would forfeit atomicity with the token insert above.
-        # target_id is the token's non-secret prefix (already stored as
-        # token_prefix and shown in the portal's tokens list), never the
-        # plaintext token itself.
+        # target_id is the token ROW's id, matching what
+        # enrollment_token.revoked records, so the two ends of a token's
+        # lifecycle join on one key. The non-secret prefix goes in metadata
+        # for human readability; the plaintext token is never recorded.
         await record_audit_on_conn(
             scope.conn, request, admin, "enrollment_token.created",
-            target_company_id=company_id, target_id=token[:18],
-            metadata={"max_devices": max_devices, "expires_at": expires_at.isoformat()},
+            target_company_id=company_id, target_id=new_token_id,
+            metadata={"max_devices": max_devices, "expires_at": expires_at.isoformat(),
+                      "token_prefix": token[:18]},
         )
     postinstall = _render_installer_script(
         postinstall_template, CHECKIN_API_URL_FOR_DOWNLOAD, token
@@ -1232,6 +1247,11 @@ async def download_linux(
     await _get_active_company_or_404(pool, company_id, admin)
     template_text = _load_installer_template("AssetlyAgent_Linux.sh")
     max_devices, expires_at = _installer_token_terms(device_count, token_days)
+    # Minted here rather than left to the column DEFAULT so the id is known
+    # before the audit row is written: enrollment_token.created and
+    # enrollment_token.revoked must share a target_id, or the token lifecycle
+    # cannot be queried from one end to the other.
+    new_token_id = uuid.uuid4()
     async with audited(
         pool, request, admin, "installer.downloaded",
         target_company_id=company_id,
@@ -1240,11 +1260,13 @@ async def download_linux(
         token = await create_enrollment_token(
             pool, str(company_id), label=f"Linux installer ({device_count} devices)",
             expires_at=expires_at, max_devices=max_devices, conn=scope.conn,
+            token_id=new_token_id,
         )
         await record_audit_on_conn(
             scope.conn, request, admin, "enrollment_token.created",
-            target_company_id=company_id, target_id=token[:18],
-            metadata={"max_devices": max_devices, "expires_at": expires_at.isoformat()},
+            target_company_id=company_id, target_id=new_token_id,
+            metadata={"max_devices": max_devices, "expires_at": expires_at.isoformat(),
+                      "token_prefix": token[:18]},
         )
     script_text = _render_installer_script(template_text, CHECKIN_API_URL_FOR_DOWNLOAD, token)
     return Response(
@@ -1285,6 +1307,11 @@ async def download_windows(
     pool = await get_pool()
     await _get_active_company_or_404(pool, company_id, admin)
     max_devices, expires_at = _installer_token_terms(device_count, token_days)
+    # Minted here rather than left to the column DEFAULT so the id is known
+    # before the audit row is written: enrollment_token.created and
+    # enrollment_token.revoked must share a target_id, or the token lifecycle
+    # cannot be queried from one end to the other.
+    new_token_id = uuid.uuid4()
     async with audited(
         pool, request, admin, "installer.downloaded",
         target_company_id=company_id,
@@ -1293,11 +1320,13 @@ async def download_windows(
         token = await create_enrollment_token(
             pool, str(company_id), label=f"Windows installer ({device_count} devices)",
             expires_at=expires_at, max_devices=max_devices, conn=scope.conn,
+            token_id=new_token_id,
         )
         await record_audit_on_conn(
             scope.conn, request, admin, "enrollment_token.created",
-            target_company_id=company_id, target_id=token[:18],
-            metadata={"max_devices": max_devices, "expires_at": expires_at.isoformat()},
+            target_company_id=company_id, target_id=new_token_id,
+            metadata={"max_devices": max_devices, "expires_at": expires_at.isoformat(),
+                      "token_prefix": token[:18]},
         )
 
     return Response(

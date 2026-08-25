@@ -342,7 +342,8 @@ async def test_every_privileged_mutation_is_audited(db_pool, enrolled_admin, com
 
     for action in (
         "company.api_key_rotated", "company.notification_email_updated",
-        "installer.downloaded", "company.schedule_updated",
+        "installer.downloaded", "enrollment_token.created",
+        "company.schedule_updated",
         "company.appearance_updated", "company.fields.hardware_updated",
         "company.fields.custom_added", "company.fields.custom_removed",
         "enrollment_token.revoked", "device_credential.revoked",
@@ -352,6 +353,52 @@ async def test_every_privileged_mutation_is_audited(db_pool, enrolled_admin, com
         assert len(rows) == 1, f"{action}: {len(rows)} rows"
         assert str(rows[0]["actor_admin_id"]) == admin_id
         assert str(rows[0]["target_company_id"]) == company_id
+
+    # The device revoked above WAS enrolled, so the count must be a real 1 --
+    # the other end of the signal from
+    # test_device_revoke_records_actual_rows_matched, which pins the 0 case.
+    # Together they rule out a hardcoded constant at either value.
+    revoked = await _audit_rows(db_pool, "device_credential.revoked")
+    assert json.loads(revoked[0]["metadata"])["rows_matched"] == 1
+
+
+async def test_a_tokens_created_and_revoked_rows_share_one_target_id(
+    db_pool, enrolled_admin, company, login_as
+):
+    """The token lifecycle has to be queryable from either end. An
+    investigator holding an `enrollment_token.revoked` row must be able to ask
+    "when was this token minted, by whom, with what max_devices?" -- which
+    only works if both rows carry the same target_id. They used to carry
+    different key spaces (row uuid vs token prefix), so no join existed."""
+    company_id, _api_key = company
+    async with await _client() as client:
+        await login_as(client, enrolled_admin)
+        resp = await client.get(f"/admin/companies/{company_id}")
+        csrf = resp.text.split('name="csrf_token" value="')[1].split('"')[0]
+        await client.post(f"/admin/companies/{company_id}/download/linux",
+                          data={"csrf_token": csrf, "device_count": 5})
+
+        created = await _audit_rows(db_pool, "enrollment_token.created")
+        assert len(created) == 1
+        token_id = created[0]["target_id"]
+
+        # The id in the audit row must be the real enrollment_tokens row id --
+        # i.e. the value the revoke route is reached with.
+        await client.post(f"/admin/companies/{company_id}/tokens/{token_id}/revoke",
+                          data={"csrf_token": csrf})
+
+    revoked = await _audit_rows(db_pool, "enrollment_token.revoked")
+    assert len(revoked) == 1
+    assert revoked[0]["target_id"] == token_id, (
+        "created and revoked must share a target_id or the lifecycle cannot be joined"
+    )
+    async with db_pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT revoked_at FROM enrollment_tokens WHERE id = $1",
+            uuid_module.UUID(token_id),
+        )
+    assert row is not None, "the audited target_id must be a real enrollment_tokens id"
+    assert row["revoked_at"] is not None
 
 
 async def test_company_created_is_audited(db_pool, enrolled_admin, login_as):
@@ -423,6 +470,82 @@ async def test_device_revoke_records_actual_rows_matched(db_pool, enrolled_admin
     assert json.loads(rows[0]["metadata"])["rows_matched"] == 0
 
 
+@pytest.mark.parametrize(
+    "path,action,form,column,old_value,new_value",
+    [
+        ("schedule", "company.schedule_updated",
+         {"interval_preset": "604800", "cancel_retry_seconds": "3600"},
+         "checkin_interval_seconds", 86400, 604800),
+        ("notification-email", "company.notification_email_updated",
+         {"notification_email": "changed@example.com"},
+         "notification_email", "original@example.com", "changed@example.com"),
+    ],
+)
+async def test_a_failing_audit_insert_rolls_a_real_route_back(
+    db_pool, enrolled_admin, company, login_as, monkeypatch,
+    path, action, form, column, old_value, new_value,
+):
+    """THE test that pins `conn=scope.conn` at every route call site.
+
+    test_a_failing_audit_insert_rolls_the_mutation_back proves audited() is
+    atomic when the caller uses scope.conn. It cannot notice a ROUTE that
+    stopped doing so: drop `conn=scope.conn` from set_schedule(...) and the
+    UPDATE runs on a second pooled connection in its own transaction, the
+    audit row still commits, and every row-counting test stays green while
+    atomicity is silently gone (and, on the production 2-connection pool, one
+    concurrent request from starvation).
+
+    So this drives a REAL privileged route with the audit insert forced to
+    fail, and asserts the column still holds its OLD value. That can only
+    pass if the mutation shared the audit row's transaction -- which can only
+    happen if the route passed scope.conn down to its helper.
+    """
+    company_id, _api_key = company
+    async with db_pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE companies SET checkin_interval_seconds = 86400, "
+            "cancel_retry_seconds = 3600, notification_email = 'original@example.com' "
+            "WHERE id = $1",
+            uuid_module.UUID(company_id),
+        )
+
+    import app.audit as audit_module
+
+    real_insert = audit_module._insert
+
+    async def _exploding_insert(conn, actor, written_action, *args, **kwargs):
+        # Only the route's own action blows up -- the login rows written on
+        # the way in must still succeed or the request never gets this far.
+        if written_action == action:
+            raise RuntimeError("audit insert failed")
+        return await real_insert(conn, actor, written_action, *args, **kwargs)
+
+    monkeypatch.setattr(audit_module, "_insert", _exploding_insert)
+
+    async with await _client() as client:
+        await login_as(client, enrolled_admin)
+        resp = await client.get(f"/admin/companies/{company_id}")
+        csrf = resp.text.split('name="csrf_token" value="')[1].split('"')[0]
+        with pytest.raises(RuntimeError):
+            await client.post(
+                f"/admin/companies/{company_id}/{path}",
+                data={"csrf_token": csrf, **form},
+            )
+
+    async with db_pool.acquire() as conn:
+        stored = await conn.fetchval(
+            f"SELECT {column} FROM companies WHERE id = $1",
+            uuid_module.UUID(company_id),
+        )
+    assert stored != new_value, (
+        f"{path}: the mutation committed even though its audit row failed -- "
+        f"the route is not running its mutation on scope.conn"
+    )
+    assert stored == old_value
+
+    assert await _audit_rows(db_pool, action) == []
+
+
 async def test_second_connection_inside_audited_block_does_not_share_fate(db_pool, admin):
     """Pins the pitfall the brief warns about: acquiring a SECOND connection
     inside an `audited()` block runs the mutation in a different transaction,
@@ -470,14 +593,25 @@ async def test_second_connection_inside_audited_block_does_not_share_fate(db_poo
     assert await _audit_rows(db_pool, "test.second_connection") == []
 
 
-async def test_no_audit_metadata_contains_secret_material(db_pool, admin):
+async def test_no_audit_metadata_contains_secret_material(db_pool, admin, company):
     """Greeping for key names like "secret" or "password" would pass even if
     a handler logged the actual secret VALUE under an innocuous key (e.g.
     {"code": "123456"}) -- exactly the realistic mistake here, since the
     submitted TOTP code, the enrollment secret, and the recovery code are all
     plain strings a careless metadata={"code": code} would leak. So this
     drives every handler that ever touches secret material and asserts the
-    LITERAL VALUES are absent from every row, not just banned key names."""
+    LITERAL VALUES are absent from every row, not just banned key names.
+
+    The privileged mutations are driven too, not just the auth flows: the
+    download routes record `token_prefix: token[:18]` and rotate-key records
+    `key_prefix: api_key[:8]`, both deliberate slices one careless edit away
+    from recording the whole live credential -- into a table the application
+    role cannot prune (INSERT/SELECT only, no UPDATE or DELETE).
+
+    target_id is checked alongside metadata for the same reason: it is a
+    separate column that the download routes also write a token-derived value
+    into, so checking only metadata would miss a leak there entirely."""
+    import re
     import pyotp
     from app.admin_auth import replace_recovery_codes
     from app import mfa as mfa_module
@@ -523,6 +657,31 @@ async def test_no_audit_metadata_contains_secret_material(db_pool, admin):
             data={"code": recovery_code, "csrf_token": csrf},
         )
 
+    # Privileged mutations that handle live credentials: a key rotation and an
+    # installer download (which mints an enrollment token).
+    company_id, _api_key = company
+    async with await _client() as client:
+        await client.post("/admin/login", data={"email": email, "password": password})
+        await client.get("/admin/mfa/verify")
+        csrf = _unsign_session(client.cookies["session"])["csrf_token"]
+        await client.post(
+            "/admin/mfa/verify",
+            data={"code": pyotp.TOTP(secret_holder["secret"]).now(), "csrf_token": csrf},
+        )
+        resp = await client.get(f"/admin/companies/{company_id}")
+        csrf = resp.text.split('name="csrf_token" value="')[1].split('"')[0]
+
+        rotated = await client.post(
+            f"/admin/companies/{company_id}/rotate-key", data={"csrf_token": csrf}
+        )
+        rotated_key = re.search(r"as_live_[0-9a-f]{64}", rotated.text).group(0)
+
+        downloaded = await client.post(
+            f"/admin/companies/{company_id}/download/linux",
+            data={"csrf_token": csrf, "device_count": 5},
+        )
+        enrollment_token = re.search(r"as_enroll_[0-9a-f]{64}", downloaded.text).group(0)
+
     rows = await _audit_rows(db_pool)
     assert rows
     banned_literals = {
@@ -530,10 +689,15 @@ async def test_no_audit_metadata_contains_secret_material(db_pool, admin):
         "totp secret": secret_holder["secret"],
         "wrong mfa code": wrong_code,
         "recovery code": recovery_code,
+        "rotated api key": rotated_key,
+        "enrollment token": enrollment_token,
     }
     for row in rows:
-        blob = row["metadata"] or ""
-        for label, value in banned_literals.items():
-            assert value not in blob, (
-                f"{row['action']} metadata contains the {label} value {value!r}"
-            )
+        # target_id as well as metadata: both are columns a handler writes
+        # credential-derived values into.
+        for column in ("metadata", "target_id"):
+            blob = row[column] or ""
+            for label, value in banned_literals.items():
+                assert value not in blob, (
+                    f"{row['action']} {column} contains the {label} value {value!r}"
+                )

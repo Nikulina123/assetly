@@ -42,24 +42,36 @@ async def create_enrollment_token(
     expires_at: datetime.datetime | None = None,
     max_devices: int | None = None,
     conn=None,
+    token_id: uuid.UUID | None = None,
 ) -> str:
     """`conn`, when given, is used directly instead of acquiring a new one --
     so a caller running this inside an `audited()` block (see app/audit.py)
     can pass `scope.conn` and keep the insert in the same transaction as its
-    audit row, rather than silently forking off a second connection."""
+    audit row, rather than silently forking off a second connection.
+
+    `token_id`, when given, is used as the row's primary key instead of
+    letting the column's DEFAULT gen_random_uuid() pick one. That lets a
+    caller know the id BEFORE this returns, which is what an audit row needs:
+    `enrollment_token.created` and `enrollment_token.revoked` must carry the
+    SAME target_id, or an investigator holding a revoke row has no way to
+    find when the token was minted and by whom. The return value stays the
+    plaintext token so every existing caller is unaffected.
+    """
     token = _generate_token()
     if expires_at is None:
         expires_at = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(
             days=ENROLLMENT_TOKEN_DAYS
         )
+    if token_id is None:
+        token_id = uuid.uuid4()
 
     async def _insert(c):
         await _scoped(c, company_id)
         await c.execute(
             "INSERT INTO enrollment_tokens "
-            "(company_id, token_hash, token_prefix, label, expires_at, max_devices) "
-            "VALUES ($1, $2, $3, $4, $5, $6)",
-            uuid.UUID(company_id), hash_api_key(token), token[:18],
+            "(id, company_id, token_hash, token_prefix, label, expires_at, max_devices) "
+            "VALUES ($1, $2, $3, $4, $5, $6, $7)",
+            token_id, uuid.UUID(company_id), hash_api_key(token), token[:18],
             label, expires_at, max_devices,
         )
 
