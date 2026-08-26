@@ -61,11 +61,7 @@ jobs:
             exit 1
           fi
 
-          SIGNED=$(python3 -c "
-import json
-m = json.load(open('$MANIFEST'))['artifacts']['windows_exe']
-print(m.get('unsigned_sha256', m['sha256']))
-")
+          SIGNED=$(python3 -c "import json; m = json.load(open('$MANIFEST'))['artifacts']['windows_exe']; print(m.get('unsigned_sha256', m['sha256']))")
           BUILT=$(sha256sum "$BUILD" | cut -d' ' -f1)
 
           echo "signed manifest : $SIGNED"
