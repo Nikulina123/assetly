@@ -1,7 +1,6 @@
 import importlib.util
 import sys
 from pathlib import Path
-from unittest import mock
 
 import pytest
 
@@ -25,13 +24,24 @@ def inventory_agent():
 
 def test_collect_hardware_prefers_sysfs_serial_on_linux(inventory_agent, monkeypatch):
     monkeypatch.setattr(inventory_agent, "_sys", "Linux")
-    monkeypatch.setattr(inventory_agent, "_run", lambda *a, **k: (_ for _ in ()).throw(
-        AssertionError("dmidecode must not be called when sysfs works")
-    ))
     monkeypatch.setattr(
         inventory_agent.socket, "gethostname", lambda: "test-host"
     )
     monkeypatch.setattr(inventory_agent, "get_ip", lambda: "10.0.0.1")
+
+    dmidecode_calls = []
+
+    def fake_run(cmd, sudo=False):
+        if cmd and cmd[0] == "dmidecode":
+            dmidecode_calls.append((cmd, sudo))
+            return ""
+        if cmd == ["cat", "/proc/cpuinfo"]:
+            return "model name : Fake CPU\n"
+        if cmd == ["cat", "/proc/meminfo"]:
+            return "MemTotal:       16000000 kB\n"
+        return ""
+
+    monkeypatch.setattr(inventory_agent, "_run", fake_run)
 
     def fake_read_text(self):
         mapping = {
@@ -45,21 +55,12 @@ def test_collect_hardware_prefers_sysfs_serial_on_linux(inventory_agent, monkeyp
         raise FileNotFoundError
 
     monkeypatch.setattr(inventory_agent.Path, "read_text", fake_read_text)
-    monkeypatch.setattr(
-        inventory_agent, "_run",
-        lambda cmd, sudo=False: (
-            "" if cmd[0] == "dmidecode" else "model name : Fake CPU\n"
-            if cmd == ["cat", "/proc/cpuinfo"]
-            else "MemTotal:       16000000 kB\n"
-            if cmd == ["cat", "/proc/meminfo"]
-            else ""
-        ),
-    )
 
     hw = inventory_agent.collect_hardware()
     assert hw["serial_number"] == "SYSFS-SERIAL-456"
     assert hw["brand"] == "Dell Inc."
     assert hw["model"] == "OptiPlex 7090"
+    assert dmidecode_calls == []  # dmidecode never invoked when sysfs works
 
 
 def test_clean_normalizes_sysfs_and_dmidecode_output_identically(inventory_agent):
