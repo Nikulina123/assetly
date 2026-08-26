@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Set up two-factor authentication — Assetly</title>
+<link rel="stylesheet" href="/static/assetly.css">
+</head>
+<body>
+<div style="display:flex;min-height:100vh;align-items:center;justify-content:center">
+  <div style="width:100%;max-width:420px">
+    <div class="sidebar-logo" style="justify-content:center;padding-bottom:20px">
+      <span style="font-size:22px">asset<span class="ly">ly</span></span>
+    </div>
+    <div class="display" style="text-align:center;font-size:22px;margin-bottom:26px">
+      Set up two-factor authentication
+    </div>
+    <div class="card">
+      <p>Two-factor authentication is required for admin accounts. Scan the
+      QR code below with 1Password, Google Authenticator, Microsoft
+      Authenticator, or any TOTP app.</p>
+
+      {% if error %}
+      <div class="banner" style="background:rgba(239,68,68,0.08);border:1px solid rgba(239,68,68,0.25);color:#EF4444">{{ error }}</div>
+      {% endif %}
+
+      <div style="text-align:center;margin:20px 0">
+        {{ qr_svg | safe }}
+      </div>
+
+      <p class="label">Can't scan? Enter this key manually:</p>
+      <code style="display:block;word-break:break-all;padding:10px;margin-bottom:20px;background:rgba(0,0,0,0.04);border-radius:6px">{{ secret }}</code>
+
+      <form method="post" action="/admin/mfa/setup">
+        <label class="label" for="code">6-digit code</label>
+        <input class="input" id="code" type="text" name="code" required
+               inputmode="numeric" autocomplete="one-time-code"
+               style="width:100%;margin-bottom:20px">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <button type="submit" class="btn" style="width:100%">Verify and enable</button>
+      </form>
+    </div>
+  </div>
+</div>
+</body>
+</html>

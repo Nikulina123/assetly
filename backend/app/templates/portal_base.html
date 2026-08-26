@@ -57,6 +57,9 @@
       </div>
       <div class="topbar-actions">
         {% block topbar_actions %}{% endblock %}
+        {% if admin and not admin.is_full_admin %}
+        <span class="badge" title="Support role: read-only access">Read-only</span>
+        {% endif %}
         <form method="post" action="/admin/logout">
           <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
           <button type="submit" class="btn btn-secondary">{{ icons.icon('logout', 14) }}Log out</button>

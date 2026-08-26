@@ -2,6 +2,7 @@ import datetime
 import hashlib
 import json
 import re
+import time
 import uuid
 from pathlib import Path
 from urllib.parse import quote
@@ -10,7 +11,18 @@ from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
 
-from app.admin_auth import resolve_admin
+from app.admin_auth import (
+    AdminContext,
+    load_admin_context,
+    get_mfa_secret,
+    set_mfa_secret,
+    replace_recovery_codes,
+    consume_recovery_code,
+    count_unused_recovery_codes,
+    resolve_admin,
+)
+from app.audit import audited, record_audit, record_audit_on_conn
+from app import mfa
 from app.auth import generate_api_key, hash_api_key
 from app.config import (
     CHECKIN_API_URL_FOR_DOWNLOAD,
@@ -18,7 +30,10 @@ from app.config import (
     INSTALLER_TOKEN_DAYS,
     MACOS_PKG_IDENTIFIER,
     MACOS_PKG_VERSION,
+    PENDING_LOGIN_MAX_AGE_SECONDS,
     RATE_LIMIT_LOGIN,
+    RATE_LIMIT_MFA,
+    RATE_LIMIT_MFA_IP,
     REPO_ROOT,
     WINDOWS_EXE_PATH,
 )
@@ -34,6 +49,7 @@ from app.agent_ui import (
     DEFAULT_AGENT_UI,
     resolve_agent_ui_for_admin,
     set_agent_ui,
+    validate_agent_ui,
 )
 from app.field_config import (
     add_custom_field,
@@ -41,6 +57,7 @@ from app.field_config import (
     resolve_field_settings_for_admin,
     set_department_config,
     set_hardware_field_enabled,
+    slugify,
 )
 from app.macos_pkg import build_flat_package
 from app.schedule import (
@@ -63,10 +80,75 @@ class NotAuthenticated(Exception):
     pass
 
 
-async def require_admin(request: Request) -> str:
+class PendingLoginRequired(Exception):
+    """Raised when a pending-login route is reached without a live pending
+    session. Handled like NotAuthenticated: bounce to /admin/login."""
+
+
+class _NoRecoveryCode(Exception):
+    """Used only to unwind out of an `audited()` block without it writing a
+    row, when the submitted recovery code turned out to be wrong. Caught
+    immediately by the caller; never escapes mfa_verify_submit."""
+
+
+async def require_admin(request: Request) -> AdminContext:
+    """Identity comes from the signed cookie; role and scope come from the
+    database on every request.
+
+    That one indexed primary-key lookup is what makes a demotion, a scope
+    change, or a deleted account take effect immediately rather than at cookie
+    expiry -- and it means an already-issued cookie is no longer authoritative
+    for anything but which admin it names. That is a partial answer to M-3
+    (no server-side session revocation), which otherwise remains open.
+    """
     admin_id = request.session.get("admin_id")
     if not admin_id:
         raise NotAuthenticated()
+    ctx = await load_admin_context(await get_pool(), admin_id)
+    if ctx is None:
+        request.session.clear()
+        raise NotAuthenticated()
+    return ctx
+
+
+async def require_full_admin(admin: AdminContext = Depends(require_admin)) -> AdminContext:
+    """Read-only `support` admins are refused. Applied to every state-changing
+    route, to the three installer downloads (they mint enrollment tokens), and
+    to /admin/diagnostics (it discloses server filesystem paths).
+
+    The templates also hide these controls, but THIS is the enforcement -- a
+    hidden button is not an authorisation control, it is a nicety."""
+    if not admin.is_full_admin:
+        raise HTTPException(status_code=403, detail="Insufficient privileges")
+    return admin
+
+
+async def require_global_admin(admin: AdminContext = Depends(require_full_admin)) -> AdminContext:
+    """For routes that make no sense scoped -- creating a company a scoped
+    admin would then be unable to see."""
+    if not admin.is_global:
+        raise HTTPException(status_code=403, detail="Insufficient privileges")
+    return admin
+
+
+def _pending_admin_id(request: Request) -> str:
+    """The admin whose password has been verified but whose second factor has
+    not. This is NOT a logged-in session: it carries no admin_id, so
+    require_admin refuses it exactly like an anonymous request.
+
+    Expiry is checked here against a timestamp inside the session rather than
+    being left to the cookie's own max_age, because the cookie's lifetime is
+    the full 8-hour admin session -- leaving a half-authenticated state lying
+    around that long would turn "attacker got the password" into an 8-hour
+    window to also get the code.
+    """
+    admin_id = request.session.get("pending_admin_id")
+    started = request.session.get("pending_at", 0)
+    if not admin_id:
+        raise PendingLoginRequired()
+    if int(time.time()) - int(started) > PENDING_LOGIN_MAX_AGE_SECONDS:
+        request.session.clear()
+        raise PendingLoginRequired()
     return admin_id
 
 
@@ -82,9 +164,19 @@ def _check_csrf(request: Request, csrf_token: str) -> None:
         raise HTTPException(status_code=403, detail="Invalid CSRF token")
 
 
-async def _all_companies(pool):
+async def _all_companies(pool, admin: AdminContext):
+    """A scoped admin's list is filtered in SQL rather than in the template --
+    the template is presentation, and a value that never leaves the database
+    cannot leak through a context that some other view forgets to filter."""
     async with pool.acquire() as conn:
-        return await conn.fetch("SELECT id, name, revoked_at FROM companies ORDER BY name")
+        if admin.is_global:
+            return await conn.fetch(
+                "SELECT id, name, revoked_at FROM companies ORDER BY name"
+            )
+        return await conn.fetch(
+            "SELECT id, name, revoked_at FROM companies WHERE id = $1 ORDER BY name",
+            uuid.UUID(admin.company_id),
+        )
 
 
 @router.get("/login")
@@ -105,33 +197,342 @@ async def login_submit(request: Request, email: str = Form(...), password: str =
 
     admin_id = await resolve_admin(pool, email, password)
     if admin_id is None:
+        # Recorded in clear, deliberately -- unlike the rate-limit buckets,
+        # which are hashed. This table's job is answering "who was targeted,
+        # from where" during an incident, and a hash cannot answer that.
+        await record_audit(
+            pool, request, None, "admin.login.failed", metadata={"email": email}
+        )
         return templates.TemplateResponse(
             request, "login.html", {"error": "Invalid email or password"}
         )
-    # Clear before writing admin_id: these are client-side signed cookies, so
-    # the pre-login session is attacker-fixable. Clearing also drops the
-    # pre-auth csrf_token, which _new_csrf_token then re-mints on the next
-    # authenticated render -- so the token an authenticated form carries was
-    # never visible to anyone before authentication.
+    # A correct password no longer grants access -- it grants the RIGHT TO
+    # ATTEMPT the second factor. Clearing first is the session-fixation fix
+    # (these are client-side signed cookies, so the pre-login session is
+    # attacker-fixable) and it also drops any pre-auth csrf_token, so the
+    # token the MFA form carries was minted after the password check.
+    request.session.clear()
+    request.session["pending_admin_id"] = admin_id
+    request.session["pending_at"] = int(time.time())
+    ctx = await load_admin_context(pool, admin_id)
+    if ctx is not None and ctx.mfa_enrolled:
+        return RedirectResponse("/admin/mfa/verify", status_code=303)
+    return RedirectResponse("/admin/mfa/setup", status_code=303)
+
+
+@router.post("/logout")
+async def logout(request: Request):
+    admin_id = request.session.get("admin_id")
+    if admin_id:
+        pool = await get_pool()
+        await record_audit(pool, request, admin_id, "admin.logout")
+    request.session.clear()
+    return RedirectResponse("/admin/login", status_code=303)
+
+
+@router.get("/mfa/setup")
+async def mfa_setup_form(request: Request):
+    pool = await get_pool()
+    admin_id = _pending_admin_id(request)
+    ctx = await load_admin_context(pool, admin_id)
+    if ctx is None:
+        request.session.clear()
+        raise PendingLoginRequired()
+    if ctx.mfa_enrolled:
+        # Otherwise this route is an MFA bypass: anyone holding the password
+        # could re-enroll their own authenticator and walk straight in.
+        # Re-enrollment for a locked-out admin is an operator action.
+        return RedirectResponse("/admin/mfa/verify", status_code=303)
+
+    # The unconfirmed secret lives in the pending session, not in the database,
+    # so a half-enrolled row -- a secret set that no authenticator actually
+    # holds -- cannot exist. It is written only once a live code proves the
+    # authenticator has it.
+    secret = request.session.get("pending_secret")
+    if not secret:
+        secret = mfa.generate_secret()
+        request.session["pending_secret"] = secret
+
+    uri = mfa.provisioning_uri(secret, ctx.email)
+    return templates.TemplateResponse(
+        request,
+        "mfa_setup.html",
+        {
+            "qr_svg": mfa.qr_svg(uri),
+            "secret": secret,
+            "csrf_token": _new_csrf_token(request),
+        },
+    )
+
+
+@router.post("/mfa/setup")
+async def mfa_setup_submit(
+    request: Request, code: str = Form(...), csrf_token: str = Form(...)
+):
+    _check_csrf(request, csrf_token)
+    pool = await get_pool()
+    admin_id = _pending_admin_id(request)
+    ctx = await load_admin_context(pool, admin_id)
+    if ctx is None or ctx.mfa_enrolled:
+        request.session.clear()
+        raise PendingLoginRequired()
+
+    secret = request.session.get("pending_secret")
+    if not secret:
+        # No pending secret means this POST did not follow a GET of this form
+        # in the same session. Fabricating one here would render a QR for a
+        # secret nothing is tracking, next to a blank manual-entry key -- an
+        # unusable page that invites the admin to scan a code that can never
+        # verify. Send them back to restart the flow instead.
+        request.session.clear()
+        raise PendingLoginRequired()
+
+    if not mfa.verify_totp(secret, code):
+        uri = mfa.provisioning_uri(secret, ctx.email)
+        return templates.TemplateResponse(
+            request,
+            "mfa_setup.html",
+            {
+                "qr_svg": mfa.qr_svg(uri),
+                "secret": secret,
+                "csrf_token": _new_csrf_token(request),
+                "error": "That code did not match. Check your device clock and try again.",
+            },
+        )
+
+    codes = mfa.generate_recovery_codes()
+    # One transaction: secret, codes, and the audit row land together or not
+    # at all. Never put the secret or the recovery codes themselves in
+    # metadata.
+    async with audited(pool, request, admin_id, "admin.mfa.enrolled") as scope:
+        await set_mfa_secret(scope.conn, admin_id, secret)
+        await replace_recovery_codes(scope.conn, admin_id, codes)
+
+    request.session.clear()
+    request.session["admin_id"] = admin_id
+    # No csrf_token in the context: this page has no form. Its only control is
+    # a plain GET link to the console, and the next authenticated render mints
+    # a token of its own.
+    return templates.TemplateResponse(
+        request, "mfa_recovery_codes.html", {"codes": codes}
+    )
+
+
+@router.get("/mfa/verify")
+async def mfa_verify_form(request: Request):
+    _pending_admin_id(request)
+    return templates.TemplateResponse(
+        request, "mfa_verify.html", {"csrf_token": _new_csrf_token(request)}
+    )
+
+
+@router.post("/mfa/verify")
+async def mfa_verify_submit(
+    request: Request, code: str = Form(...), csrf_token: str = Form(...)
+):
+    _check_csrf(request, csrf_token)
+    pool = await get_pool()
+    admin_id = _pending_admin_id(request)
+
+    # Two buckets, both enforced BEFORE any comparison. A 6-digit code is a far
+    # weaker secret than a password, so these are tighter than RATE_LIMIT_LOGIN.
+    #
+    # THE ADMIN-ID BUCKET IS THE LOAD-BEARING CONTROL. It is keyed on the admin
+    # id, never on the session: abandoning the login and starting again produces
+    # a new cookie and a new CSRF token but the same admin, so the counter does
+    # not reset. That reset is the bypass this bucket exists to prevent -- see
+    # test_restarting_the_login_does_not_reset_the_mfa_limit, which pins each
+    # attempt to a distinct IP precisely so that only THIS bucket can produce
+    # the 429 it asserts.
+    #
+    # The IP bucket is only a coarse guard against one address hammering many
+    # different accounts, and is deliberately much looser (RATE_LIMIT_MFA_IP).
+    # It is NOT defence in its own right: off Vercel, client_ip() falls through
+    # to the last x-forwarded-for entry, which an attacker on a direct
+    # connection rotates at will. Tightening it to the admin limit would buy no
+    # security and would let admins behind one office NAT lock each other out.
+    limit, window = RATE_LIMIT_MFA
+    await enforce_rate_limit(pool, hashed_bucket("mfa:admin", admin_id), limit, window)
+    ip_limit, ip_window = RATE_LIMIT_MFA_IP
+    await enforce_rate_limit(pool, f"mfa:ip:{client_ip(request)}", ip_limit, ip_window)
+
+    secret = await get_mfa_secret(pool, admin_id)
+    method = None
+    if secret and mfa.looks_like_totp(code):
+        if mfa.verify_totp(secret, code):
+            method = "totp"
+    elif not mfa.looks_like_totp(code):
+        # A recovery code is single-use: consuming it and recording that it
+        # was used must be one transaction, exactly like MFA enrollment. If
+        # they were split -- consume, commit, THEN write the audit row on a
+        # separate connection -- a crash or a failed insert between the two
+        # would burn the one-time credential with zero record it was ever
+        # used, which is precisely the question this table exists to answer
+        # during an incident. _NoRecoveryCode is how a *wrong* code rolls
+        # back cleanly without writing a row: audited() only writes on a
+        # clean exit, so raising inside the block (then swallowing outside
+        # it) is what makes "code was wrong" behave like "nothing happened",
+        # not like "code was consumed but not logged".
+        try:
+            async with audited(
+                pool, request, admin_id, "admin.mfa.recovery_code_used"
+            ) as scope:
+                if not await consume_recovery_code(scope.conn, admin_id, code):
+                    raise _NoRecoveryCode
+                method = "recovery"
+        except _NoRecoveryCode:
+            pass
+
+    if method is None:
+        # Never put the submitted code in metadata -- it is secret material
+        # for the six-digit TOTP window it was valid in.
+        await record_audit(pool, request, admin_id, "admin.mfa.failed")
+        return templates.TemplateResponse(
+            request, "mfa_verify.html",
+            {"csrf_token": _new_csrf_token(request), "error": "Invalid code"},
+        )
+
+    # admin.login.succeeded stays on record_audit (its own connection),
+    # deliberately NOT joined to the recovery-code transaction above: the
+    # session grant that follows is a Python-side session-cookie mutation
+    # with no database write of its own, so there is no mutation left here
+    # for an audit row to share a transaction with -- unlike
+    # admin.mfa.recovery_code_used, which sits alongside a real database
+    # mutation (consume_recovery_code) and must be joined to it.
+    await record_audit(
+        pool, request, admin_id, "admin.login.succeeded", metadata={"method": method}
+    )
+
+    # Rotate at the point access is actually granted, not merely at the
+    # password step.
     request.session.clear()
     request.session["admin_id"] = admin_id
     return RedirectResponse("/admin/companies", status_code=303)
 
 
-@router.post("/logout")
-async def logout(request: Request):
-    request.session.clear()
-    return RedirectResponse("/admin/login", status_code=303)
+@router.get("/mfa/recovery-codes")
+async def recovery_codes_status(
+    request: Request, admin: AdminContext = Depends(require_admin)
+):
+    """Shows how many codes remain, never the codes themselves -- they are
+    displayed exactly once, at generation. Anything else turns a live session
+    into a way to read the standing backup credential.
+
+    Uses `require_admin`, not `require_full_admin`: these are the admin's OWN
+    credentials, not a privileged action against a tenant, so `support`
+    admins can reach this too.
+    """
+    pool = await get_pool()
+    return templates.TemplateResponse(
+        request,
+        "mfa_recovery_codes_status.html",
+        {
+            "remaining": await count_unused_recovery_codes(pool, admin.id),
+            "csrf_token": _new_csrf_token(request),
+            "admin": admin,
+            "companies": await _all_companies(pool, admin),
+        },
+    )
+
+
+@router.post("/mfa/recovery-codes")
+async def regenerate_recovery_codes(
+    request: Request,
+    csrf_token: str = Form(...),
+    admin: AdminContext = Depends(require_admin),
+):
+    """Regenerates and REPLACES the admin's own recovery-code set. Available
+    to `support` as well as full admins for the same reason as the GET above."""
+    _check_csrf(request, csrf_token)
+    pool = await get_pool()
+    codes = mfa.generate_recovery_codes()
+    # replace_recovery_codes runs on scope.conn, never a second acquired
+    # connection -- see app/audit.py's docstring on why that would silently
+    # forfeit atomicity between the DELETE/INSERT and the audit row.
+    async with audited(
+        pool, request, admin, "admin.mfa.recovery_codes_regenerated"
+    ) as scope:
+        await replace_recovery_codes(scope.conn, admin.id, codes)
+    return templates.TemplateResponse(
+        request,
+        "mfa_recovery_codes.html",
+        {"codes": codes, "csrf_token": _new_csrf_token(request), "admin": admin},
+    )
+
+
+@router.get("/audit")
+async def audit_log_view(
+    request: Request,
+    company_id: uuid.UUID | None = None,
+    action: str | None = None,
+    before: int | None = None,
+    admin: AdminContext = Depends(require_full_admin),
+):
+    """Read-only by construction: the application holds no UPDATE or DELETE
+    grant on audit_log (migration 016), so there is no write path to omit here.
+
+    Keyset pagination on the primary key rather than OFFSET: the log only grows,
+    and OFFSET pagination re-scans everything before the page on every request.
+    """
+    pool = await get_pool()
+    # A scoped admin sees only their own tenant's entries. A scoped admin's
+    # company_id is never NULL, so the `$1::uuid IS NULL OR ...` clause below
+    # requires an exact target_company_id match for them -- which also
+    # excludes actor-level events (logins, MFA, recovery-code events) that
+    # carry no target_company_id at all, without any extra code.
+    scope_company = company_id if admin.is_global else uuid.UUID(admin.company_id)
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT a.id, a.actor_admin_id, ad.email AS actor_email, a.action,
+                   a.target_company_id, c.name AS target_company_name,
+                   a.target_id, a.ip_address, a.occurred_at, a.metadata
+            FROM audit_log a
+            -- LEFT JOIN, because actor_admin_id has no foreign key on purpose:
+            -- the log outlives the accounts it describes, so a missing admin is
+            -- an expected row, not an error.
+            LEFT JOIN admins    ad ON ad.id = a.actor_admin_id
+            LEFT JOIN companies c  ON c.id  = a.target_company_id
+            WHERE ($1::uuid IS NULL OR a.target_company_id = $1)
+              AND ($2::text IS NULL OR a.action = $2)
+              AND ($3::bigint IS NULL OR a.id < $3)
+            ORDER BY a.id DESC
+            LIMIT 50
+            """,
+            scope_company, action, before,
+        )
+        # Scoped the same way as the row query: a scoped admin should not
+        # even see the ACTION NAMES of events outside their own tenant listed
+        # in the filter dropdown -- that discloses activity elsewhere.
+        actions = await conn.fetch(
+            "SELECT DISTINCT action FROM audit_log a "
+            "WHERE ($1::uuid IS NULL OR a.target_company_id = $1) ORDER BY action",
+            scope_company,
+        )
+    return templates.TemplateResponse(
+        request,
+        "audit_log.html",
+        {
+            "rows": rows,
+            "actions": [r["action"] for r in actions],
+            "companies": await _all_companies(pool, admin),
+            "filter_action": action,
+            "filter_company_id": company_id,
+            "next_before": rows[-1]["id"] if len(rows) == 50 else None,
+            "admin": admin,
+            "csrf_token": _new_csrf_token(request),
+        },
+    )
 
 
 @router.get("/companies")
-async def companies_list(request: Request, admin_id: str = Depends(require_admin)):
+async def companies_list(request: Request, admin: AdminContext = Depends(require_admin)):
     pool = await get_pool()
-    companies = await _all_companies(pool)
+    companies = await _all_companies(pool, admin)
     return templates.TemplateResponse(
         request,
         "companies_list.html",
-        {"companies": companies, "csrf_token": _new_csrf_token(request)},
+        {"companies": companies, "csrf_token": _new_csrf_token(request), "admin": admin},
     )
 
 
@@ -141,21 +542,30 @@ async def companies_create(
     name: str = Form(...),
     notification_email: str = Form(...),
     csrf_token: str = Form(...),
-    admin_id: str = Depends(require_admin),
+    admin: AdminContext = Depends(require_global_admin),
 ):
     _check_csrf(request, csrf_token)
 
     api_key = generate_api_key()
     key_hash = hash_api_key(api_key)
     pool = await get_pool()
-    async with pool.acquire() as conn:
-        await conn.execute(
-            "INSERT INTO companies (name, api_key_hash, api_key_prefix, notification_email) "
-            "VALUES ($1, $2, $3, $4)",
-            name, key_hash, api_key[:8], notification_email,
+    # Generated here, rather than left to companies.id's DEFAULT
+    # gen_random_uuid(), so it is known BEFORE the audited() block opens --
+    # audited()'s target_company_id/target_id are fixed at call time, not
+    # settable from inside the block once the row exists.
+    new_company_id = uuid.uuid4()
+    async with audited(
+        pool, request, admin, "company.created",
+        target_company_id=new_company_id, target_id=new_company_id,
+        metadata={"name": name},
+    ) as scope:
+        await scope.conn.execute(
+            "INSERT INTO companies (id, name, api_key_hash, api_key_prefix, notification_email) "
+            "VALUES ($1, $2, $3, $4, $5)",
+            new_company_id, name, key_hash, api_key[:8], notification_email,
         )
 
-    companies = await _all_companies(pool)
+    companies = await _all_companies(pool, admin)
     return templates.TemplateResponse(
         request,
         "companies_list.html",
@@ -163,11 +573,17 @@ async def companies_create(
             "companies": companies,
             "csrf_token": _new_csrf_token(request),
             "new_api_key": api_key,
+            "admin": admin,
         },
     )
 
 
-async def _get_company_or_404(pool, company_id: uuid.UUID):
+async def _get_company_or_404(pool, company_id: uuid.UUID, admin: AdminContext):
+    # 404 rather than 403, and checked before the lookup: a 403 (or a 404 whose
+    # timing differs from a real miss) confirms the company exists, which tells
+    # a scoped admin that a tenant they are not entitled to see is a customer.
+    if not admin.is_global and str(company_id) != admin.company_id:
+        raise HTTPException(status_code=404, detail="Company not found")
     async with pool.acquire() as conn:
         company = await conn.fetchrow(
             "SELECT id, name, api_key_prefix, revoked_at, notification_email FROM companies WHERE id = $1",
@@ -269,12 +685,12 @@ async def _agent_ui_context(pool, company_id: uuid.UUID) -> dict:
 
 @router.get("/companies/{company_id}")
 async def company_detail(
-    request: Request, company_id: uuid.UUID, admin_id: str = Depends(require_admin)
+    request: Request, company_id: uuid.UUID, admin: AdminContext = Depends(require_admin)
 ):
     pool = await get_pool()
-    company = await _get_company_or_404(pool, company_id)
+    company = await _get_company_or_404(pool, company_id, admin)
     field_settings = await resolve_field_settings_for_admin(pool, str(company_id))
-    companies = await _all_companies(pool)
+    companies = await _all_companies(pool, admin)
     context = {
         "request": request,
         "companies": companies,
@@ -283,6 +699,7 @@ async def company_detail(
         "field_settings": field_settings,
         "tokens": await _tokens_for_display(pool, str(company_id)),
         "nav_active": "settings",
+        "admin": admin,
     }
     context.update(await _schedule_context(pool, company_id))
     context.update(await _agent_ui_context(pool, company_id))
@@ -294,26 +711,31 @@ async def rotate_key(
     request: Request,
     company_id: uuid.UUID,
     csrf_token: str = Form(...),
-    admin_id: str = Depends(require_admin),
+    admin: AdminContext = Depends(require_full_admin),
 ):
     _check_csrf(request, csrf_token)
     pool = await get_pool()
+    await _get_company_or_404(pool, company_id, admin)
 
     api_key = generate_api_key()
     key_hash = hash_api_key(api_key)
-    async with pool.acquire() as conn:
-        company = await conn.fetchrow(
+    async with audited(
+        pool, request, admin, "company.api_key_rotated",
+        target_company_id=company_id, target_id=company_id,
+        metadata={"key_prefix": api_key[:8]},
+    ) as scope:
+        company = await scope.conn.fetchrow(
             """
             UPDATE companies SET api_key_hash = $1, api_key_prefix = $2 WHERE id = $3
             RETURNING id, name, api_key_prefix, revoked_at, notification_email
             """,
             key_hash, api_key[:8], company_id,
         )
-    if company is None:
-        raise HTTPException(status_code=404, detail="Company not found")
+        if company is None:
+            raise HTTPException(status_code=404, detail="Company not found")
 
     field_settings = await resolve_field_settings_for_admin(pool, str(company_id))
-    companies = await _all_companies(pool)
+    companies = await _all_companies(pool, admin)
     context = {
         "request": request,
         "companies": companies,
@@ -322,6 +744,7 @@ async def rotate_key(
         "new_api_key": api_key,
         "field_settings": field_settings,
         "tokens": await _tokens_for_display(pool, str(company_id)),
+        "admin": admin,
     }
     context.update(await _schedule_context(pool, company_id))
     context.update(await _agent_ui_context(pool, company_id))
@@ -333,29 +756,40 @@ async def revoke_company(
     request: Request,
     company_id: uuid.UUID,
     csrf_token: str = Form(...),
-    admin_id: str = Depends(require_admin),
+    admin: AdminContext = Depends(require_full_admin),
 ):
     _check_csrf(request, csrf_token)
     pool = await get_pool()
+    await _get_company_or_404(pool, company_id, admin)
 
-    async with pool.acquire() as conn:
-        company = await conn.fetchrow(
+    async with audited(
+        pool, request, admin, "company.revoked",
+        target_company_id=company_id, target_id=company_id,
+    ) as scope:
+        company = await scope.conn.fetchrow(
             """
             UPDATE companies SET revoked_at = NOW() WHERE id = $1 AND revoked_at IS NULL
             RETURNING id, name, api_key_prefix, revoked_at, notification_email
             """,
             company_id,
         )
-
-    if company is None:
-        # UPDATE's WHERE clause excludes already-revoked rows, so None here means
-        # either "already revoked" or "doesn't exist" — disambiguate with a plain
-        # lookup: 404s if truly missing, otherwise returns the existing (already-
-        # revoked) row so this stays idempotent instead of erroring on a re-click.
-        company = await _get_company_or_404(pool, company_id)
+        scope.metadata["already_revoked"] = company is None
+        if company is None:
+            # UPDATE's WHERE clause excludes already-revoked rows, so None here
+            # means either "already revoked" or "doesn't exist" — disambiguate
+            # with a plain lookup on the SAME connection: 404s if truly missing,
+            # otherwise returns the existing (already-revoked) row so this stays
+            # idempotent instead of erroring on a re-click.
+            company = await scope.conn.fetchrow(
+                "SELECT id, name, api_key_prefix, revoked_at, notification_email "
+                "FROM companies WHERE id = $1",
+                company_id,
+            )
+            if company is None:
+                raise HTTPException(status_code=404, detail="Company not found")
 
     field_settings = await resolve_field_settings_for_admin(pool, str(company_id))
-    companies = await _all_companies(pool)
+    companies = await _all_companies(pool, admin)
     context = {
         "request": request,
         "companies": companies,
@@ -363,6 +797,7 @@ async def revoke_company(
         "csrf_token": _new_csrf_token(request),
         "field_settings": field_settings,
         "tokens": await _tokens_for_display(pool, str(company_id)),
+        "admin": admin,
     }
     context.update(await _schedule_context(pool, company_id))
     context.update(await _agent_ui_context(pool, company_id))
@@ -375,13 +810,17 @@ async def update_notification_email(
     company_id: uuid.UUID,
     notification_email: str = Form(...),
     csrf_token: str = Form(...),
-    admin_id: str = Depends(require_admin),
+    admin: AdminContext = Depends(require_full_admin),
 ):
     _check_csrf(request, csrf_token)
     pool = await get_pool()
-    await _get_company_or_404(pool, company_id)
-    async with pool.acquire() as conn:
-        await conn.execute(
+    await _get_company_or_404(pool, company_id, admin)
+    async with audited(
+        pool, request, admin, "company.notification_email_updated",
+        target_company_id=company_id, target_id=company_id,
+        metadata={"email": notification_email},
+    ) as scope:
+        await scope.conn.execute(
             "UPDATE companies SET notification_email = $1 WHERE id = $2",
             notification_email, company_id,
         )
@@ -401,11 +840,11 @@ async def update_schedule(
     # ordinary preset save would fail.
     custom_count: str | None = Form(None),
     custom_unit: str | None = Form(None),
-    admin_id: str = Depends(require_admin),
+    admin: AdminContext = Depends(require_full_admin),
 ):
     _check_csrf(request, csrf_token)
     pool = await get_pool()
-    await _get_company_or_404(pool, company_id)
+    await _get_company_or_404(pool, company_id, admin)
 
     try:
         if interval_preset == "custom":
@@ -427,8 +866,8 @@ async def update_schedule(
         # the deliberate choice -- a rejected value is by definition one that
         # cannot be stored, and redisplaying it invites a second save of the
         # same bad input, while the stored values are what is still in force.
-        company = await _get_company_or_404(pool, company_id)
-        companies = await _all_companies(pool)
+        company = await _get_company_or_404(pool, company_id, admin)
+        companies = await _all_companies(pool, admin)
         field_settings = await resolve_field_settings_for_admin(pool, str(company_id))
         context = {
             "request": request,
@@ -439,6 +878,7 @@ async def update_schedule(
             "csrf_token": _new_csrf_token(request),
             "nav_active": "settings",
             "schedule_error": str(exc),
+            "admin": admin,
         }
         context.update(await _schedule_context(pool, company_id))
         context.update(await _agent_ui_context(pool, company_id))
@@ -446,7 +886,12 @@ async def update_schedule(
             request, "company_detail.html", context, status_code=200
         )
 
-    await set_schedule(pool, str(company_id), interval, cancel_retry_seconds)
+    async with audited(
+        pool, request, admin, "company.schedule_updated",
+        target_company_id=company_id, target_id=company_id,
+        metadata={"interval_seconds": interval, "cancel_retry_seconds": cancel_retry_seconds},
+    ) as scope:
+        await set_schedule(pool, str(company_id), interval, cancel_retry_seconds, conn=scope.conn)
     return RedirectResponse(f"/admin/companies/{company_id}", status_code=303)
 
 
@@ -454,7 +899,7 @@ async def update_schedule(
 async def update_agent_ui(
     request: Request,
     company_id: uuid.UUID,
-    admin_id: str = Depends(require_admin),
+    admin: AdminContext = Depends(require_full_admin),
 ):
     """Saves the agent window's copy and colours.
 
@@ -466,14 +911,25 @@ async def update_agent_ui(
     form = await request.form()
     _check_csrf(request, str(form.get("csrf_token", "")))
     pool = await get_pool()
-    await _get_company_or_404(pool, company_id)
+    await _get_company_or_404(pool, company_id, admin)
 
     # Absent keys mean "leave at default"; the template posts every key, so in
     # practice absence only happens for a form from an older page load.
     submitted = {key: str(form[key]) for key in DEFAULT_AGENT_UI if key in form}
 
     try:
-        await set_agent_ui(pool, str(company_id), submitted)
+        # Validated BEFORE the transaction opens, not inside it. set_agent_ui
+        # validates again and remains the authority -- this is a pre-flight so
+        # that a rejected palette (which is pure Python: hex parsing, length
+        # checks, WCAG contrast maths over ~14 pairs) never holds one of only
+        # two pooled connections while being refused.
+        validate_agent_ui(submitted)
+        async with audited(
+            pool, request, admin, "company.appearance_updated",
+            target_company_id=company_id, target_id=company_id,
+            metadata={"changed_keys": sorted(submitted.keys())},
+        ) as scope:
+            await set_agent_ui(pool, str(company_id), submitted, conn=scope.conn)
     except ValueError as exc:
         # Re-render in place with the message, as update_schedule does. The
         # rejected values ARE echoed back here, unlike the schedule form: a
@@ -481,8 +937,8 @@ async def update_agent_ui(
         # hand-picked, and re-reading the stored palette would throw all of
         # that away to show the failure. The card renders from `agent_ui_form`
         # when present, so the admin can fix the one bad value in place.
-        company = await _get_company_or_404(pool, company_id)
-        companies = await _all_companies(pool)
+        company = await _get_company_or_404(pool, company_id, admin)
+        companies = await _all_companies(pool, admin)
         field_settings = await resolve_field_settings_for_admin(pool, str(company_id))
         context = {
             "request": request,
@@ -494,6 +950,7 @@ async def update_agent_ui(
             "nav_active": "settings",
             "agent_ui_error": str(exc),
             "agent_ui_form": submitted,
+            "admin": admin,
         }
         context.update(await _schedule_context(pool, company_id))
         context.update(await _agent_ui_context(pool, company_id))
@@ -515,17 +972,13 @@ async def update_hardware_fields(
     ip_address: str | None = Form(None),
     department_enabled: str | None = Form(None),
     department_required: str | None = Form(None),
-    admin_id: str = Depends(require_admin),
+    admin: AdminContext = Depends(require_full_admin),
 ):
     _check_csrf(request, csrf_token)
     pool = await get_pool()
-    await _get_company_or_404(pool, company_id)
+    await _get_company_or_404(pool, company_id, admin)
 
     company_id_str = str(company_id)
-    for field_key, submitted_value in [
-        ("cpu", cpu), ("ram", ram), ("storage", storage), ("ip_address", ip_address),
-    ]:
-        await set_hardware_field_enabled(pool, company_id_str, field_key, submitted_value is not None)
 
     # Check if department_options was submitted in the form. In Starlette 1.6.0, empty form fields
     # may not appear in the Form() parameters, so we check the raw form data to distinguish
@@ -537,12 +990,30 @@ async def update_hardware_fields(
     else:
         options = None
 
-    await set_department_config(
-        pool, company_id_str,
-        enabled=department_enabled is not None,
-        required=department_required is not None,
-        options=options,
-    )
+    enabled_keys = [
+        key for key, submitted_value in
+        [("cpu", cpu), ("ram", ram), ("storage", storage), ("ip_address", ip_address)]
+        if submitted_value is not None
+    ]
+    async with audited(
+        pool, request, admin, "company.fields.hardware_updated",
+        target_company_id=company_id, target_id=company_id,
+        metadata={"enabled": enabled_keys},
+    ) as scope:
+        for field_key, submitted_value in [
+            ("cpu", cpu), ("ram", ram), ("storage", storage), ("ip_address", ip_address),
+        ]:
+            await set_hardware_field_enabled(
+                pool, company_id_str, field_key, submitted_value is not None, conn=scope.conn,
+            )
+
+        await set_department_config(
+            pool, company_id_str,
+            enabled=department_enabled is not None,
+            required=department_required is not None,
+            options=options,
+            conn=scope.conn,
+        )
 
     return RedirectResponse(f"/admin/companies/{company_id}", status_code=303)
 
@@ -554,16 +1025,28 @@ async def add_custom_field_route(
     label: str = Form(...),
     required: str | None = Form(None),
     csrf_token: str = Form(...),
-    admin_id: str = Depends(require_admin),
+    admin: AdminContext = Depends(require_full_admin),
 ):
     _check_csrf(request, csrf_token)
     pool = await get_pool()
-    company = await _get_company_or_404(pool, company_id)
+    company = await _get_company_or_404(pool, company_id, admin)
     try:
-        await add_custom_field(pool, str(company_id), label, required is not None)
+        async with audited(
+            pool, request, admin, "company.fields.custom_added",
+            # slugify is deterministic, so the field key add_custom_field will
+            # produce is knowable before the call -- add_custom_field itself
+            # re-validates it (reserved keys, empty slug) and is the actual
+            # authority; this is only for target_id, known ahead of time so it
+            # can be passed into audited() before the block opens.
+            target_company_id=company_id, target_id=slugify(label),
+            metadata={"field_key": slugify(label)},
+        ) as scope:
+            await add_custom_field(
+                pool, str(company_id), label, required is not None, conn=scope.conn,
+            )
     except ValueError as e:
         field_settings = await resolve_field_settings_for_admin(pool, str(company_id))
-        companies = await _all_companies(pool)
+        companies = await _all_companies(pool, admin)
         context = {
             "request": request,
             "companies": companies,
@@ -572,6 +1055,7 @@ async def add_custom_field_route(
             "field_settings": field_settings,
             "field_error": str(e),
             "tokens": await _tokens_for_display(pool, str(company_id)),
+            "admin": admin,
         }
         context.update(await _schedule_context(pool, company_id))
         context.update(await _agent_ui_context(pool, company_id))
@@ -585,12 +1069,16 @@ async def remove_custom_field_route(
     company_id: uuid.UUID,
     field_key: str,
     csrf_token: str = Form(...),
-    admin_id: str = Depends(require_admin),
+    admin: AdminContext = Depends(require_full_admin),
 ):
     _check_csrf(request, csrf_token)
     pool = await get_pool()
-    await _get_company_or_404(pool, company_id)
-    await remove_custom_field(pool, str(company_id), field_key)
+    await _get_company_or_404(pool, company_id, admin)
+    async with audited(
+        pool, request, admin, "company.fields.custom_removed",
+        target_company_id=company_id, target_id=field_key,
+    ) as scope:
+        await remove_custom_field(pool, str(company_id), field_key, conn=scope.conn)
     return RedirectResponse(f"/admin/companies/{company_id}", status_code=303)
 
 
@@ -600,7 +1088,7 @@ async def revoke_enrollment_token(
     company_id: uuid.UUID,
     token_id: uuid.UUID,
     csrf_token: str = Form(...),
-    admin_id: str = Depends(require_admin),
+    admin: AdminContext = Depends(require_full_admin),
 ):
     """Blocks future enrollments with this token. Devices that already
     enrolled through it keep their own credential and are untouched -- the
@@ -608,8 +1096,12 @@ async def revoke_enrollment_token(
     itself."""
     _check_csrf(request, csrf_token)
     pool = await get_pool()
-    await _get_company_or_404(pool, company_id)
-    await revoke_token(pool, str(company_id), str(token_id))
+    await _get_company_or_404(pool, company_id, admin)
+    async with audited(
+        pool, request, admin, "enrollment_token.revoked",
+        target_company_id=company_id, target_id=token_id,
+    ) as scope:
+        await revoke_token(pool, str(company_id), str(token_id), conn=scope.conn)
     return RedirectResponse(f"/admin/companies/{company_id}", status_code=303)
 
 
@@ -619,7 +1111,7 @@ async def revoke_device(
     company_id: uuid.UUID,
     serial_number: str,
     csrf_token: str = Form(...),
-    admin_id: str = Depends(require_admin),
+    admin: AdminContext = Depends(require_full_admin),
 ):
     """Revokes exactly one machine's credential. Every other device in the
     company -- including ones enrolled through the same token -- keeps
@@ -630,19 +1122,29 @@ async def revoke_device(
     segment for us by the time `serial_number` reaches this function)."""
     _check_csrf(request, csrf_token)
     pool = await get_pool()
-    await _get_company_or_404(pool, company_id)
-    await revoke_device_credential(pool, str(company_id), serial_number)
+    await _get_company_or_404(pool, company_id, admin)
+    async with audited(
+        pool, request, admin, "device_credential.revoked",
+        target_company_id=company_id, target_id=serial_number,
+    ) as scope:
+        rows_matched = await revoke_device_credential(
+            pool, str(company_id), serial_number, conn=scope.conn,
+        )
+        # The exact signal that would have caught a Revoke button matching
+        # zero rows while still reporting success to the admin -- a real
+        # count from the UPDATE's own status tag, not a hardcoded 1.
+        scope.metadata["rows_matched"] = rows_matched
     return RedirectResponse(
         f"/admin/companies/{company_id}/computers/{quote(serial_number, safe='')}",
         status_code=303,
     )
 
 
-async def _get_active_company_or_404(pool, company_id: uuid.UUID):
+async def _get_active_company_or_404(pool, company_id: uuid.UUID, admin: AdminContext):
     """Like _get_company_or_404, but also blocks revoked companies -- a
     downloadable installer whose key immediately 401s is worse than no
     download button."""
-    company = await _get_company_or_404(pool, company_id)
+    company = await _get_company_or_404(pool, company_id, admin)
     if company["revoked_at"] is not None:
         raise HTTPException(status_code=404, detail="Company not found")
     return company
@@ -680,7 +1182,7 @@ def _render_installer_script(template_text: str, checkin_api_url: str, enrollmen
 
 
 @router.get("/diagnostics")
-async def diagnostics(request: Request, admin_id: str = Depends(require_admin)):
+async def diagnostics(request: Request, admin: AdminContext = Depends(require_full_admin)):
     """Reports what this instance actually has on disk.
 
     Every file a download route reads is committed to the repository, which
@@ -691,6 +1193,9 @@ async def diagnostics(request: Request, admin_id: str = Depends(require_admin)):
     are included so a served artifact can be compared with `sha256sum` against
     a local checkout without downloading anything.
     """
+    pool = await get_pool()
+    await record_audit(pool, request, admin, "admin.diagnostics_viewed")
+
     def describe(path: Path) -> dict:
         if not path.is_file():
             return {"path": str(path), "exists": False}
@@ -777,7 +1282,7 @@ async def download_macos(
     csrf_token: str = Form(...),
     device_count: int = Form(...),
     token_days: int = Form(INSTALLER_TOKEN_DAYS),
-    admin_id: str = Depends(require_admin),
+    admin: AdminContext = Depends(require_full_admin),
 ):
     """Serves a double-clickable installer package rather than a shell script.
 
@@ -788,14 +1293,38 @@ async def download_macos(
     """
     _check_csrf(request, csrf_token)
     pool = await get_pool()
-    await _get_active_company_or_404(pool, company_id)
+    await _get_active_company_or_404(pool, company_id, admin)
     postinstall_template = _load_installer_template("AssetlyAgent_macOS_postinstall.sh")
     agent_source = (REPO_ROOT / "inventory_agent.py").read_bytes()
     max_devices, expires_at = _installer_token_terms(device_count, token_days)
-    token = await create_enrollment_token(
-        pool, str(company_id), label=f"macOS installer ({device_count} devices)",
-        expires_at=expires_at, max_devices=max_devices,
-    )
+    # Minted here rather than left to the column DEFAULT so the id is known
+    # before the audit row is written: enrollment_token.created and
+    # enrollment_token.revoked must share a target_id, or the token lifecycle
+    # cannot be queried from one end to the other.
+    new_token_id = uuid.uuid4()
+    async with audited(
+        pool, request, admin, "installer.downloaded",
+        target_company_id=company_id,
+        metadata={"platform": "macos", "max_devices": max_devices},
+    ) as scope:
+        token = await create_enrollment_token(
+            pool, str(company_id), label=f"macOS installer ({device_count} devices)",
+            expires_at=expires_at, max_devices=max_devices, conn=scope.conn,
+            token_id=new_token_id,
+        )
+        # A second row in the SAME transaction, on the same connection --
+        # not a second audited() block, which would be a second connection
+        # acquire and would forfeit atomicity with the token insert above.
+        # target_id is the token ROW's id, matching what
+        # enrollment_token.revoked records, so the two ends of a token's
+        # lifecycle join on one key. The non-secret prefix goes in metadata
+        # for human readability; the plaintext token is never recorded.
+        await record_audit_on_conn(
+            scope.conn, request, admin, "enrollment_token.created",
+            target_company_id=company_id, target_id=new_token_id,
+            metadata={"max_devices": max_devices, "expires_at": expires_at.isoformat(),
+                      "token_prefix": token[:18]},
+        )
     postinstall = _render_installer_script(
         postinstall_template, CHECKIN_API_URL_FOR_DOWNLOAD, token
     )
@@ -827,17 +1356,34 @@ async def download_linux(
     csrf_token: str = Form(...),
     device_count: int = Form(...),
     token_days: int = Form(INSTALLER_TOKEN_DAYS),
-    admin_id: str = Depends(require_admin),
+    admin: AdminContext = Depends(require_full_admin),
 ):
     _check_csrf(request, csrf_token)
     pool = await get_pool()
-    await _get_active_company_or_404(pool, company_id)
+    await _get_active_company_or_404(pool, company_id, admin)
     template_text = _load_installer_template("AssetlyAgent_Linux.sh")
     max_devices, expires_at = _installer_token_terms(device_count, token_days)
-    token = await create_enrollment_token(
-        pool, str(company_id), label=f"Linux installer ({device_count} devices)",
-        expires_at=expires_at, max_devices=max_devices,
-    )
+    # Minted here rather than left to the column DEFAULT so the id is known
+    # before the audit row is written: enrollment_token.created and
+    # enrollment_token.revoked must share a target_id, or the token lifecycle
+    # cannot be queried from one end to the other.
+    new_token_id = uuid.uuid4()
+    async with audited(
+        pool, request, admin, "installer.downloaded",
+        target_company_id=company_id,
+        metadata={"platform": "linux", "max_devices": max_devices},
+    ) as scope:
+        token = await create_enrollment_token(
+            pool, str(company_id), label=f"Linux installer ({device_count} devices)",
+            expires_at=expires_at, max_devices=max_devices, conn=scope.conn,
+            token_id=new_token_id,
+        )
+        await record_audit_on_conn(
+            scope.conn, request, admin, "enrollment_token.created",
+            target_company_id=company_id, target_id=new_token_id,
+            metadata={"max_devices": max_devices, "expires_at": expires_at.isoformat(),
+                      "token_prefix": token[:18]},
+        )
     script_text = _render_installer_script(template_text, CHECKIN_API_URL_FOR_DOWNLOAD, token)
     return Response(
         content=script_text,
@@ -853,7 +1399,7 @@ async def download_windows(
     csrf_token: str = Form(...),
     device_count: int = Form(...),
     token_days: int = Form(INSTALLER_TOKEN_DAYS),
-    admin_id: str = Depends(require_admin),
+    admin: AdminContext = Depends(require_full_admin),
 ):
     """Serves one self-contained .exe instead of an exe plus a config file.
 
@@ -875,12 +1421,29 @@ async def download_windows(
         )
     exe_bytes = WINDOWS_EXE_PATH.read_bytes()
     pool = await get_pool()
-    await _get_active_company_or_404(pool, company_id)
+    await _get_active_company_or_404(pool, company_id, admin)
     max_devices, expires_at = _installer_token_terms(device_count, token_days)
-    token = await create_enrollment_token(
-        pool, str(company_id), label=f"Windows installer ({device_count} devices)",
-        expires_at=expires_at, max_devices=max_devices,
-    )
+    # Minted here rather than left to the column DEFAULT so the id is known
+    # before the audit row is written: enrollment_token.created and
+    # enrollment_token.revoked must share a target_id, or the token lifecycle
+    # cannot be queried from one end to the other.
+    new_token_id = uuid.uuid4()
+    async with audited(
+        pool, request, admin, "installer.downloaded",
+        target_company_id=company_id,
+        metadata={"platform": "windows", "max_devices": max_devices},
+    ) as scope:
+        token = await create_enrollment_token(
+            pool, str(company_id), label=f"Windows installer ({device_count} devices)",
+            expires_at=expires_at, max_devices=max_devices, conn=scope.conn,
+            token_id=new_token_id,
+        )
+        await record_audit_on_conn(
+            scope.conn, request, admin, "enrollment_token.created",
+            target_company_id=company_id, target_id=new_token_id,
+            metadata={"max_devices": max_devices, "expires_at": expires_at.isoformat(),
+                      "token_prefix": token[:18]},
+        )
 
     return Response(
         content=embed_windows_config(

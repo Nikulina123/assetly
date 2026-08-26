@@ -51,7 +51,7 @@ async def db_pool():
     await admin_conn.execute(
         "TRUNCATE device_checkins, devices, companies, admins, company_fields, "
         "enrollment_tokens, device_credentials, rate_limit_hits, "
-        "auth_failure_events CASCADE;"
+        "auth_failure_events, admin_recovery_codes, audit_log CASCADE;"
     )
     await admin_conn.execute(
         "UPDATE notification_state SET last_digest_sent_at = NULL, "
@@ -117,3 +117,96 @@ async def admin(db_pool):
     finally:
         await admin_conn.close()
     return str(row["id"]), email, password
+
+
+@pytest_asyncio.fixture
+async def enrolled_admin(db_pool, admin):
+    """An admin with MFA already enrolled. Returns (admin_id, email, password, secret)."""
+    from app import mfa
+
+    admin_id, email, password = admin
+    secret = mfa.generate_secret()
+    async with db_pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE admins SET mfa_secret = $1, mfa_enrolled_at = NOW() WHERE id = $2",
+            mfa.encrypt_secret(secret), admin_id,
+        )
+    return admin_id, email, password, secret
+
+
+@pytest_asyncio.fixture
+async def support_admin(db_pool):
+    """A read-only admin, MFA already enrolled. Returns (admin_id, email, password, secret).
+
+    Inserted through the `admin` superuser connection: the app role has no
+    grant to write `role`, which is the point of the column-level grant in 016.
+    """
+    from app.admin_auth import hash_password
+    from app import mfa
+
+    email = "support@example.com"
+    password = "support-horse-battery-staple"
+    secret = mfa.generate_secret()
+    admin_conn = await asyncpg.connect(ADMIN_TEST_DATABASE_URL)
+    try:
+        row = await admin_conn.fetchrow(
+            "INSERT INTO admins (email, password_hash, role, mfa_secret, mfa_enrolled_at) "
+            "VALUES ($1, $2, 'support', $3, NOW()) RETURNING id",
+            email, hash_password(password), mfa.encrypt_secret(secret),
+        )
+    finally:
+        await admin_conn.close()
+    return str(row["id"]), email, password, secret
+
+
+@pytest_asyncio.fixture
+async def scoped_admin(db_pool, company):
+    """A full admin scoped to one company. Returns (admin_id, email, password, secret, company_id)."""
+    from app.admin_auth import hash_password
+    from app import mfa
+
+    company_id, _api_key = company
+    email = "scoped@example.com"
+    password = "scoped-horse-battery-staple"
+    secret = mfa.generate_secret()
+    admin_conn = await asyncpg.connect(ADMIN_TEST_DATABASE_URL)
+    try:
+        row = await admin_conn.fetchrow(
+            "INSERT INTO admins (email, password_hash, company_id, mfa_secret, mfa_enrolled_at) "
+            "VALUES ($1, $2, $3, $4, NOW()) RETURNING id",
+            email, hash_password(password), company_id, mfa.encrypt_secret(secret),
+        )
+    finally:
+        await admin_conn.close()
+    return str(row["id"]), email, password, secret, company_id
+
+
+@pytest.fixture
+def login_as():
+    # Plain @pytest.fixture, not @pytest_asyncio.fixture: the fixture itself is
+    # synchronous and merely RETURNS an async callable.
+    """Returns an async callable that drives the full two-stage login for an
+    httpx client, so route tests do not each re-implement it. Takes the client
+    and an (admin_id, email, password, secret) tuple as produced by the
+    enrolled_admin / support_admin / scoped_admin fixtures."""
+    import json
+    from base64 import b64decode
+    import itsdangerous
+    import pyotp
+    from app.config import SESSION_SECRET_KEY
+
+    async def _login(client, admin_tuple):
+        _admin_id, email, password, secret = admin_tuple[:4]
+        await client.post("/admin/login", data={"email": email, "password": password})
+        await client.get("/admin/mfa/verify")
+        signer = itsdangerous.TimestampSigner(str(SESSION_SECRET_KEY))
+        session = json.loads(b64decode(signer.unsign(client.cookies["session"].encode())))
+        resp = await client.post(
+            "/admin/mfa/verify",
+            data={"code": pyotp.TOTP(secret).now(), "csrf_token": session["csrf_token"]},
+            follow_redirects=False,
+        )
+        assert resp.status_code == 303, f"login failed: {resp.status_code}"
+        return client
+
+    return _login

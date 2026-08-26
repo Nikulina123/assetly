@@ -24,15 +24,24 @@
     <a class="nav-item" href="/admin/companies/{{ c['id'] }}">{{ c['name'] }}{% if c['revoked_at'] %} (revoked){% endif %}</a>
     {% endfor %}
     <div style="margin-top:auto"></div>
+    <a class="nav-item" href="/admin/mfa/recovery-codes">Recovery codes</a>
+    {% if admin and admin.is_full_admin %}
+    <a class="nav-item" href="/admin/audit">Audit log</a>
+    {% endif %}
     <a class="nav-item" href="/admin/companies">+ New company</a>
   </aside>
   <div class="main">
     <header class="topbar">
       <h1>{% block heading %}Companies{% endblock %}</h1>
-      <form method="post" action="/admin/logout">
-        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-        <button type="submit" class="btn btn-secondary">Log out</button>
-      </form>
+      <div style="display:flex;align-items:center;gap:12px">
+        {% if admin and not admin.is_full_admin %}
+        <span class="badge" title="Support role: read-only access">Read-only</span>
+        {% endif %}
+        <form method="post" action="/admin/logout">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <button type="submit" class="btn btn-secondary">Log out</button>
+        </form>
+      </div>
     </header>
     <main class="content">{% block content %}{% endblock %}</main>
   </div>

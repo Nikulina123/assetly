@@ -8,7 +8,7 @@ from starlette.middleware.sessions import SessionMiddleware
 
 from app.config import SESSION_COOKIE_SECURE, SESSION_MAX_AGE_SECONDS, SESSION_SECRET_KEY
 from app.db import get_pool
-from app.routers.admin import NotAuthenticated
+from app.routers.admin import NotAuthenticated, PendingLoginRequired
 from app.routers.admin import router as admin_router
 from app.routers.agent_update import router as agent_update_router
 from app.routers.checkin import router as checkin_router
@@ -53,6 +53,11 @@ async def healthz():
 
 @app.exception_handler(NotAuthenticated)
 async def not_authenticated_handler(request, exc):
+    return RedirectResponse("/admin/login", status_code=303)
+
+
+@app.exception_handler(PendingLoginRequired)
+async def pending_login_required_handler(request, exc):
     return RedirectResponse("/admin/login", status_code=303)
 
 

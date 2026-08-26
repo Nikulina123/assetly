@@ -187,10 +187,11 @@ $payload["platform"]        = "windows"
 
 ## Deploy ordering (hard gate)
 
-Migrations **013** (`rate_limit_hits`), **014**, and **015**
-(`normalise_credential_serials`) must be applied to the production database
-with `psql -1 <migration file>` **before** deploying any code that depends on
-them. This is not merely recommended ordering — it is a hard gate:
+Migrations **013** (`rate_limit_hits`), **014**, **015**
+(`normalise_credential_serials`), and **016** (`admin_mfa_rbac_audit`) must be
+applied to the production database with `psql -1 <migration file>` **before**
+deploying any code that depends on them. This is not merely recommended
+ordering — it is a hard gate:
 
 - Code from Task 6 onward calls `enforce_rate_limit` on `/admin/login`,
   `/api/v1/enroll`, `/checkin`, `/config`, and `/agent/manifest`, all of which
@@ -213,6 +214,33 @@ them. This is not merely recommended ordering — it is a hard gate:
   regression, not a cosmetic one. This migration has no code dependency in
   the other direction (it's a data fixup with no new schema), so it is safe
   to run standalone ahead of the rest of the deploy.
+- Migration 016 adds admin MFA, role, and per-company-scope columns plus the
+  `admin_recovery_codes` and `audit_log` tables. Unlike 013, there is **no
+  fail-open path**: the login flow reads `admins.role` and `admins.mfa_secret`
+  on every request, so code deployed against a database without this
+  migration breaks admin login outright, not just a degraded feature. Apply it
+  strictly before deploying the code that reads those columns.
+  - On Supabase, run it wrapped manually in `BEGIN;` / `COMMIT;` in the SQL
+    Editor — the editor does not wrap pasted scripts in a transaction the way
+    `psql -1` does, so a failure partway would leave the migration half
+    applied.
+  - Use the **direct connection on port 5432**, never the pooler on 6543 — the
+    pooler does not support the session state a single-transaction DDL script
+    needs.
+  - Do **not** click Supabase's "Run and enable RLS" prompt for the new
+    tables. The migration enables RLS itself and creates the explicit
+    `assetly` policy the application needs to keep working; the dashboard
+    shortcut enables RLS without that policy, which denies the application
+    outright and 500s every guarded endpoint.
+- Migration 017 adds one index (`(target_company_id, id DESC)` on
+  `audit_log`) to match the `/admin/audit` viewer's actual query shape
+  (keyset pagination on `id`, not on `occurred_at` as 016's indexes assume).
+  Unlike 016, this is **not** a hard gate — the viewer works without it, just
+  as a slower sequential-ish scan on a large table, so it can be applied
+  before or after the code deploys. Apply it after 016 regardless, since it
+  targets a column 016 creates. It grants nothing and does not add `UPDATE`
+  or `DELETE` on `audit_log` — the table is still append-only for the
+  application role by design (see "Audit log retention" above).
 
 Sequence for any deploy that includes new or changed migrations:
 
@@ -220,13 +248,201 @@ Sequence for any deploy that includes new or changed migrations:
 psql -1 -f backend/migrations/013_rate_limit.sql "$DATABASE_URL"
 psql -1 -f backend/migrations/014_auth_failure_digest.sql "$DATABASE_URL"
 psql -1 -f backend/migrations/015_normalise_credential_serials.sql "$DATABASE_URL"
+psql -1 -f backend/migrations/016_admin_mfa_rbac_audit.sql "$DATABASE_URL"
+psql -1 -f backend/migrations/017_audit_log_viewer_indexes.sql "$DATABASE_URL"
+# confirm MFA_SECRET_KEY is set in the target environment before promoting --
+# see "Required production environment" and "Sessions issued before the MFA
+# deploy" above. Do not promote on the assumption it can be added later; it
+# must be in place before any future SESSION_SECRET_KEY rotation, and the
+# cheapest time to guarantee that is now, alongside this deploy.
 # only then deploy/promote the new application code
 ```
 
+Immediately after this deploy, every admin must enroll in MFA — see "Rollout:
+mandatory enrollment window" below.
+
+**Sessions issued before the MFA deploy.** Enforcing MFA at login does not
+retroactively re-authenticate anyone. An admin session minted before this
+change carries `admin_id` directly in its signed cookie and therefore reaches
+every admin route without ever presenting a second factor, for the remainder of
+its 8-hour `SESSION_MAX_AGE_SECONDS` lifetime. The new two-stage flow only
+governs logins that happen after the deploy.
+
+If the threat model includes an **already-compromised session** — as it does
+whenever MFA is being rolled out in response to a suspected or confirmed
+credential compromise, rather than as routine hardening — pair this deploy with
+a `SESSION_SECRET_KEY` rotation. Rotating that key invalidates every existing
+signed cookie at once and forces everyone through the new flow immediately,
+closing the window instead of waiting it out.
+
+**This rotation is only safe if `MFA_SECRET_KEY` is already set.** Read this
+paragraph before rotating, not after.
+
+By default (no `MFA_SECRET_KEY`), the TOTP encryption key is derived from
+`SESSION_SECRET_KEY` via HKDF (see the module docstring in `backend/app/mfa.py`).
+Rotating `SESSION_SECRET_KEY` in that configuration also makes every **stored
+TOTP secret** undecryptable: `decrypt_secret` returns `None`, and
+`load_admin_context` reports `mfa_enrolled=False` for every admin, indistinguishable
+from an admin who never enrolled. `login_submit` routes anyone it thinks is
+unenrolled to `/admin/mfa/setup`, where a password alone is sufficient to enroll
+a new authenticator — that page has no way to tell "never enrolled" apart from
+"key rotated out from under them". If the threat you are rotating for is a
+**stolen password**, this is the opposite of remediation: the rotation strips
+every admin's enrolled status, and the attacker walks the stolen password straight
+through self-enrollment into durable MFA-backed access, using the exact page this
+deploy just added. Recovery codes do not help here — they gate *login*, not
+*enrollment*, and an unenrolled-looking admin is sent to setup before recovery
+codes ever come into play.
+
+**With `MFA_SECRET_KEY` set**, the TOTP encryption key is independent of
+`SESSION_SECRET_KEY`. Rotating `SESSION_SECRET_KEY` then does exactly and only
+what it is supposed to: it invalidates every existing signed cookie. Stored TOTP
+secrets stay decryptable, `mfa_enrolled` stays accurate, and the self-enrollment
+bypass above does not apply. **Recovery codes are unaffected** either way — they
+are bcrypt-hashed independently of both keys and keep working across the
+rotation.
+
+Operationally: set `MFA_SECRET_KEY` at or before this deploy, confirm it is set
+(`echo $MFA_SECRET_KEY` on the target environment, not just in a local `.env`),
+and only then rotate `SESSION_SECRET_KEY` if the incident calls for it. Rotating
+without `MFA_SECRET_KEY` set is the failure mode this whole section exists to
+prevent -- do not do it, even under incident-response time pressure.
+
+**Rollout: mandatory enrollment window.** The self-enrollment bypass above is
+not limited to the rotation scenario -- it is the ordinary state of any admin
+who has not yet enrolled. Every admin must enroll in MFA immediately after this
+deploy. Until an individual admin enrolls, a password stolen at any point
+*before* the deploy converts directly into attacker-controlled MFA the next
+time that admin (or the attacker, using the stolen password) hits
+`/admin/mfa/setup` -- the same mechanism as the rotation case, just without a
+rotation needed to trigger it. Treat the enrollment window as an active
+exposure to be closed, not a housekeeping item: notify every admin as part of
+the deploy, and follow up on anyone who has not enrolled within the first
+working day. An unexpected `admin.mfa.enrolled` row in the audit log for an
+admin who was not expected to enroll at that time (outside the initial rollout
+window, or for an account nobody actioned) should be treated as an incident --
+it is the observable signature of this exact attack.
+
+**Recovery: admin locked out with no authenticator and no recovery codes.**
+`backend/app/routers/admin.py` notes in a comment that "re-enrollment for a
+locked-out admin is an operator action" without saying what that action is.
+This is it. It is deliberately not self-service, for the same reason
+`/admin/mfa/setup` is dangerous above: an endpoint that lets an admin clear
+their own MFA state is an endpoint that lets a stolen password clear MFA state.
+
+1. Verify the requester's identity out-of-band (known-voice call, video call,
+   or equivalent -- not email or chat alone, since those are exactly the
+   channels a compromised account can use to ask for its own recovery).
+2. Run the following as the `admin` superuser role -- **not** `assetly`, which
+   holds only a column-level `UPDATE` grant and is not sufficient for this:
+
+   ```sql
+   UPDATE admins
+   SET mfa_secret = NULL, mfa_enrolled_at = NULL
+   WHERE email = '<admin-email>';
+   ```
+
+3. Tell the admin to log in with their existing password and enroll a new
+   authenticator at `/admin/mfa/setup` immediately.
+
+This procedure *is* the self-enrollment path described above, deliberately
+reopened for one identity-verified admin. That is exactly why step 1 is not
+optional: skip it, or accept a request that only claims to be the admin, and
+this becomes the same bypass an attacker with a stolen password would use.
+Never run this against a request received only through a channel the
+requester's own compromised credentials could have produced.
+
+**Role and scope changes are not audited.** `scripts/set_admin_role.py` (see
+"Admin tiers and per-company scope" below) writes `admins.role` and
+`admins.company_id` directly as the superuser, outside the application and
+outside the `audited()` transaction wrapper the admin router uses for its own
+mutations. These changes do **not** produce an `audit_log` row. An operator
+reviewing the audit log after an incident must not assume a role escalation
+would show up there -- it will not. If role changes need an audit trail,
+that requires a separate, deliberate change (e.g. having the script write its
+own row), not an assumption the log already covers it.
+
+**Audit log retention.** Indefinite, by policy and by grant: `audit_log`
+carries no `DELETE` grant for the application role (`assetly`), so the app
+cannot prune it even if a future bug tried to. Any pruning is an operator
+action, run directly as the `admin` role.
+
+**Reading the log.** `GET /admin/audit` (full admins only) is a read-only
+viewer over the table above — filterable by company and action, keyset-paginated
+on the primary key. It requires no direct database access for incident
+response, which is the reason the table exists in the first place. A scoped
+admin sees only rows whose `target_company_id` matches their own company;
+actor-level events with no target company (logins, MFA, recovery-code events)
+are excluded for scoped admins by the same filter, since those rows carry no
+tenant scope to check against. `GET`/`POST /admin/mfa/recovery-codes` lets any
+logged-in admin (support included — these are their own credentials, not a
+privileged action against a tenant) see their remaining recovery-code count
+and regenerate the set; regenerating replaces the old set outright, so a
+previously printed code stops working the moment a new set is issued.
+
+## Admin tiers and per-company scope
+
+Two independent axes on `admins`, both added by migration 016 and both
+writable only by the `admin` superuser role (the `assetly` app role has no
+grant on either column — see the column-level `UPDATE (mfa_secret,
+mfa_enrolled_at)` grant in that migration, which is deliberately narrower):
+
+- **`role`** — `admin` (full: can create/modify/revoke companies, rotate keys,
+  mint installer tokens, change schedules and field config) or `support`
+  (read-only: can view company lists and detail pages, nothing else).
+  `require_full_admin` enforces this on every state-changing route, on the
+  three installer downloads (they mint enrollment tokens), and on
+  `/admin/diagnostics` (it discloses server filesystem paths). Hiding the
+  buttons in the template is a nicety, not the control.
+- **`company_id`** — `NULL` means global (sees and can act on every company,
+  the behaviour every admin account had before this feature existed); a UUID
+  scopes the admin to exactly one company. `require_admin` reads both columns
+  from the database on every request (not from the session cookie), so a
+  role or scope change — or an account deletion — takes effect on the very
+  next request rather than waiting out the 8-hour session.
+
+Scoping is enforced in SQL, not in the template: `_all_companies` filters its
+query by `company_id` when the caller is scoped, and `_get_company_or_404` /
+`_get_active_company_or_404` reject out-of-scope ids **before** touching the
+database, with a 404 — never a 403. A 403 would confirm the row exists, which
+discloses to a scoped admin that a tenant they cannot see is a customer of
+ours; a 404 is indistinguishable from "no such id". A scoped admin also
+cannot create new companies (`require_global_admin` on `POST
+/admin/companies`) — a company they create would immediately be one they
+cannot themselves see afterward.
+
+**Assigning role and scope: `backend/scripts/set_admin_role.py`.** There is
+no UI for this, on purpose: role and `company_id` are the two columns that
+decide what an admin account can see and do, and if changing them went
+through the admin router, a bug there — a missing dependency, a mis-wired
+form field — could be used to escalate an account's own privileges. Instead
+this is an operator action, run directly against the database as the `admin`
+superuser:
+
+```
+cd backend && source venv/bin/activate
+python3 -m scripts.set_admin_role --email admin@assetly.com --role admin --company-id global
+python3 -m scripts.set_admin_role --email support@assetly.com --role support --company-id <company-uuid>
+```
+
+It fails loudly (nonzero exit, message to stderr) if the email does not
+already exist — accounts are still created by `scripts/seed_admin.py` first.
+
 ## Required production environment
 
-Required in production: `ENVIRONMENT=production` and `SESSION_COOKIE_SECURE=true`.
+Required in production: `ENVIRONMENT=production`, `SESSION_COOKIE_SECURE=true`,
+and `MFA_SECRET_KEY`.
 The application refuses to start without the second when the first is set.
+
+`MFA_SECRET_KEY` overrides the default HKDF derivation described in
+`backend/app/mfa.py`, which otherwise derives the TOTP-secret encryption key
+from `SESSION_SECRET_KEY`. Setting it explicitly at deploy time decouples the
+two keys, which is what makes a later `SESSION_SECRET_KEY` rotation safe to
+perform -- see "Sessions issued before the MFA deploy" below. It does not need
+to be set before the first deploy to avoid breaking admin login (that is the
+point of the derivation fallback); it needs to be set before the *first time
+anyone rotates* `SESSION_SECRET_KEY`, and the deploy checklist below treats it
+that way.
 
 ## Device lifecycle
 

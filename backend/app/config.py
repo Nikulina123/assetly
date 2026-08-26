@@ -167,3 +167,38 @@ RATE_LIMIT_AGENT = (int(os.environ.get("RATE_LIMIT_AGENT", "60")), 3600)
 # this back into an amplifier.
 AUTH_DIGEST_INTERVAL_SECONDS = int(os.environ.get("AUTH_DIGEST_INTERVAL_SECONDS", "3600"))
 AUTH_DIGEST_DAILY_CAP = int(os.environ.get("AUTH_DIGEST_DAILY_CAP", "24"))
+
+# Optional override for the key that encrypts stored TOTP seeds. Left unset,
+# the key is derived from SESSION_SECRET_KEY (see app/mfa.py) -- deliberately,
+# so that shipping this feature does not add a REQUIRED environment variable
+# whose absence would kill admin login on the deploy that forgets it. Set this
+# only when rotating the MFA key independently of the session key.
+MFA_SECRET_KEY = os.environ.get("MFA_SECRET_KEY", "")
+
+# A 6-digit code is a far weaker secret than a password, and code verification
+# is a new brute-forceable surface. Tighter than RATE_LIMIT_LOGIN accordingly.
+# This is the per-ADMIN-ID bucket and it is the load-bearing control: it is
+# keyed on something the caller cannot discard by starting a fresh login.
+RATE_LIMIT_MFA = (int(os.environ.get("RATE_LIMIT_MFA", "5")), 900)
+
+# The per-IP bucket, deliberately MUCH looser than RATE_LIMIT_MFA and tracked
+# as its own constant rather than reusing it.
+#
+# Two reasons it must not be tight. First, it is not trustworthy defence: off
+# Vercel, client_ip() falls through to the LAST x-forwarded-for entry, which
+# only means anything when a real proxy appended it -- on a direct-connection
+# deployment an attacker rotates that header freely, so this bucket cannot be
+# counted as protection against a determined attacker. Second, and the reason
+# the number matters: several admins behind one office NAT share an address,
+# so at 5/900 they would lock each other out of their own second factor for
+# 15 minutes of ordinary mistyping, and one attacker on that NAT could do it
+# to everyone deliberately. This bucket exists only as a coarse guard against
+# one address hammering MANY accounts.
+RATE_LIMIT_MFA_IP = (int(os.environ.get("RATE_LIMIT_MFA_IP", "30")), 900)
+
+# How long a password-verified-but-not-yet-MFA'd login may sit before it must
+# be restarted. Checked server-side against a timestamp in the session, not
+# left to the cookie's own lifetime.
+PENDING_LOGIN_MAX_AGE_SECONDS = int(
+    os.environ.get("PENDING_LOGIN_MAX_AGE_SECONDS", "300")
+)
