@@ -16,6 +16,7 @@ from collections import Counter
 import asyncpg
 
 from app.device_status import derive_status
+from app.enrollment import list_device_credentials
 from app.schedule import resolve_schedule
 
 _DEVICE_COLUMNS = (
@@ -68,6 +69,58 @@ async def list_devices(pool: asyncpg.Pool, company_id: str) -> list[dict]:
     interval = (await resolve_schedule(pool, company_id))["checkin_interval_seconds"]
     now = _now()
     return [_with_status(row, now, interval) for row in rows]
+
+
+async def legacy_key_conversion(pool: asyncpg.Pool, company_id: str) -> dict:
+    """Per-company L-1 measurement: how many devices still authenticate with
+    the shared legacy company key versus a per-device credential.
+
+    No new column, no hot-path write. A device counts as "converted" if it
+    has an active (non-revoked) device_credentials row -- device_credentials
+    has no RLS, but every read of it here filters company_id explicitly
+    (list_device_credentials already does this). Everything else is "legacy",
+    and because checkin.py's M-1 binding check refuses a device-credential
+    check-in for any serial other than the one that credential was enrolled
+    for, an unconverted device's last_seen_at can ONLY have come from a
+    legacy-key check-in -- no ambiguity for that subset.
+
+    Known blind spot, documented here because it belongs next to the query
+    that has it: a device that already has an active credential but is
+    misconfigured to still present the old shared key would be counted as
+    "converted" even though a legacy check-in is landing for it. Not the
+    normal migration path (an agent update replaces its config atomically,
+    it doesn't leave both credentials live), so accepted as an
+    approximation -- these numbers are a FLOOR on legacy usage, never a
+    ceiling.
+    """
+    devices = await list_devices(pool, company_id)
+    credentials = await list_device_credentials(pool, company_id)
+    active_serials = {
+        c["serial_number"] for c in credentials if c["revoked_at"] is None
+    }
+    legacy_devices = [
+        {"serial_number": d["serial_number"], "last_seen_at": d["last_seen_at"]}
+        for d in devices
+        if d["serial_number"].strip().casefold() not in active_serials
+    ]
+    # Newest first, NULLs (never checked in) sorted last.
+    legacy_devices.sort(
+        key=lambda d: d["last_seen_at"] or datetime.datetime.min.replace(
+            tzinfo=datetime.timezone.utc
+        ),
+        reverse=True,
+    )
+    last_legacy_checkin = max(
+        (d["last_seen_at"] for d in legacy_devices if d["last_seen_at"] is not None),
+        default=None,
+    )
+    return {
+        "total": len(devices),
+        "converted": len(devices) - len(legacy_devices),
+        "legacy": len(legacy_devices),
+        "last_legacy_checkin": last_legacy_checkin,
+        "legacy_devices": legacy_devices,
+    }
 
 
 async def get_device(pool: asyncpg.Pool, company_id: str, serial_number: str) -> dict | None:
