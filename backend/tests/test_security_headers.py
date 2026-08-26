@@ -51,14 +51,44 @@ async def test_two_requests_get_different_nonces():
     assert csp1 != csp2
 
 
-async def test_nonce_in_csp_header_matches_nonce_in_rendered_html():
+async def test_nonce_in_csp_header_matches_nonce_in_rendered_html(
+    scoped_admin, login_as, enrolled_device
+):
+    _admin_id, _email, _password, _secret, company_id = scoped_admin
+    credential, serial = enrolled_device
+    # portal_computers.html only renders the inline <script> (and its nonce)
+    # when the devices table is non-empty, so a real check-in has to land
+    # first -- enrolling a device alone only creates a device_credentials
+    # row, not a devices row (that's written by the checkin endpoint).
     async with await _client() as client:
-        resp = await client.get("/admin/login")
+        checkin_resp = await client.post(
+            "/api/v1/inventory/checkin",
+            json={
+                "checkin_id": "22222222-2222-2222-2222-222222222222",
+                "timestamp": "2026-08-20T10:00:00Z",
+                "first_name": "Ann",
+                "last_name": "Lee",
+                "email": "ann@example.com",
+                "serial_number": serial,
+                "hostname": "host-1",
+                "brand": "Apple",
+                "model": "MacBook Pro",
+                "os": "macOS 15.0",
+            },
+            headers={"Authorization": f"Bearer {credential}"},
+        )
+        assert checkin_resp.status_code == 200
+        await login_as(client, scoped_admin)
+        resp = await client.get(f"/admin/companies/{company_id}/computers")
+    assert resp.status_code == 200
     csp = resp.headers["content-security-policy"]
     start = csp.index("'nonce-") + len("'nonce-")
     end = csp.index("'", start)
     nonce = csp[start:end]
     assert len(nonce) > 10
+    body = resp.content.decode()
+    assert f'nonce="{nonce}"' in body
+    assert "<script" in body
 
 
 async def test_mfa_setup_page_still_renders_with_headers_applied(admin):
