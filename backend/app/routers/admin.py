@@ -689,6 +689,20 @@ async def _agent_ui_context(pool, company_id: uuid.UUID) -> dict:
     return {"agent_ui": await resolve_agent_ui_for_admin(pool, str(company_id))}
 
 
+async def _legacy_conversion_context(pool, company_id: uuid.UUID) -> dict:
+    """Everything company_detail.html needs to render the legacy-key
+    conversion card.
+
+    Called alongside _schedule_context and _agent_ui_context at every site
+    that renders that template -- a handler that skipped it would crash with
+    jinja2.exceptions.UndefinedError, since the template references
+    legacy_conversion.converted/.total unconditionally.
+    """
+    from app.devices import legacy_key_conversion
+
+    return {"legacy_conversion": await legacy_key_conversion(pool, str(company_id))}
+
+
 @router.get("/companies/{company_id}")
 async def company_detail(
     request: Request, company_id: uuid.UUID, admin: AdminContext = Depends(require_admin)
@@ -709,6 +723,7 @@ async def company_detail(
     }
     context.update(await _schedule_context(pool, company_id))
     context.update(await _agent_ui_context(pool, company_id))
+    context.update(await _legacy_conversion_context(pool, company_id))
     return templates.TemplateResponse(request, "company_detail.html", context)
 
 
@@ -754,6 +769,7 @@ async def rotate_key(
     }
     context.update(await _schedule_context(pool, company_id))
     context.update(await _agent_ui_context(pool, company_id))
+    context.update(await _legacy_conversion_context(pool, company_id))
     return templates.TemplateResponse(request, "company_detail.html", context)
 
 
@@ -807,6 +823,7 @@ async def revoke_company(
     }
     context.update(await _schedule_context(pool, company_id))
     context.update(await _agent_ui_context(pool, company_id))
+    context.update(await _legacy_conversion_context(pool, company_id))
     return templates.TemplateResponse(request, "company_detail.html", context)
 
 
@@ -888,6 +905,7 @@ async def update_schedule(
         }
         context.update(await _schedule_context(pool, company_id))
         context.update(await _agent_ui_context(pool, company_id))
+        context.update(await _legacy_conversion_context(pool, company_id))
         return templates.TemplateResponse(
             request, "company_detail.html", context, status_code=200
         )
@@ -960,6 +978,7 @@ async def update_agent_ui(
         }
         context.update(await _schedule_context(pool, company_id))
         context.update(await _agent_ui_context(pool, company_id))
+        context.update(await _legacy_conversion_context(pool, company_id))
         return templates.TemplateResponse(
             request, "company_detail.html", context, status_code=200
         )
@@ -1065,6 +1084,7 @@ async def add_custom_field_route(
         }
         context.update(await _schedule_context(pool, company_id))
         context.update(await _agent_ui_context(pool, company_id))
+        context.update(await _legacy_conversion_context(pool, company_id))
         return templates.TemplateResponse(request, "company_detail.html", context)
     return RedirectResponse(f"/admin/companies/{company_id}", status_code=303)
 
