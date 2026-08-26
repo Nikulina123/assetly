@@ -197,7 +197,20 @@ echo "[4/6] Writing configuration…"
 # file on disk. If there's no network right now (offline imaging is normal),
 # fall back to the token so the agent can enroll itself on first run.
 ENROLL_API_URL="${CHECKIN_API_URL%/inventory/checkin}/enroll"
-SERIAL="$(sudo dmidecode -s system-serial-number 2>/dev/null || true)"
+# Read the serial from sysfs first (no privilege needed on modern distros,
+# and it's the same SMBIOS field dmidecode reads) so a default install
+# (no --with-dmidecode-sudo) still enrolls with a real serial instead of an
+# empty one. dmidecode is only the fallback, and only works here if
+# --with-dmidecode-sudo provisioned the sudoers rule; otherwise it degrades
+# gracefully via `|| true`, same as before. This keeps the serial sent here
+# consistent with inventory_agent.py's collect_hardware(), which does the
+# same sysfs-first, dmidecode-fallback lookup on every check-in -- if they
+# disagreed, the check-in endpoint's serial-binding check (M-1) would reject
+# every check-in from a default install.
+SERIAL="$(cat /sys/class/dmi/id/product_serial 2>/dev/null | tr -d '[:space:]')"
+if [[ -z "$SERIAL" ]]; then
+    SERIAL="$(sudo dmidecode -s system-serial-number 2>/dev/null || true)"
+fi
 CREDENTIAL="$(curl -fsS --max-time 20 -X POST "$ENROLL_API_URL" \
   -H "Authorization: Bearer $ENROLLMENT_TOKEN" \
   -H "Content-Type: application/json" \
