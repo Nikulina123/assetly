@@ -8,6 +8,7 @@ from starlette.middleware.sessions import SessionMiddleware
 
 from app.config import SESSION_COOKIE_SECURE, SESSION_MAX_AGE_SECONDS, SESSION_SECRET_KEY
 from app.db import get_pool
+from app.middleware import SecurityHeadersMiddleware
 from app.routers.admin import NotAuthenticated, PendingLoginRequired
 from app.routers.admin import router as admin_router
 from app.routers.agent_update import router as agent_update_router
@@ -23,6 +24,7 @@ app.add_middleware(
     same_site="lax",
     max_age=SESSION_MAX_AGE_SECONDS,
 )
+app.add_middleware(SecurityHeadersMiddleware)
 app.include_router(checkin_router)
 app.include_router(enroll_router)
 app.include_router(admin_router)
