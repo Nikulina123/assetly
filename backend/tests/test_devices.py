@@ -185,11 +185,11 @@ async def test_legacy_key_conversion_matches_serial_case_insensitively(db_pool, 
     as both converted and legacy."""
     credential, serial = enrolled_device
     company_id, _api_key = company
-    # enrolled_device's serial is "ENROLLED-SERIAL-1"; submit with different
-    # casing and surrounding whitespace via the SAME credential, so the
-    # credential's binding check (which itself normalises) still accepts it,
-    # and devices.serial_number stores exactly what was submitted.
-    await _submit(credential, "  enrolled-serial-1  ".strip())
+    # Submit with real case AND whitespace divergence from the enrolled
+    # serial "ENROLLED-SERIAL-1" -- the M-1 binding check in checkin.py
+    # normalises both sides before comparing, so this is accepted, and
+    # devices.serial_number stores exactly this divergent string verbatim.
+    await _submit(credential, "  Enrolled-Serial-1  ")
     result = await legacy_key_conversion(db_pool, company_id)
     assert result["converted"] == 1
     assert result["legacy"] == 0
