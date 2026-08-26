@@ -120,8 +120,7 @@ async def require_admin(request: Request) -> AdminContext:
 
 async def require_full_admin(admin: AdminContext = Depends(require_admin)) -> AdminContext:
     """Read-only `support` admins are refused. Applied to every state-changing
-    route, to the three installer downloads (they mint enrollment tokens), and
-    to /admin/diagnostics (it discloses server filesystem paths).
+    route, to the three installer downloads (they mint enrollment tokens). /admin/diagnostics is gated one level further, by require_global_admin below -- it discloses deployment-wide internals, not anything scoped to one company.
 
     The templates also hide these controls, but THIS is the enforcement -- a
     hidden button is not an authorisation control, it is a nicety."""
@@ -1189,7 +1188,7 @@ def _render_installer_script(template_text: str, checkin_api_url: str, enrollmen
 
 
 @router.get("/diagnostics")
-async def diagnostics(request: Request, admin: AdminContext = Depends(require_full_admin)):
+async def diagnostics(request: Request, admin: AdminContext = Depends(require_global_admin)):
     """Reports what this instance actually has on disk.
 
     Every file a download route reads is committed to the repository, which
@@ -1199,6 +1198,9 @@ async def diagnostics(request: Request, admin: AdminContext = Depends(require_fu
     once because a served executable did not match the committed one. Hashes
     are included so a served artifact can be compared with `sha256sum` against
     a local checkout without downloading anything.
+
+    This endpoint discloses deployment-wide internals (repo_root, full artifact
+    listing) and is restricted to global admins only via require_global_admin.
     """
     pool = await get_pool()
     await record_audit(pool, request, admin, "admin.diagnostics_viewed")
