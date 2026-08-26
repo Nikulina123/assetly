@@ -5,10 +5,11 @@
         --version 2.1.0 --key ~/.assetly/release_key.pem
 
 Run it with the venv interpreter, not a bare `python`: this script needs
-`cryptography`, which is deliberately a DEV-only dependency (see
-backend/requirements-dev.txt). It is kept out of the root requirements.txt
-because the agents verify with stdlib only and the deployed function has no
-reason to carry it.
+`cryptography`. That used to be a dev-only dependency, and this comment used
+to say so -- it is now a RUNTIME dependency in the root requirements.txt,
+because app/mfa.py imports Fernet to encrypt stored TOTP seeds. The agents
+still verify signatures with stdlib only; it is the backend, not the agent,
+that gained the dependency.
 
 The private key never enters this repository, CI, or an environment variable.
 That is deliberate and it is the control: CI can build the Windows executable
