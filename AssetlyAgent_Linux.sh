@@ -207,9 +207,9 @@ ENROLL_API_URL="${CHECKIN_API_URL%/inventory/checkin}/enroll"
 # same sysfs-first, dmidecode-fallback lookup on every check-in -- if they
 # disagreed, the check-in endpoint's serial-binding check (M-1) would reject
 # every check-in from a default install.
-SERIAL="$(cat /sys/class/dmi/id/product_serial 2>/dev/null | tr -d '[:space:]')"
+SERIAL="$(cat /sys/class/dmi/id/product_serial 2>/dev/null | "$PYTHON3" -c 'import re,sys; print(re.sub(r"\s+", " ", sys.stdin.read().strip()))' 2>/dev/null)"
 if [[ -z "$SERIAL" ]]; then
-    SERIAL="$(sudo dmidecode -s system-serial-number 2>/dev/null || true)"
+    SERIAL="$(sudo -n dmidecode -s system-serial-number 2>/dev/null || true)"
 fi
 CREDENTIAL="$(curl -fsS --max-time 20 -X POST "$ENROLL_API_URL" \
   -H "Authorization: Bearer $ENROLLMENT_TOKEN" \

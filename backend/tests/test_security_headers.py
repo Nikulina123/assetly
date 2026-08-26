@@ -91,6 +91,22 @@ async def test_nonce_in_csp_header_matches_nonce_in_rendered_html(
     assert "<script" in body
 
 
+async def test_csp_header_contains_expected_directives():
+    async with await _client() as client:
+        resp = await client.get("/admin/login")
+    csp = resp.headers["content-security-policy"]
+    for directive in (
+        "default-src",
+        "script-src",
+        "style-src",
+        "img-src",
+        "object-src",
+        "base-uri",
+        "frame-ancestors",
+    ):
+        assert directive in csp
+
+
 async def test_mfa_setup_page_still_renders_with_headers_applied(admin):
     admin_id, email, password = admin
     async with await _client() as client:
