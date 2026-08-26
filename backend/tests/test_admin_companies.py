@@ -249,3 +249,28 @@ async def test_company_detail_shows_legacy_conversion(login_as, enrolled_admin, 
         await client.aclose()
     assert resp.status_code == 200
     assert "LEGACY-SN-9" in resp.text
+
+
+async def test_companies_list_shows_conversion_summary(login_as, enrolled_admin, company):
+    company_id, api_key = company
+    client = await _logged_in_client(login_as, enrolled_admin)
+    try:
+        await client.post(
+            "/api/v1/inventory/checkin",
+            json={
+                "checkin_id": "22222222-2222-2222-2222-222222222222",
+                "timestamp": "2026-07-30T10:00:00",
+                "first_name": "Nino", "last_name": "Nikoladze",
+                "email": "nino@example.com", "department": "Engineering",
+                "serial_number": "LEGACY-SN-8", "hostname": "host-8",
+                "brand": "Apple", "model": "MacBook Pro", "ram": "16 GB",
+                "os": "macOS 14.4.1",
+            },
+            headers={"Authorization": f"Bearer {api_key}"},
+        )
+        resp = await client.get("/admin/companies")
+    finally:
+        await client.aclose()
+    assert resp.status_code == 200
+    # 0 converted / 1 total for this company.
+    assert "0 / 1" in resp.text

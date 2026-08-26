@@ -21,4 +21,27 @@
   </form>
 </div>
 {% endif %}
+
+<div class="card flush" style="overflow-x:auto;margin-top:20px">
+  <table class="table">
+    <thead>
+      <tr>
+        <th>Name</th><th>Status</th><th>Legacy conversion</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for company in companies %}
+      {% set conv = conversion_by_company[company.id|string] %}
+      <tr>
+        <td><a href="/admin/companies/{{ company['id'] }}">{{ company['name'] }}</a></td>
+        <td>{% if company['revoked_at'] %}Revoked{% else %}Active{% endif %}</td>
+        <td>{{ conv.converted }} / {{ conv.total }}</td>
+      </tr>
+      {% endfor %}
+      {% if not companies %}
+      <tr><td colspan="3" class="muted">No companies yet.</td></tr>
+      {% endif %}
+    </tbody>
+  </table>
+</div>
 {% endblock %}

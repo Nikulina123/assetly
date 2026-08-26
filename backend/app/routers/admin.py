@@ -538,7 +538,12 @@ async def companies_list(request: Request, admin: AdminContext = Depends(require
     return templates.TemplateResponse(
         request,
         "companies_list.html",
-        {"companies": companies, "csrf_token": _new_csrf_token(request), "admin": admin},
+        {
+            "companies": companies,
+            "csrf_token": _new_csrf_token(request),
+            "admin": admin,
+            "conversion_by_company": await _conversion_by_company(pool, companies),
+        },
     )
 
 
@@ -580,6 +585,7 @@ async def companies_create(
             "csrf_token": _new_csrf_token(request),
             "new_api_key": api_key,
             "admin": admin,
+            "conversion_by_company": await _conversion_by_company(pool, companies),
         },
     )
 
@@ -687,6 +693,25 @@ async def _agent_ui_context(pool, company_id: uuid.UUID) -> dict:
     validation failure.
     """
     return {"agent_ui": await resolve_agent_ui_for_admin(pool, str(company_id))}
+
+
+async def _conversion_by_company(pool, companies) -> dict:
+    """Maps each company's id (as a string) to its legacy-key conversion
+    summary, for companies_list.html's per-row column.
+
+    Called at every site that renders that template -- companies_list (GET)
+    and companies_create (POST, which re-renders the same template) -- since
+    the template references conversion_by_company[company.id|string]
+    unconditionally and a handler that skipped this would crash with
+    jinja2.exceptions.UndefinedError, the same bug company_detail.html had
+    before _legacy_conversion_context was introduced.
+    """
+    from app.devices import legacy_key_conversion
+
+    return {
+        str(c["id"]): await legacy_key_conversion(pool, str(c["id"]))
+        for c in companies
+    }
 
 
 async def _legacy_conversion_context(pool, company_id: uuid.UUID) -> dict:
