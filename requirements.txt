@@ -40,4 +40,16 @@ segno==1.6.1
 # Fernet, for encrypting stored TOTP seeds. Was previously dev-only (used by
 # scripts/sign_release.py); it is a runtime dependency now that app/mfa.py
 # imports it. Ships manylinux wheels, so the Vercel build is unaffected.
-cryptography==43.0.1
+#
+# 50.0.1, not the 43.0.1 this arrived on: moving this pin from the dev list to
+# the runtime list also moved it into pip-audit's --strict scan of THIS file,
+# which failed the build on six advisories against 43.0.1 (PYSEC-2026-35,
+# -1284, -2141, -3553, -3554 and GHSA-537c-gmf6-5ccf). Their fix versions range
+# up to 49.0.0, so anything below that still fails the scan. Pinned to the
+# current release rather than to the 49.0.0 floor, for headroom before the next
+# advisory forces this same bump again.
+#
+# The API surface used here is narrow and stable across these majors -- Fernet
+# and HKDF in app/mfa.py, serialization plus asymmetric padding in
+# scripts/sign_release.py -- and the full suite passes on it.
+cryptography==50.0.1
