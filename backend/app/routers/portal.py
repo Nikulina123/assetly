@@ -17,8 +17,15 @@ from app.routers.admin import _all_companies, _get_company_or_404, _new_csrf_tok
 from app.schedule import format_interval, resolve_schedule
 
 router = APIRouter(prefix="/admin/companies")
+
+
+def _csp_nonce_context(request):
+    return {"csp_nonce": getattr(request.state, "csp_nonce", "")}
+
+
 templates = Jinja2Templates(
-    directory=str(Path(__file__).resolve().parent.parent / "templates")
+    directory=str(Path(__file__).resolve().parent.parent / "templates"),
+    context_processors=[_csp_nonce_context],
 )
 
 

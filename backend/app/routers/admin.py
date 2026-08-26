@@ -73,7 +73,14 @@ from app.schedule import (
 )
 
 router = APIRouter(prefix="/admin")
-templates = Jinja2Templates(directory=str(Path(__file__).resolve().parent.parent / "templates"))
+def _csp_nonce_context(request):
+    return {"csp_nonce": getattr(request.state, "csp_nonce", "")}
+
+
+templates = Jinja2Templates(
+    directory=str(Path(__file__).resolve().parent.parent / "templates"),
+    context_processors=[_csp_nonce_context],
+)
 
 
 class NotAuthenticated(Exception):

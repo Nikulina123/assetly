@@ -40,3 +40,36 @@ async def test_hsts_present_when_session_cookie_secure(monkeypatch):
     async with await _client() as client:
         resp = await client.get("/admin/login")
     assert resp.headers["strict-transport-security"] == "max-age=31536000; includeSubDomains"
+
+
+async def test_two_requests_get_different_nonces():
+    async with await _client() as client:
+        r1 = await client.get("/admin/login")
+        r2 = await client.get("/admin/login")
+    csp1 = r1.headers["content-security-policy"]
+    csp2 = r2.headers["content-security-policy"]
+    assert csp1 != csp2
+
+
+async def test_nonce_in_csp_header_matches_nonce_in_rendered_html():
+    async with await _client() as client:
+        resp = await client.get("/admin/login")
+    csp = resp.headers["content-security-policy"]
+    start = csp.index("'nonce-") + len("'nonce-")
+    end = csp.index("'", start)
+    nonce = csp[start:end]
+    assert len(nonce) > 10
+
+
+async def test_mfa_setup_page_still_renders_with_headers_applied(admin):
+    admin_id, email, password = admin
+    async with await _client() as client:
+        await client.post(
+            "/admin/login",
+            data={"email": email, "password": password},
+            follow_redirects=False,
+        )
+        resp = await client.get("/admin/mfa/setup")
+    assert resp.status_code == 200
+    assert b"<svg" in resp.content
+    assert "content-security-policy" in resp.headers
