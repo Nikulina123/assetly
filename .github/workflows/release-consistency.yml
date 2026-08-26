@@ -26,6 +26,13 @@ name: Release consistency
 # Signing is deliberately not automated here: the private key must never exist
 # in CI, or a compromise of this repository could produce agents the whole fleet
 # would install.
+#
+# Since M-6, sign_release.py can optionally Authenticode-sign the Windows exe,
+# which changes its bytes and therefore its sha256. This check compares CI's
+# always-unsigned build against manifest.json's unsigned_sha256 (falling back
+# to sha256 for manifests signed before this field existed) -- it verifies
+# "CI compiled the same code that got signed", not "CI's output equals the
+# signed file byte for byte".
 
 on:
   push:
@@ -54,7 +61,11 @@ jobs:
             exit 1
           fi
 
-          SIGNED=$(python3 -c "import json;print(json.load(open('$MANIFEST'))['artifacts']['windows_exe']['sha256'])")
+          SIGNED=$(python3 -c "
+import json
+m = json.load(open('$MANIFEST'))['artifacts']['windows_exe']
+print(m.get('unsigned_sha256', m['sha256']))
+")
           BUILT=$(sha256sum "$BUILD" | cut -d' ' -f1)
 
           echo "signed manifest : $SIGNED"

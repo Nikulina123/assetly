@@ -92,6 +92,48 @@ def _windows_base_bytes(data: bytes) -> bytes:
     return data[:index]
 
 
+def _authenticode_sign(payload: bytes, cert_path: str, password: str) -> bytes:
+    """Authenticode-signs Windows exe bytes with signtool.exe (native) or
+    osslsigncode (cross-signing from Linux/macOS), whichever is on PATH.
+
+    Runs locally, same custody model as the RSA update-signing key above:
+    never invoked automatically, never in CI. See docs/RELEASE_SIGNING.md.
+    """
+    import shutil
+    import subprocess
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmp:
+        unsigned_path = Path(tmp) / "unsigned.exe"
+        signed_path = Path(tmp) / "signed.exe"
+        unsigned_path.write_bytes(payload)
+
+        if shutil.which("signtool.exe") or shutil.which("signtool"):
+            signtool = shutil.which("signtool.exe") or shutil.which("signtool")
+            cmd = [
+                signtool, "sign", "/f", cert_path, "/p", password,
+                "/fd", "SHA256", "/tr", "http://timestamp.digicert.com",
+                "/td", "SHA256", str(unsigned_path),
+            ]
+            subprocess.run(cmd, check=True, capture_output=True)
+            return unsigned_path.read_bytes()
+
+        if shutil.which("osslsigncode"):
+            cmd = [
+                "osslsigncode", "sign", "-pkcs12", cert_path, "-pass", password,
+                "-h", "sha256", "-t", "http://timestamp.digicert.com",
+                "-in", str(unsigned_path), "-out", str(signed_path),
+            ]
+            subprocess.run(cmd, check=True, capture_output=True)
+            return signed_path.read_bytes()
+
+        raise RuntimeError(
+            "WINDOWS_CODESIGN_CERT_PATH is set but neither signtool nor "
+            "osslsigncode is on PATH. Install one or unset the variable to "
+            "ship unsigned (see docs/RELEASE_SIGNING.md)."
+        )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--version", required=True, help="e.g. 2.1.0")
@@ -103,21 +145,37 @@ def main() -> None:
     )
 
     UPDATES_DIR.mkdir(parents=True, exist_ok=True)
+    windows_codesign_cert = os.environ.get("WINDOWS_CODESIGN_CERT_PATH")
+    windows_codesign_password = os.environ.get("WINDOWS_CODESIGN_PASSWORD", "")
+
     artifacts = {}
     for name, source in ARTIFACTS.items():
         raw = source.read_bytes()
         payload = _windows_base_bytes(raw) if name == "windows_exe" else raw
+        unsigned_sha256 = hashlib.sha256(payload).hexdigest()
+
+        signed_payload = payload
+        if name == "windows_exe" and windows_codesign_cert:
+            signed_payload = _authenticode_sign(
+                payload, windows_codesign_cert, windows_codesign_password
+            )
+        elif name == "windows_exe":
+            print("  (WINDOWS_CODESIGN_CERT_PATH not set — shipping unsigned, as before)")
+
         destination = UPDATES_DIR / source.name
-        destination.write_bytes(payload)
-        artifacts[name] = {
-            "sha256": hashlib.sha256(payload).hexdigest(),
-            "size": len(payload),
+        destination.write_bytes(signed_payload)
+        entry = {
+            "sha256": hashlib.sha256(signed_payload).hexdigest(),
+            "size": len(signed_payload),
             # Must match the /static mount in app/main.py, which serves
             # backend/app/static/ -- UPDATES_DIR above is under that tree
             # specifically so this path is actually reachable.
             "path": f"/static/updates/{source.name}",
         }
-        print(f"{name}: {artifacts[name]['sha256']} ({len(payload)} bytes)")
+        if name == "windows_exe":
+            entry["unsigned_sha256"] = unsigned_sha256
+        artifacts[name] = entry
+        print(f"{name}: {entry['sha256']} ({entry['size']} bytes)")
 
     manifest = {
         "version": args.version,
