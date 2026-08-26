@@ -290,7 +290,7 @@
   <div class="card-header"><div class="card-title">{{ icons.icon('key', 14, extra_class='spec-row-icon') }}&nbsp;Legacy key conversion</div></div>
   <div class="card-body">
     <div class="muted">
-      {{ legacy_conversion.converted }} / {{ legacy_conversion.total }} devices have converted to a per-device credential.
+      {% if legacy_conversion.total == 0 %}No devices yet.{% else %}{{ legacy_conversion.converted }} / {{ legacy_conversion.total }} devices have converted to a per-device credential.{% endif %}
       {% if legacy_conversion.last_legacy_checkin %}
       Most recent legacy check-in: {{ legacy_conversion.last_legacy_checkin }}.
       {% endif %}

@@ -35,7 +35,7 @@
       <tr>
         <td><a href="/admin/companies/{{ company['id'] }}">{{ company['name'] }}</a></td>
         <td>{% if company['revoked_at'] %}Revoked{% else %}Active{% endif %}</td>
-        <td>{{ conv.converted }} / {{ conv.total }}</td>
+        <td>{% if conv.total == 0 %}&mdash;{% else %}{{ conv.converted }} / {{ conv.total }}{% endif %}</td>
       </tr>
       {% endfor %}
       {% if not companies %}

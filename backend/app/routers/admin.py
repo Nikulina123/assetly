@@ -38,6 +38,7 @@ from app.config import (
     WINDOWS_EXE_PATH,
 )
 from app.db import get_pool
+from app.devices import legacy_key_conversion
 from app.rate_limit import client_ip, enforce_rate_limit, hashed_bucket
 from app.enrollment import (
     create_enrollment_token,
@@ -120,7 +121,10 @@ async def require_admin(request: Request) -> AdminContext:
 
 async def require_full_admin(admin: AdminContext = Depends(require_admin)) -> AdminContext:
     """Read-only `support` admins are refused. Applied to every state-changing
-    route, to the three installer downloads (they mint enrollment tokens). /admin/diagnostics is gated one level further, by require_global_admin below -- it discloses deployment-wide internals, not anything scoped to one company.
+    route, to the three installer downloads (they mint enrollment tokens).
+    /admin/diagnostics is gated one level further, by require_global_admin
+    below -- it discloses deployment-wide internals, not anything scoped to
+    one company.
 
     The templates also hide these controls, but THIS is the enforcement -- a
     hidden button is not an authorisation control, it is a nicety."""
@@ -705,9 +709,11 @@ async def _conversion_by_company(pool, companies) -> dict:
     unconditionally and a handler that skipped this would crash with
     jinja2.exceptions.UndefinedError, the same bug company_detail.html had
     before _legacy_conversion_context was introduced.
-    """
-    from app.devices import legacy_key_conversion
 
+    One legacy_key_conversion call per company (~3 round trips each) --
+    accepted at current tenant counts; revisit if this becomes the slow path
+    on /admin/companies.
+    """
     return {
         str(c["id"]): await legacy_key_conversion(pool, str(c["id"]))
         for c in companies
@@ -723,8 +729,6 @@ async def _legacy_conversion_context(pool, company_id: uuid.UUID) -> dict:
     jinja2.exceptions.UndefinedError, since the template references
     legacy_conversion.converted/.total unconditionally.
     """
-    from app.devices import legacy_key_conversion
-
     return {"legacy_conversion": await legacy_key_conversion(pool, str(company_id))}
 
 
