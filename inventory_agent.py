@@ -555,20 +555,26 @@ def collect_hardware() -> dict:
 
     else:  # Linux
         def _dmi(key: str) -> str:
-            # Try sudo dmidecode first, then /sys fallback
-            out = _run(["dmidecode", "-s", key], sudo=True)
+            # Try /sys first: world-readable on modern distros, needs no
+            # privilege, and reads the same SMBIOS field dmidecode does --
+            # promoting it ahead of dmidecode is what lets the installer skip
+            # provisioning a standing NOPASSWD sudo rule for most machines.
+            # dmidecode remains the fallback for systems where /sys/class/dmi
+            # isn't populated or readable.
+            _sys_map = {
+                "system-manufacturer":  "/sys/class/dmi/id/sys_vendor",
+                "system-product-name":  "/sys/class/dmi/id/product_name",
+                "system-serial-number": "/sys/class/dmi/id/product_serial",
+            }
+            out = ""
+            try:
+                out = Path(_sys_map[key]).read_text().strip()
+            except Exception:
+                pass
+            if not out:
+                out = _run(["dmidecode", "-s", key], sudo=True)
             if not out:
                 out = _run(["dmidecode", "-s", key])
-            if not out:
-                _sys_map = {
-                    "system-manufacturer":  "/sys/class/dmi/id/sys_vendor",
-                    "system-product-name":  "/sys/class/dmi/id/product_name",
-                    "system-serial-number": "/sys/class/dmi/id/product_serial",
-                }
-                try:
-                    out = Path(_sys_map[key]).read_text().strip()
-                except Exception:
-                    pass
             return _clean(out)
 
         hw["brand"]         = _dmi("system-manufacturer")
