@@ -4,8 +4,12 @@
 #  Single-file: just run this once.  Everything else is automatic.
 #
 #  Usage:  chmod +x AssetlyAgent_Linux.sh && ./AssetlyAgent_Linux.sh
-#  Note:   Does NOT require root.  dmidecode (serial number) needs sudo — the
-#          script configures a passwordless sudoers rule automatically.
+#  Note:   Does NOT require root, and does not modify sudo configuration by
+#          default. The agent reads the hardware serial number from
+#          /sys/class/dmi/id/product_serial, which needs no privilege on most
+#          modern distributions. Pass --with-dmidecode-sudo only if this
+#          machine reports the serial as N/A -- that provisions a narrowly
+#          scoped passwordless sudo rule for dmidecode. See --help.
 # ════════════════════════════════════════════════════════════════════════════════
 
 # ─── CONFIGURATION — edit these two lines before distributing ────────────────
@@ -13,6 +17,30 @@ CHECKIN_API_URL="https://api.example.com/api/v1/inventory/checkin"   # ← FILL 
 ENROLLMENT_TOKEN=""                                                   # ← FILL IN (replaced automatically when downloaded from the admin portal)
 GITHUB_RAW_URL="https://raw.githubusercontent.com/Nikulina123/Check-in_Agent/main/inventory_agent.py"
 # ─────────────────────────────────────────────────────────────────────────────
+
+# ─── Command-line flags ────────────────────────────────────────────────────
+WITH_DMIDECODE_SUDO=0
+for arg in "$@"; do
+    case "$arg" in
+        --with-dmidecode-sudo)
+            WITH_DMIDECODE_SUDO=1
+            ;;
+        --help|-h)
+            echo "Usage: $0 [--with-dmidecode-sudo]"
+            echo ""
+            echo "  --with-dmidecode-sudo   Provision a passwordless sudo rule for"
+            echo "                          dmidecode so the agent can read the hardware"
+            echo "                          serial number via dmidecode. Not needed on"
+            echo "                          most modern Linux distributions, which expose"
+            echo "                          the same serial at /sys/class/dmi/id/product_serial"
+            echo "                          without any elevated privilege -- the agent"
+            echo "                          already tries that path first. Only pass this"
+            echo "                          flag if the agent reports the serial number as"
+            echo "                          N/A on this machine."
+            exit 0
+            ;;
+    esac
+done
 
 set -uo pipefail   # -e removed so we can show real errors before exiting
 
@@ -82,14 +110,22 @@ echo "      Python + tkinter: OK"
 
 # ── Step 2: Configure sudo for dmidecode (hardware serial number) ─────────────
 echo ""
-echo "[2/6] Configuring sudo for dmidecode (serial number collection)…"
-SUDOERS_LINE="$USER ALL=(ALL) NOPASSWD: /usr/sbin/dmidecode"
-SUDOERS_FILE="/etc/sudoers.d/assetly-inventory"
-if sudo sh -c "echo '$SUDOERS_LINE' > '$SUDOERS_FILE' && chmod 0440 '$SUDOERS_FILE'" 2>/dev/null; then
-    echo "      Sudoers rule created: $SUDOERS_FILE"
+if [ "$WITH_DMIDECODE_SUDO" -eq 1 ]; then
+    echo "[2/6] Configuring sudo for dmidecode (--with-dmidecode-sudo passed)…"
+    SUDOERS_LINE="$USER ALL=(ALL) NOPASSWD: /usr/sbin/dmidecode"
+    SUDOERS_FILE="/etc/sudoers.d/assetly-inventory"
+    if sudo sh -c "echo '$SUDOERS_LINE' > '$SUDOERS_FILE' && chmod 0440 '$SUDOERS_FILE'" 2>/dev/null; then
+        echo "      Sudoers rule created: $SUDOERS_FILE"
+    else
+        echo "      [WARN] Could not create sudoers rule. Serial Number may show as N/A."
+        echo "             To fix: sudo sh -c \"echo '$SUDOERS_LINE' > $SUDOERS_FILE && chmod 0440 $SUDOERS_FILE\""
+    fi
 else
-    echo "      [WARN] Could not create sudoers rule. Serial Number may show as N/A."
-    echo "             To fix: sudo sh -c \"echo '$SUDOERS_LINE' > $SUDOERS_FILE && chmod 0440 $SUDOERS_FILE\""
+    echo "[2/6] Skipping dmidecode sudo setup (not requested)."
+    echo "      The agent reads the hardware serial number from"
+    echo "      /sys/class/dmi/id/product_serial first, which needs no elevated"
+    echo "      privilege on most modern distributions. If this machine reports"
+    echo "      the serial number as N/A, re-run with --with-dmidecode-sudo."
 fi
 
 # ── Step 3: Download the agent ────────────────────────────────────────────────
@@ -277,5 +313,5 @@ echo ""
 echo "   To uninstall:"
 echo "   systemctl --user disable --now ${SERVICE_NAME}.timer ${SERVICE_NAME}.service"
 echo "   rm ~/.config/systemd/user/${SERVICE_NAME}.*"
-echo "   sudo rm /etc/sudoers.d/assetly-inventory"
+echo "   sudo rm /etc/sudoers.d/assetly-inventory  # only present if --with-dmidecode-sudo was used"
 echo ""
