@@ -17,7 +17,7 @@
   --amber: #F5A623;
   --red: #EF4444;
   --slate: #8A9BB5;
-  --slate-dim: #4A5A70;
+  --slate-dim: #6E809A;   /* AA on --navy-card (was #4A5A70, ~2.5:1) */
   --white: #F4F7FF;
   --border: rgba(138, 155, 181, 0.12);
   --border-md: rgba(138, 155, 181, 0.22);
@@ -227,7 +227,7 @@ a { color: inherit; }
 /* ── Forms and buttons ─────────────────────────────────────── */
 .input, .select {
   background: var(--navy-mid); border: 1px solid var(--border-input);
-  border-radius: var(--radius-control); padding: 9px 13px; font-size: 13.5px;
+  border-radius: var(--radius-control); padding: 10px 13px; min-height: 40px; font-size: 13.5px;
   color: var(--white); font-family: inherit; outline: none;
   transition: border-color 150ms var(--ease);
 }
@@ -243,7 +243,7 @@ input[type="checkbox"] { accent-color: var(--blue); width: 15px; height: 15px; v
 
 .btn {
   display: inline-flex; align-items: center; gap: 6px;
-  padding: 9px 16px; border-radius: var(--radius-control); font-size: 13px; font-weight: 600;
+  padding: 10px 16px; min-height: 40px; border-radius: var(--radius-control); font-size: 13px; font-weight: 600;
   font-family: inherit; cursor: pointer; border: 1px solid var(--blue);
   background: var(--blue); color: #fff; transition: all 150ms var(--ease); white-space: nowrap;
 }
@@ -329,10 +329,83 @@ input[type="checkbox"] { accent-color: var(--blue); width: 15px; height: 15px; v
 /* ── Misc ──────────────────────────────────────────────────── */
 .section-title { font-size: 14px; font-weight: 700; color: var(--white); margin: 24px 0 12px; }
 .toolbar { display: flex; gap: 12px; margin-bottom: 18px; align-items: center; flex-wrap: wrap; }
-.banner { border-radius: var(--radius-control); padding: 12px 15px; margin-bottom: 16px; font-size: 13px; }
+.banner {
+  border-radius: var(--radius-control); padding: 12px 15px; margin-bottom: 16px; font-size: 13px;
+  background: rgba(138, 155, 181, 0.06); border: 1px solid var(--border);
+  color: var(--slate);
+}
+.banner:last-child { margin-bottom: 0; }
 .banner-success { background: rgba(0, 194, 168, 0.08); border: 1px solid rgba(0, 194, 168, 0.25); color: var(--teal); }
 .banner-error { background: rgba(239, 68, 68, 0.08); border: 1px solid rgba(239, 68, 68, 0.25); color: var(--red); }
 .banner-warning { background: rgba(245, 166, 35, 0.08); border: 1px solid rgba(245, 166, 35, 0.25); color: var(--amber); }
 /* A token nearing its device cap -- the only detection that exists today for
    a leaked installer being used well beyond what was intended. */
 .warn { color: var(--amber); font-weight: 700; }
+
+/* ── Settings page layout ──────────────────────────────────────
+   The settings column used to be a bare max-width pinned to the left
+   edge, which left most of a wide screen empty. Centring it keeps the
+   measure readable without the page looking broken at 1080px+. */
+.page-col { max-width: 820px; margin: 0 auto; display: flex; flex-direction: column; gap: 16px; }
+.page-col > .card { width: 100%; }
+
+/* One label style for every form field on the page. Replaces the mix of
+   uppercase .spec-label micro-labels and inline-styled .muted labels. */
+.field-label {
+  display: block; font-size: 12px; font-weight: 500; color: var(--slate);
+  margin: 14px 0 6px;
+}
+.field-label:first-child { margin-top: 0; }
+.field-label code { font-family: var(--font-mono); font-size: 11.5px; color: var(--white); }
+.field-hint { font-size: 12px; color: var(--slate-dim); margin-top: 6px; }
+.field-row { display: flex; gap: 10px; flex-wrap: wrap; }
+.field-row > .input { flex: 1; min-width: 140px; }
+.form-actions { display: flex; align-items: center; gap: 12px; margin-top: 16px; }
+
+/* Full-width controls are the default in a settings form: every select
+   and text input should line up on the same grid. */
+.page-col .card-body .input[type="text"],
+.page-col .card-body .input[type="email"],
+.page-col .card-body .input[type="number"],
+.page-col .card-body select.input,
+.page-col .card-body textarea.input { width: 100%; }
+/* ...except inside a .field-row, where controls share one line. */
+.page-col .field-row > .input { width: auto; }
+
+/* Destructive actions live in their own card at the bottom of the page,
+   not beside routine ones like "Rotate API key". */
+.card.danger { border-color: rgba(239, 68, 68, 0.28); }
+.card.danger .card-title { color: var(--red); }
+.card.danger:hover { border-color: rgba(239, 68, 68, 0.45); }
+
+/* The custom-interval row only applies when "Custom…" is picked. The
+   portal ships no JavaScript, so this is done with :has() -- guarded by
+   @supports so that in a browser without it the row simply stays
+   visible, exactly as it behaved before. */
+@supports selector(:has(*)) {
+  .when-custom { display: none; }
+  .sched-form:has(select[name="interval_preset"] option[value="custom"]:checked) .when-custom {
+    display: block;
+  }
+}
+
+/* Section headers group the settings cards by the job being done, so the
+   page reads as four short lists instead of one flat run of ten cards. */
+.section-head { margin: 8px 2px 0; }
+.section-head:first-child { margin-top: 0; }
+.section-head .section-title { margin: 0 0 2px; }
+.section-sub { font-size: 12px; color: var(--slate-dim); }
+.tag-row { display: flex; flex-wrap: wrap; gap: 6px; }
+
+/* Three platform downloads side by side: identical fields repeated in a
+   plain flex row wrapped 2+1 and read as one long form. Each platform is
+   its own panel, so it is obvious the fields belong to that download. */
+.platform-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 12px; }
+.platform-card {
+  display: flex; flex-direction: column;
+  background: rgba(138, 155, 181, 0.04); border: 1px solid var(--border);
+  border-radius: var(--radius-control); padding: 14px;
+}
+.platform-name { font-size: 13px; font-weight: 700; color: var(--white); }
+.platform-note { font-size: 11px; color: var(--slate-dim); margin-bottom: 4px; font-family: var(--font-mono); }
+.platform-card .field-label { margin-top: 10px; }

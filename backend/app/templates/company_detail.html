@@ -3,7 +3,11 @@
 {% block title %}Settings — Assetly{% endblock %}
 {% block subtitle %}<div class="topbar-subtitle">Organization & account preferences</div>{% endblock %}
 {% block content %}
-<div style="max-width:720px;display:flex;flex-direction:column;gap:16px">
+<div class="page-col">
+
+{% if saved_message %}
+<div class="banner banner-success">{{ saved_message }}</div>
+{% endif %}
 
 {% if new_api_key %}
 <div class="banner banner-success">
@@ -12,231 +16,9 @@
 </div>
 {% endif %}
 
-<div class="card flush">
-  <div class="card-header"><div class="card-title">{{ icons.icon('building', 14, extra_class='spec-row-icon') }}&nbsp;Company</div></div>
-  <div class="card-body">
-    <div class="spec-grid">
-      <div><div class="spec-label">API key prefix</div><div class="spec-value mono">{{ company['api_key_prefix'] }}…</div></div>
-      <div><div class="spec-label">Status</div><div class="spec-value">{% if company['revoked_at'] %}Revoked{% else %}Active{% endif %}</div></div>
-    </div>
-  </div>
-</div>
-
-<div class="card flush">
-  <div class="card-header"><div class="card-title">{{ icons.icon('mail', 14, extra_class='spec-row-icon') }}&nbsp;Notification email</div></div>
-  <div class="card-body">
-    {% if admin.is_full_admin %}
-    <form method="post" action="/admin/companies/{{ company['id'] }}/notification-email">
-      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-      <div style="display:flex;gap:10px;flex-wrap:wrap">
-        <input class="input" type="email" name="notification_email"
-               value="{{ company['notification_email'] or '' }}" required style="flex:1;min-width:240px">
-        <button type="submit" class="btn">Update</button>
-      </div>
-    </form>
-    {% else %}
-    <div class="muted">{{ company['notification_email'] or '—' }}</div>
-    {% endif %}
-  </div>
-</div>
-
-<div class="card flush">
-  <div class="card-header"><div class="card-title">{{ icons.icon('key', 14, extra_class='spec-row-icon') }}&nbsp;API key</div></div>
-  <div class="card-body">
-    {% if admin.is_full_admin %}
-    <div style="display:flex;gap:10px;flex-wrap:wrap">
-      <form method="post" action="/admin/companies/{{ company['id'] }}/rotate-key">
-        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-        <button type="submit" class="btn btn-secondary">{{ icons.icon('refresh', 14) }}Rotate API key</button>
-      </form>
-      {% if not company['revoked_at'] %}
-      <form method="post" action="/admin/companies/{{ company['id'] }}/revoke">
-        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-        <button type="submit" class="btn btn-danger">Revoke company</button>
-      </form>
-      {% endif %}
-    </div>
-    {% else %}
-    <div class="muted">Read-only — full admin required to rotate or revoke.</div>
-    {% endif %}
-  </div>
-</div>
-
-<div class="card flush">
-  <div class="card-header"><div class="card-title">{{ icons.icon('settings', 14, extra_class='spec-row-icon') }}&nbsp;Check-in schedule</div></div>
-  <div class="card-body">
-    {% if schedule_error %}
-    <div class="banner banner-error">{{ schedule_error }}</div>
-    {% endif %}
-    <div class="banner">{{ schedule_summary }}</div>
-    {% if admin.is_full_admin %}
-    <form method="post" action="/admin/companies/{{ company['id'] }}/schedule">
-      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-
-      <label class="muted" style="display:block;margin:12px 0 4px">Prompt employees every</label>
-      <select class="input" name="interval_preset" style="width:100%">
-        {% for label, seconds in presets %}
-        <option value="{{ seconds }}" {% if not interval_is_custom and seconds == schedule['checkin_interval_seconds'] %}selected{% endif %}>{{ label }}</option>
-        {% endfor %}
-        {# A stored interval that matches no preset must select this option. If
-           nothing is selected the browser picks the first one, which made the
-           form offer to overwrite a custom interval with 12 hours. #}
-        <option value="custom" {% if interval_is_custom %}selected{% endif %}>Custom…</option>
-      </select>
-
-      <label class="muted" style="display:block;margin:12px 0 4px">Custom interval &mdash; used only when &ldquo;Custom…&rdquo; is selected above</label>
-      <div style="display:flex;gap:10px;flex-wrap:wrap">
-        <input class="input" type="number" name="custom_count" value="{{ custom_count }}"
-               min="1" max="{{ custom_count_max }}" placeholder="e.g. 5" style="flex:1;min-width:120px">
-        <select class="input" name="custom_unit" style="flex:1;min-width:140px">
-          {% for unit in ['hours', 'days', 'weeks', 'months', 'years'] %}
-          <option value="{{ unit }}" {% if unit == custom_unit %}selected{% endif %}>{{ unit }}</option>
-          {% endfor %}
-        </select>
-      </div>
-
-      <label class="muted" style="display:block;margin:12px 0 4px">If they cancel, ask again after</label>
-      <select class="input" name="cancel_retry_seconds" style="width:100%">
-        {% for label, seconds in retry_presets %}
-        <option value="{{ seconds }}" {% if seconds == schedule['cancel_retry_seconds'] %}selected{% endif %}>{{ label }}</option>
-        {% endfor %}
-      </select>
-
-      <button type="submit" class="btn" style="margin-top:12px">Save check-in schedule</button>
-    </form>
-    {% endif %}
-  </div>
-</div>
-
-<div class="card flush">
-  <div class="card-header"><div class="card-title">{{ icons.icon('settings', 14, extra_class='spec-row-icon') }}&nbsp;Check-in fields</div></div>
-  <div class="card-body">
-    {% if admin.is_full_admin %}
-    <form method="post" action="/admin/companies/{{ company['id'] }}/fields/hardware">
-      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-      {% for f in field_settings['hardware_field_options'] %}
-      <label class="check-row">
-        <input type="checkbox" name="{{ f['key'] }}" {% if f['enabled'] %}checked{% endif %}> {{ f['label'] }}
-      </label>
-      {% endfor %}
-      <label class="check-row">
-        <input type="checkbox" name="department_enabled" {% if field_settings['department_enabled'] %}checked{% endif %}> Department field enabled
-      </label>
-      <label class="check-row" style="margin-bottom:8px">
-        <input type="checkbox" name="department_required" {% if field_settings['department_required'] %}checked{% endif %}> Department required
-      </label>
-      <label class="muted" style="display:block;margin:12px 0 4px">Department options &mdash; one per line. Leave empty to restore the built-in list.</label>
-      <textarea class="input" name="department_options" rows="6" style="width:100%;font-family:inherit"
->{% for option in field_settings['department_options'] %}{{ option }}
-{% endfor %}</textarea>
-      <button type="submit" class="btn" style="margin-top:8px">Save check-in fields</button>
-    </form>
-    {% endif %}
-  </div>
-</div>
-
-<div class="card flush">
-  <div class="card-header"><div class="card-title">{{ icons.icon('reports', 14, extra_class='spec-row-icon') }}&nbsp;Custom fields</div></div>
-  <div class="card-body">
-    {% if field_error %}
-    <div class="banner banner-error">{{ field_error }}</div>
-    {% endif %}
-    {% for cf in field_settings['custom_fields'] %}
-    <div class="custom-field-row">
-      <span style="flex:1">{{ cf['label'] }}
-        <span class="muted">({% if cf['required'] %}required{% else %}optional{% endif %})</span>
-      </span>
-      {% if admin.is_full_admin %}
-      <form method="post" action="/admin/companies/{{ company['id'] }}/fields/custom/{{ cf['key'] }}/remove">
-        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-        <button type="submit" class="btn btn-danger">Remove</button>
-      </form>
-      {% endif %}
-    </div>
-    {% endfor %}
-    {% if admin.is_full_admin %}
-    <form method="post" action="/admin/companies/{{ company['id'] }}/fields/custom" style="margin-top:14px">
-      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-      <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
-        <input class="input" type="text" name="label" placeholder="Field label" required style="flex:1;min-width:200px">
-        <label class="muted" style="display:flex;align-items:center;gap:6px"><input type="checkbox" name="required"> Required</label>
-        <button type="submit" class="btn">Add custom field</button>
-      </div>
-    </form>
-    {% endif %}
-  </div>
-</div>
-
-{# Appearance of the agent's check-in window. Like the field settings above,
-   this reaches every already-installed agent on its next run -- nobody has to
-   re-download anything. Values are echoed from `agent_ui_form` when a save was
-   rejected, so a bad colour can be corrected without retyping the rest. #}
-{% set ui_value = agent_ui_form if agent_ui_form else agent_ui['effective'] %}
-<div class="card flush">
-  <div class="card-header"><div class="card-title">{{ icons.icon('settings', 14, extra_class='spec-row-icon') }}&nbsp;Agent window appearance</div></div>
-  <div class="card-body">
-    {% if agent_ui_error %}
-    <div class="banner banner-error" style="white-space:pre-line">{{ agent_ui_error }}</div>
-    {% endif %}
-    <div class="banner">
-      Changes reach every installed agent on its next check-in — no new download needed.
-      {% if agent_ui['customised'] %}
-      {{ agent_ui['customised'] | length }} of {{ agent_ui['labels'] | length }} settings are customised.
-      {% else %}
-      Everything is currently at its built-in default.
-      {% endif %}
-    </div>
-    {% if admin.is_full_admin %}
-    <form method="post" action="/admin/companies/{{ company['id'] }}/appearance">
-      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-
-      {% for key, max_length in agent_ui['copy_keys'].items() %}
-      <label class="muted" style="display:block;margin:12px 0 4px">
-        {{ agent_ui['labels'][key] }}
-        {% if agent_ui['placeholders'].get(key) %}
-          &mdash; may use
-          {% for p in agent_ui['placeholders'][key] %}<code>{{ '{' }}{{ p }}{{ '}' }}</code>{% if not loop.last %}, {% endif %}{% endfor %}
-        {% endif %}
-      </label>
-      {% if key == 'success_message' %}
-      {# The only multi-line value: it is shown in a dialog, not on one row. #}
-      <textarea class="input" name="{{ key }}" rows="3" maxlength="{{ max_length }}"
-                style="width:100%;resize:vertical"
-                placeholder="{{ agent_ui['defaults'][key] }}">{{ ui_value[key] }}</textarea>
-      {% else %}
-      <input class="input" type="text" name="{{ key }}" value="{{ ui_value[key] }}"
-             maxlength="{{ max_length }}" style="width:100%"
-             placeholder="{{ agent_ui['defaults'][key] }}">
-      {% endif %}
-      {% endfor %}
-
-      <label class="muted" style="display:block;margin:18px 0 4px">
-        Colours &mdash; six hex digits, e.g. <code>#1866F2</code>. Combinations that would be
-        unreadable on an employee&rsquo;s screen are rejected when you save.
-      </label>
-      {% for key in agent_ui['color_keys'] %}
-      <div style="display:flex;gap:10px;align-items:center;margin:8px 0">
-        {# Shows the value currently in force, not the one being typed: the
-           portal ships no JavaScript, so this cannot track the input live. #}
-        <span title="{{ agent_ui['effective'][key] }}"
-              style="width:26px;height:26px;flex:none;border-radius:5px;
-                     border:1px solid rgba(255,255,255,.25);
-                     background:{{ agent_ui['effective'][key] }}"></span>
-        <span class="muted" style="flex:1;min-width:160px">{{ agent_ui['labels'][key] }}</span>
-        <input class="input" type="text" name="{{ key }}" value="{{ ui_value[key] }}"
-               pattern="#[0-9A-Fa-f]{6}" maxlength="7" spellcheck="false"
-               style="flex:none;width:110px;font-family:ui-monospace,Consolas,monospace"
-               placeholder="{{ agent_ui['defaults'][key] }}">
-      </div>
-      {% endfor %}
-
-      <button type="submit" class="btn" style="margin-top:12px">Save appearance</button>
-      <div class="muted" style="margin-top:8px">
-        Clear any box and save to put that one setting back to its built-in default.
-      </div>
-    </form>
-    {% endif %}
-  </div>
+<div class="section-head">
+  <div class="section-title">Rollout</div>
+  <div class="section-sub">Get the agent onto machines and manage the installers you have handed out.</div>
 </div>
 
 <div class="card flush">
@@ -248,68 +30,39 @@
     <div class="muted">Read-only — full admin required to download installers.</div>
     {% else %}
     <div class="banner">
-      Each download embeds a fresh enrollment token. Downloading one platform does
-      not affect installers you downloaded earlier, so macOS, Windows and Linux can
-      be rolled out together. Devices already reporting are unaffected.
-      macOS gets a double-clickable <code>.pkg</code> and Windows a single
-      <code>.exe</code> — both configured for this company, nothing to edit.
+      Each download embeds a fresh enrollment token, configured for this company —
+      nothing to edit after downloading. Downloading one platform does
+      not affect installers you downloaded earlier, so macOS, Windows and Linux can be
+      rolled out together and devices already reporting are unaffected.
+      <strong>Expected devices</strong> caps how many machines that token may enroll
+      (leave headroom for re-imaged machines); <strong>token valid for</strong> sets
+      how long it stays usable.
     </div>
-    <div class="banner">
-      Expected devices sets the enrollment cap for the token this download embeds
-      (with headroom for re-imaged machines) &mdash; and token lifetime how long it
-      stays usable. Set both for whichever platform you download.
-    </div>
-    <div style="display:flex;gap:20px;flex-wrap:wrap">
-      {% for platform, url_name, download_label in [
-        ('macos', 'macos', 'Download for macOS'),
-        ('linux', 'linux', 'Download for Linux'),
-        ('windows', 'windows', 'Download for Windows'),
+    <div class="platform-grid">
+      {% for platform, url_name, platform_label, file_note in [
+        ('macos', 'macos', 'macOS', 'double-clickable .pkg'),
+        ('windows', 'windows', 'Windows', 'single .exe'),
+        ('linux', 'linux', 'Linux', 'shell installer'),
       ] %}
       <form method="post" action="/admin/companies/{{ company['id'] }}/download/{{ url_name }}"
-            style="min-width:220px">
+            class="platform-card">
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-        <label class="muted" style="display:block;margin:0 0 4px">Expected devices</label>
-        <input class="input" type="number" name="device_count"
-               min="1" max="10000" value="25" required style="width:100%">
-        <label class="muted" style="display:block;margin:10px 0 4px">Token valid for</label>
-        <select class="input" name="token_days" style="width:100%">
+        <div class="platform-name">{{ platform_label }}</div>
+        <div class="platform-note">{{ file_note }}</div>
+        <label class="field-label" for="devices-{{ platform }}">Expected devices</label>
+        <input class="input" id="devices-{{ platform }}" type="number" name="device_count"
+               min="1" max="10000" value="25" required>
+        <label class="field-label" for="tokendays-{{ platform }}">Token valid for</label>
+        <select class="input" id="tokendays-{{ platform }}" name="token_days">
           <option value="7">7 days</option>
           <option value="14" selected>14 days</option>
           <option value="30">30 days</option>
           <option value="90">90 days</option>
         </select>
-        <button type="submit" class="btn btn-secondary" style="margin-top:10px;width:100%">{{ icons.icon('download', 14) }}{{ download_label }}</button>
+        <button type="submit" class="btn btn-secondary" aria-label="Download for {{ platform_label }}"
+                style="margin-top:auto;width:100%;justify-content:center">{{ icons.icon('download', 14) }}Download</button>
       </form>
       {% endfor %}
-    </div>
-    {% endif %}
-  </div>
-</div>
-
-<div class="card flush">
-  <div class="card-header"><div class="card-title">{{ icons.icon('key', 14, extra_class='spec-row-icon') }}&nbsp;Legacy key conversion</div></div>
-  <div class="card-body">
-    <div class="muted">
-      {% if legacy_conversion.total == 0 %}No devices yet.{% else %}{{ legacy_conversion.converted }} / {{ legacy_conversion.total }} devices have converted to a per-device credential.{% endif %}
-      {% if legacy_conversion.last_legacy_checkin %}
-      Most recent legacy check-in: {{ legacy_conversion.last_legacy_checkin }}.
-      {% endif %}
-    </div>
-    {% if legacy_conversion.legacy_devices %}
-    <div style="overflow-x:auto">
-    <table class="table">
-      <thead>
-        <tr><th>Serial number</th><th>Last check-in</th></tr>
-      </thead>
-      <tbody>
-        {% for d in legacy_conversion.legacy_devices %}
-        <tr>
-          <td class="mono">{{ d.serial_number }}</td>
-          <td class="mono muted">{{ d.last_seen_at }}</td>
-        </tr>
-        {% endfor %}
-      </tbody>
-    </table>
     </div>
     {% endif %}
   </div>
@@ -321,6 +74,8 @@
     <div class="banner">
       Revoking a token blocks future enrollments from that installer only — it does not
       touch devices that already enrolled with it, and they keep checking in normally.
+      A device count in amber means the token is near its cap; once it is reached, new
+      machines cannot enroll with that installer and you will need to download a new one.
     </div>
     {% if tokens %}
     <div style="overflow-x:auto">
@@ -360,6 +115,340 @@
     {% endif %}
   </div>
 </div>
+
+
+<div class="section-head">
+  <div class="section-title">Check-in behaviour</div>
+  <div class="section-sub">How often employees are asked, what they are asked for, and how the prompt looks.</div>
+</div>
+
+<div class="card flush">
+  <div class="card-header"><div class="card-title">{{ icons.icon('settings', 14, extra_class='spec-row-icon') }}&nbsp;Check-in schedule</div></div>
+  <div class="card-body">
+    {% if schedule_error %}
+    <div class="banner banner-error">{{ schedule_error }}</div>
+    {% endif %}
+    <div class="banner">{{ schedule_summary }}</div>
+    {% if admin.is_full_admin %}
+    <form method="post" action="/admin/companies/{{ company['id'] }}/schedule" class="sched-form">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+
+      <label class="field-label" for="interval_preset">Prompt employees every</label>
+      <select class="input" id="interval_preset" name="interval_preset">
+        {% for label, seconds in presets %}
+        <option value="{{ seconds }}" {% if not interval_is_custom and seconds == schedule['checkin_interval_seconds'] %}selected{% endif %}>{{ label }}</option>
+        {% endfor %}
+        {# A stored interval that matches no preset must select this option. If
+           nothing is selected the browser picks the first one, which made the
+           form offer to overwrite a custom interval with 12 hours. #}
+        <option value="custom" {% if interval_is_custom %}selected{% endif %}>Custom…</option>
+      </select>
+
+      <div class="when-custom">
+      <label class="field-label" for="custom_count">Custom interval</label>
+      <div class="field-row">
+        <input class="input" id="custom_count" type="number" name="custom_count" value="{{ custom_count }}"
+               min="1" max="{{ custom_count_max }}" placeholder="e.g. 5" style="min-width:120px">
+        <select class="input" name="custom_unit" style="flex:1;min-width:140px">
+          {% for unit in ['hours', 'days', 'weeks', 'months', 'years'] %}
+          <option value="{{ unit }}" {% if unit == custom_unit %}selected{% endif %}>{{ unit }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      </div>
+
+      <label class="field-label" for="cancel_retry_seconds">If they cancel, ask again after</label>
+      <select class="input" id="cancel_retry_seconds" name="cancel_retry_seconds">
+        {% for label, seconds in retry_presets %}
+        <option value="{{ seconds }}" {% if seconds == schedule['cancel_retry_seconds'] %}selected{% endif %}>{{ label }}</option>
+        {% endfor %}
+      </select>
+
+      <div class="form-actions"><button type="submit" class="btn">Save check-in schedule</button></div>
+    </form>
+    {% endif %}
+  </div>
+</div>
+
+<div class="card flush">
+  <div class="card-header"><div class="card-title">{{ icons.icon('settings', 14, extra_class='spec-row-icon') }}&nbsp;Check-in fields</div></div>
+  <div class="card-body">
+    {% if admin.is_full_admin %}
+    <form method="post" action="/admin/companies/{{ company['id'] }}/fields/hardware">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      {% for f in field_settings['hardware_field_options'] %}
+      <label class="check-row">
+        <input type="checkbox" name="{{ f['key'] }}" {% if f['enabled'] %}checked{% endif %}> {{ f['label'] }}
+      </label>
+      {% endfor %}
+      <label class="check-row">
+        <input type="checkbox" name="department_enabled" {% if field_settings['department_enabled'] %}checked{% endif %}> Department field enabled
+      </label>
+      <label class="check-row" style="margin-bottom:8px">
+        <input type="checkbox" name="department_required" {% if field_settings['department_required'] %}checked{% endif %}> Department required
+      </label>
+      <label class="field-label" for="department_options">Department options &mdash; one per line. Leave empty to restore the built-in list.</label>
+      <textarea class="input" id="department_options" name="department_options" rows="6" style="font-family:inherit"
+>{% for option in field_settings['department_options'] %}{{ option }}
+{% endfor %}</textarea>
+      <div class="form-actions"><button type="submit" class="btn">Save check-in fields</button></div>
+    </form>
+    {% else %}
+    {# Support role: the form is hidden, so state the settings in words --
+       this card used to render an entirely empty body for read-only admins. #}
+    <div class="field-label">Collected at every check-in</div>
+    <div class="tag-row">
+      {% for f in field_settings['hardware_field_options'] if f['enabled'] %}
+      <span class="tag">{{ f['label'] }}</span>
+      {% else %}
+      <span class="muted">No hardware fields are collected.</span>
+      {% endfor %}
+    </div>
+    <div class="field-label">Department</div>
+    <div class="muted">
+      {% if not field_settings['department_enabled'] %}Not asked.
+      {% elif field_settings['department_required'] %}Asked, and required.
+      {% else %}Asked, optional.{% endif %}
+    </div>
+    <div class="field-hint">Read-only — full admin required to change these.</div>
+    {% endif %}
+  </div>
+</div>
+
+<div class="card flush">
+  <div class="card-header"><div class="card-title">{{ icons.icon('reports', 14, extra_class='spec-row-icon') }}&nbsp;Custom fields</div></div>
+  <div class="card-body">
+    {% if field_error %}
+    <div class="banner banner-error">{{ field_error }}</div>
+    {% endif %}
+    {% for cf in field_settings['custom_fields'] %}
+    <div class="custom-field-row">
+      <span style="flex:1">{{ cf['label'] }}
+        <span class="muted">({% if cf['required'] %}required{% else %}optional{% endif %})</span>
+      </span>
+      {% if admin.is_full_admin %}
+        {% if removing_field == cf['key'] %}
+        <span class="muted">Remove this field?</span>
+        <a class="btn btn-ghost" href="/admin/companies/{{ company['id'] }}">Cancel</a>
+        <form method="post" action="/admin/companies/{{ company['id'] }}/fields/custom/{{ cf['key'] }}/remove">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <button type="submit" class="btn btn-danger">Yes, remove</button>
+        </form>
+        {% else %}
+        <a class="btn btn-danger" href="/admin/companies/{{ company['id'] }}?removing={{ cf['key'] }}"
+           aria-label="Remove {{ cf['label'] }}">Remove</a>
+        {% endif %}
+      {% endif %}
+    </div>
+    {% endfor %}
+    {% if admin.is_full_admin %}
+    <form method="post" action="/admin/companies/{{ company['id'] }}/fields/custom" style="margin-top:14px">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+        <input class="input" type="text" name="label" placeholder="Field label" required
+               aria-label="New custom field label" style="flex:1;min-width:200px">
+        <label class="muted" style="display:flex;align-items:center;gap:6px"><input type="checkbox" name="required"> Required</label>
+        <button type="submit" class="btn">Add custom field</button>
+      </div>
+    </form>
+    {% endif %}
+    {% if not admin.is_full_admin and not field_settings['custom_fields'] %}
+    <div class="muted">No custom fields. Full admin required to add one.</div>
+    {% endif %}
+  </div>
+</div>
+
+{# Appearance of the agent's check-in window. Like the field settings above,
+   this reaches every already-installed agent on its next run -- nobody has to
+   re-download anything. Values are echoed from `agent_ui_form` when a save was
+   rejected, so a bad colour can be corrected without retyping the rest. #}
+{% set ui_value = agent_ui_form if agent_ui_form else agent_ui['effective'] %}
+
+<div class="card flush">
+  <div class="card-header"><div class="card-title">{{ icons.icon('settings', 14, extra_class='spec-row-icon') }}&nbsp;Agent window appearance</div></div>
+  <div class="card-body">
+    {% if agent_ui_error %}
+    <div class="banner banner-error" style="white-space:pre-line">{{ agent_ui_error }}</div>
+    {% endif %}
+    <div class="banner">
+      Changes reach every installed agent on its next check-in — no new download needed.
+      {% if agent_ui['customised'] %}
+      {{ agent_ui['customised'] | length }} of {{ agent_ui['labels'] | length }} settings are customised.
+      {% else %}
+      Everything is currently at its built-in default.
+      {% endif %}
+    </div>
+    {% if admin.is_full_admin %}
+    <form method="post" action="/admin/companies/{{ company['id'] }}/appearance">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+
+      {% for key, max_length in agent_ui['copy_keys'].items() %}
+      <label class="field-label" for="ui-{{ key }}">
+        {{ agent_ui['labels'][key] }}
+        {% if agent_ui['placeholders'].get(key) %}
+          &mdash; may use
+          {% for p in agent_ui['placeholders'][key] %}<code>{{ '{' }}{{ p }}{{ '}' }}</code>{% if not loop.last %}, {% endif %}{% endfor %}
+        {% endif %}
+      </label>
+      {% if key == 'success_message' %}
+      {# The only multi-line value: it is shown in a dialog, not on one row. #}
+      <textarea class="input" id="ui-{{ key }}" name="{{ key }}" rows="3" maxlength="{{ max_length }}"
+                style="resize:vertical"
+                placeholder="{{ agent_ui['defaults'][key] }}">{{ ui_value[key] }}</textarea>
+      {% else %}
+      <input class="input" id="ui-{{ key }}" type="text" name="{{ key }}" value="{{ ui_value[key] }}"
+             maxlength="{{ max_length }}"
+             placeholder="{{ agent_ui['defaults'][key] }}">
+      {% endif %}
+      {% endfor %}
+
+      <label class="field-label" style="margin-top:20px">
+        Colours &mdash; six hex digits, e.g. <code>#1866F2</code>. Combinations that would be
+        unreadable on an employee&rsquo;s screen are rejected when you save.
+      </label>
+      {% for key in agent_ui['color_keys'] %}
+      <div style="display:flex;gap:10px;align-items:center;margin:8px 0">
+        {# Shows the value currently in force, not the one being typed: the
+           portal ships no JavaScript, so this cannot track the input live. #}
+        <span title="{{ agent_ui['effective'][key] }}"
+              style="width:26px;height:26px;flex:none;border-radius:5px;
+                     border:1px solid rgba(255,255,255,.25);
+                     background:{{ agent_ui['effective'][key] }}"></span>
+        <span class="muted" style="flex:1;min-width:160px">{{ agent_ui['labels'][key] }}</span>
+        <input class="input" type="text" name="{{ key }}" value="{{ ui_value[key] }}"
+               aria-label="{{ agent_ui['labels'][key] }} colour, six hex digits"
+               pattern="#[0-9A-Fa-f]{6}" maxlength="7" spellcheck="false"
+               style="flex:none;width:110px;font-family:ui-monospace,Consolas,monospace"
+               placeholder="{{ agent_ui['defaults'][key] }}">
+      </div>
+      {% endfor %}
+
+      <div class="form-actions"><button type="submit" class="btn">Save appearance</button></div>
+      <div class="field-hint">
+        Clear any box and save to put that one setting back to its built-in default.
+      </div>
+    </form>
+    {% else %}
+    {# Same read-only hole as the check-in fields card: without this the
+       support role can see that settings are customised but not what to. #}
+    {% for key in agent_ui['copy_keys'] %}
+    <div class="field-label">{{ agent_ui['labels'][key] }}</div>
+    <div class="muted">{{ agent_ui['effective'][key] }}</div>
+    {% endfor %}
+    {% for key in agent_ui['color_keys'] %}
+    <div style="display:flex;gap:10px;align-items:center;margin:10px 0 0">
+      <span style="width:26px;height:26px;flex:none;border-radius:5px;
+                   border:1px solid rgba(255,255,255,.25);
+                   background:{{ agent_ui['effective'][key] }}"></span>
+      <span class="muted" style="flex:1">{{ agent_ui['labels'][key] }}</span>
+      <span class="mono">{{ agent_ui['effective'][key] }}</span>
+    </div>
+    {% endfor %}
+    <div class="field-hint">Read-only — full admin required to change these.</div>
+    {% endif %}
+  </div>
+</div>
+
+
+<div class="section-head">
+  <div class="section-title">Organization &amp; access</div>
+  <div class="section-sub">Account details, where alerts go, and the credentials this organization authenticates with.</div>
+</div>
+
+<div class="card flush">
+  <div class="card-header"><div class="card-title">{{ icons.icon('building', 14, extra_class='spec-row-icon') }}&nbsp;Company</div></div>
+  <div class="card-body">
+    <div class="spec-grid">
+      <div><div class="spec-label">API key prefix</div><div class="spec-value mono">{{ company['api_key_prefix'] }}…</div></div>
+      <div><div class="spec-label">Status</div><div class="spec-value">{% if company['revoked_at'] %}Revoked{% else %}Active{% endif %}</div></div>
+    </div>
+  </div>
+</div>
+
+<div class="card flush">
+  <div class="card-header"><div class="card-title">{{ icons.icon('mail', 14, extra_class='spec-row-icon') }}&nbsp;Notification email</div></div>
+  <div class="card-body">
+    {% if admin.is_full_admin %}
+    <form method="post" action="/admin/companies/{{ company['id'] }}/notification-email">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <label class="field-label" for="notification_email">Send alerts to</label>
+      <div class="field-row">
+        <input class="input" id="notification_email" type="email" name="notification_email"
+               value="{{ company['notification_email'] or '' }}" required style="min-width:240px">
+        <button type="submit" class="btn">Save email</button>
+      </div>
+    </form>
+    {% else %}
+    <div class="muted">{{ company['notification_email'] or '—' }}</div>
+    {% endif %}
+  </div>
+</div>
+
+<div class="card flush">
+  <div class="card-header"><div class="card-title">{{ icons.icon('key', 14, extra_class='spec-row-icon') }}&nbsp;API key</div></div>
+  <div class="card-body">
+    {% if admin.is_full_admin %}
+    <div class="banner">
+      Rotating issues a new key and shows it once. Agents already installed keep
+      working — they hold their own per-device credential.
+    </div>
+    <form method="post" action="/admin/companies/{{ company['id'] }}/rotate-key">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <button type="submit" class="btn btn-secondary">{{ icons.icon('refresh', 14) }}Rotate API key</button>
+    </form>
+    {% else %}
+    <div class="muted">Read-only — full admin required to rotate or revoke.</div>
+    {% endif %}
+  </div>
+</div>
+
+<div class="card flush">
+  <div class="card-header"><div class="card-title">{{ icons.icon('key', 14, extra_class='spec-row-icon') }}&nbsp;Legacy key conversion</div></div>
+  <div class="card-body">
+    <div class="muted">
+      {% if legacy_conversion.total == 0 %}No devices yet.{% else %}{{ legacy_conversion.converted }} / {{ legacy_conversion.total }} devices have converted to a per-device credential.{% endif %}
+      {% if legacy_conversion.last_legacy_checkin %}
+      Most recent legacy check-in: {{ legacy_conversion.last_legacy_checkin }}.
+      {% endif %}
+    </div>
+    {% if legacy_conversion.legacy_devices %}
+    <div style="overflow-x:auto">
+    <table class="table">
+      <thead>
+        <tr><th>Serial number</th><th>Last check-in</th></tr>
+      </thead>
+      <tbody>
+        {% for d in legacy_conversion.legacy_devices %}
+        <tr>
+          <td class="mono">{{ d.serial_number }}</td>
+          <td class="mono muted">{{ d.last_seen_at }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    </div>
+    {% endif %}
+  </div>
+</div>
+
+
+{% if admin.is_full_admin and not company['revoked_at'] %}
+<div class="card flush danger">
+  <div class="card-header"><div class="card-title">{{ icons.icon('alert', 14, extra_class='spec-row-icon') }}&nbsp;Danger zone</div></div>
+  <div class="card-body">
+    <div class="banner">
+      Revoking stops every agent in this organization from checking in and disables
+      installer downloads. Devices stay in the records; reporting stops. This cannot
+      be undone from the portal.
+    </div>
+    <form method="post" action="/admin/companies/{{ company['id'] }}/revoke">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <button type="submit" class="btn btn-danger">Revoke {{ company['name'] }}</button>
+    </form>
+  </div>
+</div>
+{% endif %}
+
 
 </div>
 {% endblock %}

@@ -732,9 +732,29 @@ async def _legacy_conversion_context(pool, company_id: uuid.UUID) -> dict:
     return {"legacy_conversion": await legacy_key_conversion(pool, str(company_id))}
 
 
+# Post/Redirect/Get loses the outcome of a save: every one of these forms
+# redirected back to a page that looked identical whether the write landed
+# or not. The redirect now carries a ?saved= slug, which is looked up here --
+# only these fixed strings can ever be rendered, so the query string cannot
+# inject anything.
+SAVED_MESSAGES = {
+    "email": "Notification email updated.",
+    "schedule": "Check-in schedule saved.",
+    "fields": "Check-in fields saved.",
+    "custom-field-added": "Custom field added.",
+    "custom-field-removed": "Custom field removed.",
+    "appearance": "Agent window appearance saved.",
+    "token-revoked": "Enrollment token revoked. Devices already enrolled are unaffected.",
+}
+
+
 @router.get("/companies/{company_id}")
 async def company_detail(
-    request: Request, company_id: uuid.UUID, admin: AdminContext = Depends(require_admin)
+    request: Request,
+    company_id: uuid.UUID,
+    saved: str | None = None,
+    removing: str | None = None,
+    admin: AdminContext = Depends(require_admin),
 ):
     pool = await get_pool()
     company = await _get_company_or_404(pool, company_id, admin)
@@ -749,6 +769,9 @@ async def company_detail(
         "tokens": await _tokens_for_display(pool, str(company_id)),
         "nav_active": "settings",
         "admin": admin,
+        "saved_message": SAVED_MESSAGES.get(saved or ""),
+        # Which custom field, if any, is showing its "really remove?" step.
+        "removing_field": removing,
     }
     context.update(await _schedule_context(pool, company_id))
     context.update(await _agent_ui_context(pool, company_id))
@@ -876,7 +899,9 @@ async def update_notification_email(
             "UPDATE companies SET notification_email = $1 WHERE id = $2",
             notification_email, company_id,
         )
-    return RedirectResponse(f"/admin/companies/{company_id}", status_code=303)
+    return RedirectResponse(
+        f"/admin/companies/{company_id}?saved=email", status_code=303
+    )
 
 
 @router.post("/companies/{company_id}/schedule")
@@ -945,7 +970,9 @@ async def update_schedule(
         metadata={"interval_seconds": interval, "cancel_retry_seconds": cancel_retry_seconds},
     ) as scope:
         await set_schedule(pool, str(company_id), interval, cancel_retry_seconds, conn=scope.conn)
-    return RedirectResponse(f"/admin/companies/{company_id}", status_code=303)
+    return RedirectResponse(
+        f"/admin/companies/{company_id}?saved=schedule", status_code=303
+    )
 
 
 @router.post("/companies/{company_id}/appearance")
@@ -1012,7 +1039,9 @@ async def update_agent_ui(
             request, "company_detail.html", context, status_code=200
         )
 
-    return RedirectResponse(f"/admin/companies/{company_id}", status_code=303)
+    return RedirectResponse(
+        f"/admin/companies/{company_id}?saved=appearance", status_code=303
+    )
 
 
 @router.post("/companies/{company_id}/fields/hardware")
@@ -1069,7 +1098,9 @@ async def update_hardware_fields(
             conn=scope.conn,
         )
 
-    return RedirectResponse(f"/admin/companies/{company_id}", status_code=303)
+    return RedirectResponse(
+        f"/admin/companies/{company_id}?saved=fields", status_code=303
+    )
 
 
 @router.post("/companies/{company_id}/fields/custom")
@@ -1115,7 +1146,9 @@ async def add_custom_field_route(
         context.update(await _agent_ui_context(pool, company_id))
         context.update(await _legacy_conversion_context(pool, company_id))
         return templates.TemplateResponse(request, "company_detail.html", context)
-    return RedirectResponse(f"/admin/companies/{company_id}", status_code=303)
+    return RedirectResponse(
+        f"/admin/companies/{company_id}?saved=custom-field-added", status_code=303
+    )
 
 
 @router.post("/companies/{company_id}/fields/custom/{field_key}/remove")
@@ -1134,7 +1167,9 @@ async def remove_custom_field_route(
         target_company_id=company_id, target_id=field_key,
     ) as scope:
         await remove_custom_field(pool, str(company_id), field_key, conn=scope.conn)
-    return RedirectResponse(f"/admin/companies/{company_id}", status_code=303)
+    return RedirectResponse(
+        f"/admin/companies/{company_id}?saved=custom-field-removed", status_code=303
+    )
 
 
 @router.post("/companies/{company_id}/tokens/{token_id}/revoke")
@@ -1157,7 +1192,9 @@ async def revoke_enrollment_token(
         target_company_id=company_id, target_id=token_id,
     ) as scope:
         await revoke_token(pool, str(company_id), str(token_id), conn=scope.conn)
-    return RedirectResponse(f"/admin/companies/{company_id}", status_code=303)
+    return RedirectResponse(
+        f"/admin/companies/{company_id}?saved=token-revoked", status_code=303
+    )
 
 
 @router.post("/companies/{company_id}/devices/{serial_number}/revoke")
