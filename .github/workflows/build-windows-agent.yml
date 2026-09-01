@@ -16,6 +16,17 @@ on:
       - Build_Windows_EXE.ps1
       - installer/**
       - .github/workflows/build-windows-agent.yml
+  # Also on pull requests, so that a change which does not compile is caught
+  # in review rather than after merge. Before this, the only way to learn that
+  # the agent or the installer no longer builds was to push to main and watch
+  # -- which is the wrong moment to find out, because main is what the portal
+  # serves from. The commit step below is skipped for pull requests.
+  pull_request:
+    paths:
+      - AssetlyAgent_Windows.ps1
+      - Build_Windows_EXE.ps1
+      - installer/**
+      - .github/workflows/build-windows-agent.yml
   workflow_dispatch:
 
 permissions:
@@ -71,7 +82,11 @@ jobs:
             backend/static/AssetlyAgent_Windows.exe
             ${{ runner.temp }}/AssetlyAgent.msi
 
+      # Push and manual runs only. A pull_request run builds from a merge ref
+      # that belongs to no branch, so there is nothing it could correctly push
+      # to; and a fork's PR has no write token at all.
       - name: Commit the rebuilt executable
+        if: github.event_name != 'pull_request'
         shell: bash
         run: |
           set -euo pipefail
