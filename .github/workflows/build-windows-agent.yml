@@ -91,7 +91,7 @@ jobs:
         shell: powershell
         run: |
           Set-ExecutionPolicy -Scope Process Bypass -Force
-          .\installer\Build_Windows_MSI.ps1 -OutputFile "$env:RUNNER_TEMP\AssetlyAgent.msi"
+          .\installer\Build_Windows_MSI.ps1 -OutputFile "$env:GITHUB_WORKSPACE\ci-artifacts\AssetlyAgent.msi"
 
       # Downloadable from the run page, so a build can be tested on a real
       # Windows machine before anyone trusts the committed copy.
@@ -99,9 +99,17 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: AssetlyAgent_Windows
+          # Both paths inside the workspace on purpose. upload-artifact roots
+          # the archive at the common ancestor of everything it is given, so
+          # mixing a workspace path with one under RUNNER_TEMP buried both
+          # under a D:\a\... prefix and made it impossible to tell at a glance
+          # whether the MSI had been included at all. ci-artifacts/ is
+          # untracked and the commit step below adds only the .exe by name, so
+          # nothing here can reach a commit.
           path: |
             backend/static/AssetlyAgent_Windows.exe
-            ${{ runner.temp }}/AssetlyAgent.msi
+            ci-artifacts/AssetlyAgent.msi
+          if-no-files-found: error
 
       # Push and manual runs only. A pull_request run builds from a merge ref
       # that belongs to no branch, so there is nothing it could correctly push

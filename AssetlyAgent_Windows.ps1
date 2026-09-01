@@ -50,7 +50,12 @@ $TaskName         = "AssetlyInventoryAgent"
 # a hardcoded 1.0.0.0 in the build), which made a version reported over the
 # phone impossible to match against anything. Keep it three-part numeric --
 # the build appends the fourth component ps2exe requires.
-$AgentVersion     = "2.1.0"
+#
+# Ahead of the published release stream, which manifest.json already had at
+# 2.1.2 while this constant still said 2.0 -- the very drift this single source
+# of truth exists to end. Anything at or below 2.1.2 would have shipped an
+# agent reporting a version older than one already in the field.
+$AgentVersion     = "2.2.0"
 # Fallback only — the live per-company list arrives on the department entry of
 # the field config. Kept in sync with DEFAULT_DEPARTMENT_OPTIONS in
 # backend/app/field_config.py and inventory_agent.py.
