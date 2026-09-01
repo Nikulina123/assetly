@@ -46,6 +46,27 @@ jobs:
 
       # `powershell` is Windows PowerShell 5.1; `pwsh` is PowerShell Core, where
       # ps2exe does not work. Do not switch this.
+      # Windows PowerShell 5.1 decodes a BOM-less file as Windows-1252 rather
+      # than UTF-8. That is not cosmetic: the third byte of a UTF-8 em dash is
+      # 0x94, which decodes to a curly right quote under 1252, and PowerShell
+      # honours curly quotes as string delimiters -- so a single em dash in a
+      # comment or a message silently terminates a string early and the file
+      # fails to parse. It cost a red build here, and it is invisible on the
+      # macOS and Linux machines these scripts are written on, so it is worth
+      # a machine check rather than a convention nobody can see breaking.
+      - name: Check PowerShell files are UTF-8 with a BOM
+        shell: bash
+        run: |
+          set -euo pipefail
+          bad=0
+          while IFS= read -r f; do
+            if [ "$(head -c3 "$f" | xxd -p)" != "efbbbf" ]; then
+              echo "::error file=$f::$f has no UTF-8 BOM; Windows PowerShell 5.1 will decode it as Windows-1252."
+              bad=1
+            fi
+          done < <(git ls-files '*.ps1')
+          [ "$bad" -eq 0 ] && echo "All .ps1 files carry a UTF-8 BOM."
+
       - name: Compile the agent with ps2exe
         shell: powershell
         # Deliberately produces an UNSIGNED executable. No code-signing key

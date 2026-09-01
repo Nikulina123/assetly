@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
     Compiles AssetlyAgent_Windows.ps1 into the executable the admin portal

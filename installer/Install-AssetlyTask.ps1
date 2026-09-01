@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
     Registers (or removes) the machine-wide Assetly Inventory Agent scheduled
