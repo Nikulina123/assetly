@@ -2,9 +2,9 @@
 {% import "_icons.html" as icons %}
 {% block title %}{{ device['hostname'] or device['serial_number'] }} — Assetly{% endblock %}
 {% block heading %}{{ device['hostname'] or device['serial_number'] }}{% endblock %}
-{% block subtitle %}<div class="topbar-subtitle">Device Detail</div>{% endblock %}
+{% block subtitle %}<div class="topbar-subtitle">{{ t("device.detail") }}</div>{% endblock %}
 {% block topbar_actions %}
-<a class="btn btn-secondary" href="/admin/companies/{{ company['id'] }}/computers">{{ icons.icon('chevron-left', 14) }}Back</a>
+<a class="btn btn-secondary" href="/admin/companies/{{ company['id'] }}/computers">{{ icons.icon('chevron-left', 14) }}{{ t('device.back') }}</a>
 {% endblock %}
 {% block content %}
 {% set os_lower = (device['os'] or '') | lower %}
@@ -38,50 +38,50 @@
     </div>
 
     <div class="card flush">
-      <div class="card-header"><div class="card-title">Hardware Specification</div></div>
+      <div class="card-header"><div class="card-title">{{ t("device.hardware_spec") }}</div></div>
       <div class="spec-row">
         <span class="spec-row-icon">{{ icons.icon('hash', 14) }}</span>
-        <span class="spec-row-label">Serial Number</span>
+        <span class="spec-row-label">{{ t("device.serial_number") }}</span>
         <span class="spec-row-value mono">{{ device['serial_number'] }}</span>
       </div>
       <div class="spec-row">
         <span class="spec-row-icon">{{ icons.icon('building', 14) }}</span>
-        <span class="spec-row-label">Department</span>
+        <span class="spec-row-label">{{ t("device.department") }}</span>
         <span class="spec-row-value">{{ device['department'] or '—' }}</span>
       </div>
       <div class="spec-row">
         <span class="spec-row-icon">{{ icons.icon('mail', 14) }}</span>
-        <span class="spec-row-label">Owner</span>
+        <span class="spec-row-label">{{ t("device.owner") }}</span>
         <span class="spec-row-value">{{ device['owner_email'] or '—' }}</span>
       </div>
       <div class="spec-row">
         <span class="spec-row-icon">{{ icons.icon('monitor', 14) }}</span>
-        <span class="spec-row-label">Operating System</span>
+        <span class="spec-row-label">{{ t("device.operating_system") }}</span>
         <span class="spec-row-value">{{ device['os'] or '—' }}</span>
       </div>
       <div class="spec-row">
         <span class="spec-row-icon">{{ icons.icon('cpu', 14) }}</span>
-        <span class="spec-row-label">Processor</span>
+        <span class="spec-row-label">{{ t("device.processor") }}</span>
         <span class="spec-row-value">{{ device['cpu'] or '—' }}</span>
       </div>
       <div class="spec-row">
         <span class="spec-row-icon">{{ icons.icon('cpu', 14) }}</span>
-        <span class="spec-row-label">RAM</span>
+        <span class="spec-row-label">{{ t("device.ram") }}</span>
         <span class="spec-row-value">{{ device['ram'] or '—' }}</span>
       </div>
       <div class="spec-row">
         <span class="spec-row-icon">{{ icons.icon('hdd', 14) }}</span>
-        <span class="spec-row-label">Storage</span>
+        <span class="spec-row-label">{{ t("device.storage") }}</span>
         <span class="spec-row-value">{{ device['storage'] or '—' }}</span>
       </div>
       <div class="spec-row">
         <span class="spec-row-icon">{{ icons.icon('computers', 14) }}</span>
-        <span class="spec-row-label">Brand / Model</span>
+        <span class="spec-row-label">{{ t("device.brand_model") }}</span>
         <span class="spec-row-value">{{ device['brand'] or '—' }} {{ device['model'] or '' }}</span>
       </div>
       <div class="spec-row">
         <span class="spec-row-icon">{{ icons.icon('clock', 14) }}</span>
-        <span class="spec-row-label">Last check-in</span>
+        <span class="spec-row-label">{{ t("device.last_checkin") }}</span>
         <span class="spec-row-value mono">{{ device['last_seen_at'].strftime('%Y-%m-%d %H:%M') if device['last_seen_at'] else 'never' }}</span>
       </div>
     </div>
@@ -89,46 +89,46 @@
 
   <div class="side-panel">
     <div class="card">
-      <div class="side-panel-title">Device Status</div>
+      <div class="side-panel-title">{{ t("device.status") }}</div>
       <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
         <span class="status-dot {{ device['status'] }}"></span>
         <span class="mono" style="font-size:13px;color:var(--white)">{{ device['status'] | capitalize }}</span>
       </div>
       <div class="side-panel-row">
-        <span class="muted" style="font-size:11px">Last check-in</span>
+        <span class="muted" style="font-size:11px">{{ t("device.last_checkin") }}</span>
         <span class="mono" style="font-size:11px">{{ device['last_seen_at'].strftime('%Y-%m-%d %H:%M') if device['last_seen_at'] else 'never' }}</span>
       </div>
       <div class="side-panel-row">
-        <span class="muted" style="font-size:11px">Department</span>
+        <span class="muted" style="font-size:11px">{{ t("device.department") }}</span>
         <span style="font-size:11px">{{ device['department'] or '—' }}</span>
       </div>
     </div>
 
     <div class="card">
-      <div class="side-panel-title">Device Credential</div>
+      <div class="side-panel-title">{{ t("device.credential") }}</div>
       {% if credential and not credential['revoked_at'] %}
       <div class="muted" style="font-size:11px;margin-bottom:10px">
-        Revoking stops <strong>this machine only</strong> from checking in — no other
+        Revoking stops <strong>{{ t("device.this_machine_only") }}</strong> from checking in — no other
         device in the company is affected.
       </div>
       <form method="post" action="/admin/companies/{{ company['id'] }}/devices/{{ device['serial_number'] | urlencode }}/revoke">
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-        <button type="submit" class="btn btn-danger" style="width:100%">{{ icons.icon('trash', 14) }}Revoke device</button>
+        <button type="submit" class="btn btn-danger" style="width:100%">{{ icons.icon('trash', 14) }}{{ t('device.revoke') }}</button>
       </form>
       {% elif credential %}
       <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
-        <span class="badge offline">Revoked</span>
+        <span class="badge offline">{{ t("common.revoked") }}</span>
       </div>
       <div class="muted" style="font-size:11px">
         This machine can no longer check in. Other devices in the company are unaffected.
       </div>
       {% else %}
-      <div class="muted" style="font-size:11px">No enrollment credential on file for this device.</div>
+      <div class="muted" style="font-size:11px">{{ t("device.no_credential") }}</div>
       {% endif %}
     </div>
 
     <div class="card">
-      <div class="side-panel-title">Recent Check-ins</div>
+      <div class="side-panel-title">{{ t("device.recent_checkins") }}</div>
       {% if history %}
         {% for h in history[:5] %}
         <div class="side-panel-row">
@@ -137,18 +137,18 @@
         </div>
         {% endfor %}
       {% else %}
-        <div class="muted" style="font-size:12px">No check-ins recorded yet.</div>
+        <div class="muted" style="font-size:12px">{{ t("device.no_checkins") }}</div>
       {% endif %}
     </div>
   </div>
 </div>
 
 <div class="card flush">
-  <div class="card-header"><div class="card-title">Check-in history</div></div>
+  <div class="card-header"><div class="card-title">{{ t("device.checkin_history") }}</div></div>
   <div style="overflow-x:auto">
   <table class="table">
     <thead>
-      <tr><th>Received</th><th>Submitted by</th><th>Department</th><th>Hostname</th><th>IP</th><th>Agent</th></tr>
+      <tr><th>{{ t("device.received") }}</th><th>{{ t("device.submitted_by") }}</th><th>{{ t("device.department") }}</th><th>{{ t("device.hostname") }}</th><th>IP</th><th>{{ t("device.agent") }}</th></tr>
     </thead>
     <tbody>
       {% for h in history %}

@@ -243,3 +243,25 @@ async def test_global_admin_still_gets_200_on_the_same_portal_pages(
     assert dashboard_resp.status_code == 200
     assert computers_resp.status_code == 200
     assert device_resp.status_code == 200
+
+
+async def test_root_redirects_into_the_portal(db_pool):
+    """The bare domain used to return FastAPI's {"detail":"Not Found"},
+    which reads as a broken deployment. Both it and the /admin router
+    prefix now point at the portal."""
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        for path in ("/", "/admin"):
+            resp = await client.get(path)
+            assert resp.status_code == 307, path
+            assert resp.headers["location"] == "/admin/companies", path
+
+
+async def test_root_of_a_logged_out_visitor_ends_at_the_login_page(db_pool):
+    transport = ASGITransport(app=app)
+    async with AsyncClient(
+        transport=transport, base_url="http://test", follow_redirects=True
+    ) as client:
+        resp = await client.get("/")
+    assert resp.status_code == 200
+    assert str(resp.url).endswith("/admin/login")

@@ -1,0 +1,16 @@
+{# Language switcher. A form per option rather than a <select>, because the
+   portal ships no JavaScript and a select would need an onchange handler to
+   submit. `next` returns the admin to the page they were reading. #}
+<div class="lang-switch" role="group" aria-label="{{ t('common.language') }}">
+  {% for code, label in languages.items() %}
+  {% if code == lang %}
+  <span class="lang-opt active" aria-current="true">{{ label }}</span>
+  {% else %}
+  <form method="post" action="/admin/language">
+    <input type="hidden" name="lang" value="{{ code }}">
+    <input type="hidden" name="next" value="{{ request.url.path }}">
+    <button type="submit" class="lang-opt">{{ label }}</button>
+  </form>
+  {% endif %}
+  {% endfor %}
+</div>

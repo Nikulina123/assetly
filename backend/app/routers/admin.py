@@ -35,10 +35,18 @@ from app.config import (
     RATE_LIMIT_MFA,
     RATE_LIMIT_MFA_IP,
     REPO_ROOT,
+    SESSION_COOKIE_SECURE,
     WINDOWS_EXE_PATH,
 )
 from app.db import get_pool
 from app.devices import legacy_key_conversion
+from app.i18n import (
+    LANGUAGE_COOKIE,
+    LANGUAGES,
+    i18n_context,
+    resolve_language,
+    translate,
+)
 from app.rate_limit import client_ip, enforce_rate_limit, hashed_bucket
 from app.enrollment import (
     create_enrollment_token,
@@ -67,6 +75,7 @@ from app.schedule import (
     RETRY_PRESETS,
     UNIT_SECONDS,
     format_interval,
+    preset_choices,
     parse_interval,
     resolve_schedule,
     set_schedule,
@@ -80,7 +89,7 @@ def _csp_nonce_context(request):
 
 templates = Jinja2Templates(
     directory=str(Path(__file__).resolve().parent.parent / "templates"),
-    context_processors=[_csp_nonce_context],
+    context_processors=[_csp_nonce_context, i18n_context],
 )
 
 
@@ -187,6 +196,38 @@ async def _all_companies(pool, admin: AdminContext):
             "SELECT id, name, revoked_at FROM companies WHERE id = $1 ORDER BY name",
             uuid.UUID(admin.company_id),
         )
+
+
+@router.post("/language")
+async def set_language(
+    request: Request,
+    lang: str = Form(...),
+    next: str = Form("/admin/companies"),
+):
+    """Switch the interface language and return the admin to where they were.
+
+    No CSRF token and no auth dependency: this writes a display preference,
+    not account state, and it must work on the login page too -- where there
+    is no session to carry a token. An unknown language code is ignored
+    rather than stored.
+
+    `next` comes from the page the user was on, so it is validated as a
+    same-site absolute path. Without that check this endpoint would be an
+    open redirect that any phishing mail could point at the real domain.
+    """
+    target = next if next.startswith("/") and not next.startswith("//") else "/admin/companies"
+    response = RedirectResponse(target, status_code=303)
+    if lang in LANGUAGES:
+        response.set_cookie(
+            LANGUAGE_COOKIE,
+            lang,
+            max_age=60 * 60 * 24 * 365,
+            httponly=False,
+            samesite="lax",
+            secure=SESSION_COOKIE_SECURE,
+            path="/",
+        )
+    return response
 
 
 @router.get("/login")
@@ -654,8 +695,11 @@ def _decompose_interval(seconds: int) -> tuple[str, str]:
     return "", "hours"
 
 
-async def _schedule_context(pool, company_id: str) -> dict:
-    """Everything company_detail.html needs to render the schedule card."""
+async def _schedule_context(pool, company_id: str, lang: str = "en") -> dict:
+    """Everything company_detail.html needs to render the schedule card.
+
+    `lang` localises the dropdown labels and the summary line; it defaults to
+    English so a caller that has no request in hand still works."""
     schedule = await resolve_schedule(pool, str(company_id))
     interval = schedule["checkin_interval_seconds"]
     # Whether the stored interval is one of the dropdown's presets decides which
@@ -669,8 +713,8 @@ async def _schedule_context(pool, company_id: str) -> dict:
     )
     return {
         "schedule": schedule,
-        "presets": PRESETS,
-        "retry_presets": RETRY_PRESETS,
+        "presets": preset_choices(PRESETS, lang),
+        "retry_presets": preset_choices(RETRY_PRESETS, lang),
         "interval_is_custom": interval_is_custom,
         "custom_count": custom_count,
         "custom_unit": custom_unit,
@@ -679,11 +723,11 @@ async def _schedule_context(pool, company_id: str) -> dict:
         # bound valid for every unit is the one for the smallest (hours) --
         # deliberately loose, and never the thing a rejection depends on.
         "custom_count_max": MAX_INTERVAL_SECONDS // UNIT_SECONDS["hours"],
-        "schedule_summary": (
-            f"Employees are prompted every "
-            f"{format_interval(schedule['checkin_interval_seconds'])}; "
-            f"if they cancel, they are asked again after "
-            f"{format_interval(schedule['cancel_retry_seconds'])}."
+        "schedule_summary": translate(
+            lang,
+            "settings.schedule_summary",
+            interval=format_interval(schedule["checkin_interval_seconds"], lang),
+            retry=format_interval(schedule["cancel_retry_seconds"], lang),
         ),
     }
 
@@ -734,18 +778,21 @@ async def _legacy_conversion_context(pool, company_id: uuid.UUID) -> dict:
 
 # Post/Redirect/Get loses the outcome of a save: every one of these forms
 # redirected back to a page that looked identical whether the write landed
-# or not. The redirect now carries a ?saved= slug, which is looked up here --
-# only these fixed strings can ever be rendered, so the query string cannot
-# inject anything.
-SAVED_MESSAGES = {
-    "email": "Notification email updated.",
-    "schedule": "Check-in schedule saved.",
-    "fields": "Check-in fields saved.",
-    "custom-field-added": "Custom field added.",
-    "custom-field-removed": "Custom field removed.",
-    "appearance": "Agent window appearance saved.",
-    "token-revoked": "Enrollment token revoked. Devices already enrolled are unaffected.",
-}
+# or not. The redirect carries a ?saved= slug, resolved here against the
+# translation table -- only these fixed slugs can ever be rendered, so the
+# query string cannot inject anything, and the message follows the reader's
+# chosen language rather than the language of whoever wrote the handler.
+SAVED_SLUGS = frozenset(
+    {
+        "email",
+        "schedule",
+        "fields",
+        "custom-field-added",
+        "custom-field-removed",
+        "appearance",
+        "token-revoked",
+    }
+)
 
 
 @router.get("/companies/{company_id}")
@@ -769,11 +816,17 @@ async def company_detail(
         "tokens": await _tokens_for_display(pool, str(company_id)),
         "nav_active": "settings",
         "admin": admin,
-        "saved_message": SAVED_MESSAGES.get(saved or ""),
+        "saved_message": (
+            translate(resolve_language(request), f"saved.{saved}")
+            if saved in SAVED_SLUGS
+            else None
+        ),
         # Which custom field, if any, is showing its "really remove?" step.
         "removing_field": removing,
     }
-    context.update(await _schedule_context(pool, company_id))
+    context.update(
+        await _schedule_context(pool, company_id, resolve_language(request))
+    )
     context.update(await _agent_ui_context(pool, company_id))
     context.update(await _legacy_conversion_context(pool, company_id))
     return templates.TemplateResponse(request, "company_detail.html", context)
@@ -819,7 +872,9 @@ async def rotate_key(
         "tokens": await _tokens_for_display(pool, str(company_id)),
         "admin": admin,
     }
-    context.update(await _schedule_context(pool, company_id))
+    context.update(
+        await _schedule_context(pool, company_id, resolve_language(request))
+    )
     context.update(await _agent_ui_context(pool, company_id))
     context.update(await _legacy_conversion_context(pool, company_id))
     return templates.TemplateResponse(request, "company_detail.html", context)
@@ -873,7 +928,9 @@ async def revoke_company(
         "tokens": await _tokens_for_display(pool, str(company_id)),
         "admin": admin,
     }
-    context.update(await _schedule_context(pool, company_id))
+    context.update(
+        await _schedule_context(pool, company_id, resolve_language(request))
+    )
     context.update(await _agent_ui_context(pool, company_id))
     context.update(await _legacy_conversion_context(pool, company_id))
     return templates.TemplateResponse(request, "company_detail.html", context)
@@ -957,7 +1014,9 @@ async def update_schedule(
             "schedule_error": str(exc),
             "admin": admin,
         }
-        context.update(await _schedule_context(pool, company_id))
+        context.update(
+        await _schedule_context(pool, company_id, resolve_language(request))
+    )
         context.update(await _agent_ui_context(pool, company_id))
         context.update(await _legacy_conversion_context(pool, company_id))
         return templates.TemplateResponse(
@@ -1032,7 +1091,9 @@ async def update_agent_ui(
             "agent_ui_form": submitted,
             "admin": admin,
         }
-        context.update(await _schedule_context(pool, company_id))
+        context.update(
+        await _schedule_context(pool, company_id, resolve_language(request))
+    )
         context.update(await _agent_ui_context(pool, company_id))
         context.update(await _legacy_conversion_context(pool, company_id))
         return templates.TemplateResponse(
@@ -1142,7 +1203,9 @@ async def add_custom_field_route(
             "tokens": await _tokens_for_display(pool, str(company_id)),
             "admin": admin,
         }
-        context.update(await _schedule_context(pool, company_id))
+        context.update(
+        await _schedule_context(pool, company_id, resolve_language(request))
+    )
         context.update(await _agent_ui_context(pool, company_id))
         context.update(await _legacy_conversion_context(pool, company_id))
         return templates.TemplateResponse(request, "company_detail.html", context)

@@ -88,22 +88,37 @@ def parse_interval(count: int, unit: str) -> int:
     return seconds
 
 
-def format_interval(seconds: int) -> str:
+def format_interval(seconds: int, lang: str = "en") -> str:
     """Renders seconds as the largest unit that divides it exactly.
 
     Note 86400 renders as "24 hours" rather than "1 day": that is the label the
     PRESETS table offers, and test_preset_labels_match_their_seconds pins the
     two together so the summary line always reads back what the admin picked.
     """
+    from app.i18n import translate
+
     for label, size in _FORMAT_UNITS:
         if size == 86400 and seconds == 86400:
             # The one deliberate exception, so the dropdown and the summary
             # line agree. Everything else follows the largest-exact-unit rule.
-            return "24 hours"
+            return translate(lang, "unit.hour", n=24, s="s")
         if seconds % size == 0:
             count = seconds // size
-            return f"{count} {label}" if count == 1 else f"{count} {label}s"
-    return f"{seconds} seconds"
+            return translate(
+                lang, f"unit.{label}", n=count, s="" if count == 1 else "s"
+            )
+    return translate(lang, "unit.second", n=seconds, s="" if seconds == 1 else "s")
+
+
+def preset_choices(presets, lang: str = "en"):
+    """PRESETS/RETRY_PRESETS relabelled for `lang`.
+
+    The English labels in those tables are exactly what format_interval
+    produces (test_preset_labels_match_their_seconds pins that), so the
+    dropdown can be regenerated from the seconds alone without the two
+    drifting apart.
+    """
+    return [(format_interval(seconds, lang), seconds) for _, seconds in presets]
 
 
 async def resolve_schedule(pool: asyncpg.Pool, company_id: str) -> dict:

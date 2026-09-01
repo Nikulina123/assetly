@@ -1,9 +1,9 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="{{ lang }}">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Set up two-factor authentication — Assetly</title>
+<title>{{ t("mfa.setup_title") }}</title>
 <link rel="stylesheet" href="/static/assetly.css">
 </head>
 <body>
@@ -13,12 +13,11 @@
       <span style="font-size:22px">asset<span class="ly">ly</span></span>
     </div>
     <div class="display" style="text-align:center;font-size:22px;margin-bottom:26px">
-      Set up two-factor authentication
+      {{ t("mfa.setup_heading") }}
     </div>
+    <div style="display:flex;justify-content:center;margin-bottom:14px">{% include "_language.html" %}</div>
     <div class="card">
-      <p>Two-factor authentication is required for admin accounts. Scan the
-      QR code below with 1Password, Google Authenticator, Microsoft
-      Authenticator, or any TOTP app.</p>
+      <p>{{ t("mfa.setup_intro") }}</p>
 
       {% if error %}
       <div class="banner" style="background:rgba(239,68,68,0.08);border:1px solid rgba(239,68,68,0.25);color:#EF4444">{{ error }}</div>
@@ -28,16 +27,16 @@
         {{ qr_svg | safe }}
       </div>
 
-      <p class="label">Can't scan? Enter this key manually:</p>
+      <p class="label">{{ t("mfa.manual_key") }}</p>
       <code style="display:block;word-break:break-all;padding:10px;margin-bottom:20px;background:rgba(0,0,0,0.04);border-radius:6px">{{ secret }}</code>
 
       <form method="post" action="/admin/mfa/setup">
-        <label class="label" for="code">6-digit code</label>
+        <label class="label" for="code">{{ t("mfa.six_digit_code") }}</label>
         <input class="input" id="code" type="text" name="code" required
                inputmode="numeric" autocomplete="one-time-code"
                style="width:100%;margin-bottom:20px">
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-        <button type="submit" class="btn" style="width:100%">Verify and enable</button>
+        <button type="submit" class="btn" style="width:100%">{{ t("mfa.setup_submit") }}</button>
       </form>
     </div>
   </div>

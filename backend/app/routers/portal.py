@@ -11,6 +11,7 @@ from fastapi.templating import Jinja2Templates
 
 from app.admin_auth import AdminContext
 from app.db import get_pool
+from app.i18n import LANGUAGE_COOKIE, LANGUAGES, i18n_context, resolve_language
 from app.devices import dashboard_stats, get_checkin_history, get_device, list_devices
 from app.enrollment import list_device_credentials
 from app.routers.admin import _all_companies, _get_company_or_404, _new_csrf_token, require_admin
@@ -25,7 +26,7 @@ def _csp_nonce_context(request):
 
 templates = Jinja2Templates(
     directory=str(Path(__file__).resolve().parent.parent / "templates"),
-    context_processors=[_csp_nonce_context],
+    context_processors=[_csp_nonce_context, i18n_context],
 )
 
 

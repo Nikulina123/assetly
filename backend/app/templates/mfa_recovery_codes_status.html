@@ -1,22 +1,18 @@
 {% extends "base.html" %}
-{% block title %}Recovery codes — Assetly{% endblock %}
-{% block heading %}Recovery codes{% endblock %}
+{% block title %}{{ t("recovery.status_title") }}{% endblock %}
+{% block heading %}{{ t("nav.recovery_codes") }}{% endblock %}
 {% block content %}
 <div class="card" style="max-width:460px">
-  <div class="section-title" style="margin-top:0">Recovery codes</div>
+  <div class="section-title" style="margin-top:0">{{ t("nav.recovery_codes") }}</div>
   <p class="muted">
-    You have <strong>{{ remaining }}</strong> unused recovery code{{ '' if remaining == 1 else 's' }} remaining.
-    Codes are shown only once, at the moment they are generated -- this page
-    never displays the codes themselves again.
+    {{ t("recovery.remaining_html", n=remaining, s='' if remaining == 1 else 's') | safe }}
   </p>
   <div class="banner" style="background:rgba(239,68,68,0.08);border:1px solid rgba(239,68,68,0.25);color:#EF4444">
-    Regenerating creates a brand new set of ten codes and immediately
-    invalidates every code from the current set, including any you have
-    printed or saved elsewhere.
+    {{ t("recovery.regenerate_warning") }}
   </div>
   <form method="post" action="/admin/mfa/recovery-codes">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-    <button type="submit" class="btn btn-secondary">Regenerate recovery codes</button>
+    <button type="submit" class="btn btn-secondary">{{ t("recovery.regenerate") }}</button>
   </form>
 </div>
 {% endblock %}

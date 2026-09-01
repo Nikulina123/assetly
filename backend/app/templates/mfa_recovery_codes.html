@@ -1,9 +1,9 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="{{ lang }}">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Save your recovery codes — Assetly</title>
+<title>{{ t("recovery.save_title") }}</title>
 <link rel="stylesheet" href="/static/assetly.css">
 </head>
 <body>
@@ -13,12 +13,12 @@
       <span style="font-size:22px">asset<span class="ly">ly</span></span>
     </div>
     <div class="display" style="text-align:center;font-size:22px;margin-bottom:26px">
-      Save your recovery codes
+      {{ t("recovery.save_heading") }}
     </div>
+    <div style="display:flex;justify-content:center;margin-bottom:14px">{% include "_language.html" %}</div>
     <div class="card">
       <div class="banner" style="background:rgba(239,68,68,0.08);border:1px solid rgba(239,68,68,0.25);color:#EF4444">
-        These codes are shown once. Each one works once. They are the only
-        way back into your account if you lose your authenticator.
+        {{ t("recovery.warning") }}
       </div>
 
       <ul style="list-style:none;padding:0;margin:20px 0;font-family:monospace">
@@ -27,7 +27,7 @@
         {% endfor %}
       </ul>
 
-      <a class="btn" style="width:100%;display:block;text-align:center;text-decoration:none" href="/admin/companies">Continue to the console</a>
+      <a class="btn" style="width:100%;display:block;text-align:center;text-decoration:none" href="/admin/companies">{{ t("recovery.continue") }}</a>
     </div>
   </div>
 </div>

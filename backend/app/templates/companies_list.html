@@ -3,21 +3,21 @@
 {% block content %}
 {% if new_api_key %}
 <div class="banner banner-success">
-  <strong>Save this API key now — it will not be shown again:</strong>
+  <strong>{{ t("companies.save_api_key") }}</strong>
   <div class="mono" style="margin-top:6px">{{ new_api_key }}</div>
 </div>
 {% endif %}
 
 {% if admin.is_full_admin %}
 <div class="card" style="max-width:460px">
-  <div class="section-title" style="margin-top:0">New company</div>
+  <div class="section-title" style="margin-top:0">{{ t("companies.new_company") }}</div>
   <form method="post" action="/admin/companies">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-    <label class="label" for="name">Company name</label>
+    <label class="label" for="name">{{ t("companies.company_name") }}</label>
     <input class="input" id="name" name="name" required style="width:100%;margin-bottom:16px">
-    <label class="label" for="notification_email">Notification email</label>
+    <label class="label" for="notification_email">{{ t("settings.notification_email") }}</label>
     <input class="input" id="notification_email" name="notification_email" type="email" required style="width:100%;margin-bottom:20px">
-    <button type="submit" class="btn">Create company</button>
+    <button type="submit" class="btn">{{ t("companies.create") }}</button>
   </form>
 </div>
 {% endif %}
@@ -26,7 +26,7 @@
   <table class="table">
     <thead>
       <tr>
-        <th>Name</th><th>Status</th><th>Legacy conversion</th>
+        <th>{{ t("companies.name") }}</th><th>{{ t("settings.status") }}</th><th>{{ t("companies.legacy_conversion") }}</th>
       </tr>
     </thead>
     <tbody>
@@ -39,7 +39,7 @@
       </tr>
       {% endfor %}
       {% if not companies %}
-      <tr><td colspan="3" class="muted">No companies yet.</td></tr>
+      <tr><td colspan="3" class="muted">{{ t("companies.none_yet") }}</td></tr>
       {% endif %}
     </tbody>
   </table>

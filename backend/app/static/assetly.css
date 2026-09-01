@@ -32,9 +32,9 @@
 
   --ease: cubic-bezier(0.16, 1, 0.3, 1);
 
-  --font-sans: 'DM Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
-  --font-mono: 'DM Mono', ui-monospace, 'SF Mono', 'Cascadia Code', Menlo, Consolas, monospace;
-  --font-display: 'Fraunces', Georgia, 'Times New Roman', serif;
+  --font-sans: 'DM Sans', 'Noto Sans Georgian', 'BPG Nino Mtavruli', Sylfaen, -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+  --font-mono: 'DM Mono', 'Noto Sans Georgian', ui-monospace, 'SF Mono', 'Cascadia Code', Menlo, Consolas, monospace;
+  --font-display: 'Fraunces', 'Noto Serif Georgian', Sylfaen, Georgia, 'Times New Roman', serif;
 }
 
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -409,3 +409,17 @@ input[type="checkbox"] { accent-color: var(--blue); width: 15px; height: 15px; v
 .platform-name { font-size: 13px; font-weight: 700; color: var(--white); }
 .platform-note { font-size: 11px; color: var(--slate-dim); margin-bottom: 4px; font-family: var(--font-mono); }
 .platform-card .field-label { margin-top: 10px; }
+
+/* Language switcher in the topbar. Each option is its own form (no
+   JavaScript), so the buttons are styled to read as one segmented control
+   rather than two separate submits. */
+.lang-switch { display: flex; align-items: center; border: 1px solid var(--border-md); border-radius: var(--radius-control); overflow: hidden; }
+.lang-switch form { display: flex; }
+.lang-opt {
+  display: block; padding: 6px 10px; font-size: 11px; font-weight: 700;
+  font-family: var(--font-mono); letter-spacing: 0.04em;
+  background: transparent; border: 0; color: var(--slate); cursor: pointer;
+  transition: background 150ms var(--ease), color 150ms var(--ease);
+}
+button.lang-opt:hover { background: rgba(138, 155, 181, 0.1); color: var(--white); }
+.lang-opt.active { background: rgba(26, 110, 255, 0.15); color: var(--blue-lt); cursor: default; }

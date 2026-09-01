@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="{{ lang }}">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -28,24 +28,24 @@
     <div class="sidebar-org">
       {{ icons.icon('building', 18) }}
       <div style="min-width:0">
-        <div class="sidebar-org-label">Organization</div>
+        <div class="sidebar-org-label">{{ t("nav.organization") }}</div>
         <div class="sidebar-org-name">{{ company['name'] }}</div>
       </div>
     </div>
 
     <nav class="nav">
       <a class="nav-item {% if nav_active == 'dashboard' %}active{% endif %}"
-         href="/admin/companies/{{ company['id'] }}/dashboard">{{ icons.icon('dashboard', 15) }}Dashboard</a>
+         href="/admin/companies/{{ company['id'] }}/dashboard">{{ icons.icon('dashboard', 15) }}{{ t('nav.dashboard') }}</a>
       <a class="nav-item {% if nav_active == 'computers' %}active{% endif %}"
-         href="/admin/companies/{{ company['id'] }}/computers">{{ icons.icon('computers', 15) }}Computers</a>
-      <span class="nav-item disabled" title="Not available yet">{{ icons.icon('reports', 15) }}Reports</span>
-      <span class="nav-item disabled" title="Not available yet">{{ icons.icon('agents', 15) }}Agents</span>
+         href="/admin/companies/{{ company['id'] }}/computers">{{ icons.icon('computers', 15) }}{{ t('nav.computers') }}</a>
+      <span class="nav-item disabled" title="{{ t('nav.not_available_yet') }}">{{ icons.icon('reports', 15) }}{{ t("nav.reports") }}</span>
+      <span class="nav-item disabled" title="{{ t('nav.not_available_yet') }}">{{ icons.icon('agents', 15) }}{{ t("nav.agents") }}</span>
       <a class="nav-item {% if nav_active == 'settings' %}active{% endif %}"
-         href="/admin/companies/{{ company['id'] }}">{{ icons.icon('settings', 15) }}Settings</a>
+         href="/admin/companies/{{ company['id'] }}">{{ icons.icon('settings', 15) }}{{ t('nav.settings') }}</a>
     </nav>
 
     <div class="sidebar-footer">
-      <a class="nav-item" href="/admin/companies">{{ icons.icon('chevron-left', 14) }}All companies</a>
+      <a class="nav-item" href="/admin/companies">{{ icons.icon('chevron-left', 14) }}{{ t('nav.all_companies') }}</a>
     </div>
   </aside>
 
@@ -57,12 +57,13 @@
       </div>
       <div class="topbar-actions">
         {% block topbar_actions %}{% endblock %}
+        {% include "_language.html" %}
         {% if admin and not admin.is_full_admin %}
-        <span class="badge" title="Support role: read-only access">Read-only</span>
+        <span class="badge" title="{{ t('common.read_only_title') }}">{{ t("common.read_only") }}</span>
         {% endif %}
         <form method="post" action="/admin/logout">
           <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-          <button type="submit" class="btn btn-secondary">{{ icons.icon('logout', 14) }}Log out</button>
+          <button type="submit" class="btn btn-secondary">{{ icons.icon('logout', 14) }}{{ t("common.log_out") }}</button>
         </form>
       </div>
     </header>
