@@ -92,7 +92,59 @@ def _windows_base_bytes(data: bytes) -> bytes:
     return data[:index]
 
 
-def _authenticode_sign(payload: bytes, cert_path: str, password: str) -> bytes:
+def _build_msi(signed_exe: bytes, version: str) -> bytes:
+    """Builds the per-machine MSI around the ALREADY-SIGNED executable.
+
+    Order matters and is the whole reason this lives here rather than in CI.
+    The MSI is what a managed fleet installs, so the binary it drops into
+    Program Files has to be the signed one -- an AppLocker publisher rule
+    allows the executable, not the installer that delivered it. CI has no
+    signing key (deliberately, see this module's docstring), so CI cannot build
+    a releasable MSI; it builds one only to prove the .wxs still compiles.
+
+    WiX v4+ is a cross-platform dotnet tool, so this works on the release
+    owner's macOS or Linux machine as well as on Windows.
+    """
+    import shutil
+    import subprocess
+    import tempfile
+
+    wix = shutil.which("wix")
+    if not wix:
+        raise RuntimeError(
+            "The WiX tool is not on PATH, so the MSI cannot be built. Install "
+            "it with `dotnet tool install --global wix --version 5.*`, or pass "
+            "--no-msi to publish this release without one."
+        )
+
+    installer_dir = REPO_ROOT / "installer"
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+        # The signed bytes, not the repository's unsigned build: this is the
+        # executable that ends up installed.
+        exe_path = tmp_path / "AssetlyAgent_Windows.exe"
+        exe_path.write_bytes(signed_exe)
+        out_path = tmp_path / "AssetlyAgent.msi"
+
+        subprocess.run(
+            [
+                wix, "build", str(installer_dir / "AssetlyAgent.wxs"),
+                "-arch", "x64",
+                "-d", f"AgentVersion={version}",
+                "-d", f"AgentExe={exe_path}",
+                "-d", f"TaskScript={installer_dir / 'Install-AssetlyTask.ps1'}",
+                "-d", f"MarkerFile={installer_dir / 'assetly-managed.marker'}",
+                "-o", str(out_path),
+            ],
+            check=True,
+            capture_output=True,
+        )
+        return out_path.read_bytes()
+
+
+def _authenticode_sign(
+    payload: bytes, cert_path: str, password: str, suffix: str = ".exe"
+) -> bytes:
     """Authenticode-signs Windows exe bytes with signtool.exe (native) or
     osslsigncode (cross-signing from Linux/macOS), whichever is on PATH.
 
@@ -104,8 +156,11 @@ def _authenticode_sign(payload: bytes, cert_path: str, password: str) -> bytes:
     import tempfile
 
     with tempfile.TemporaryDirectory() as tmp:
-        unsigned_path = Path(tmp) / "unsigned.exe"
-        signed_path = Path(tmp) / "signed.exe"
+        # The suffix is carried through because osslsigncode dispatches on the
+        # file it is given: an MSI handed to it named ".exe" is not treated as
+        # the OLE compound document it is.
+        unsigned_path = Path(tmp) / f"unsigned{suffix}"
+        signed_path = Path(tmp) / f"signed{suffix}"
         unsigned_path.write_bytes(payload)
 
         if shutil.which("signtool.exe") or shutil.which("signtool"):
@@ -138,6 +193,11 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--version", required=True, help="e.g. 2.1.0")
     parser.add_argument("--key", required=True, type=Path, help="PEM private key")
+    parser.add_argument(
+        "--no-msi",
+        action="store_true",
+        help="Publish without the per-machine MSI (e.g. WiX is unavailable on this machine).",
+    )
     args = parser.parse_args()
 
     private_key = serialization.load_pem_private_key(
@@ -174,8 +234,40 @@ def main() -> None:
         }
         if name == "windows_exe":
             entry["unsigned_sha256"] = unsigned_sha256
+            # Kept for the MSI build below, which must package the signed
+            # executable rather than the repository's unsigned build.
+            windows_exe_payload = signed_payload
         artifacts[name] = entry
         print(f"{name}: {entry['sha256']} ({entry['size']} bytes)")
+
+    # ── Per-machine MSI ──────────────────────────────────────────────────────
+    # Built here, after the executable has been signed, and signed itself with
+    # the same certificate. This is the artifact IT deploys through Intune,
+    # SCCM or GPO; the .exe above remains what a single user downloads for
+    # their own machine and what the agent's self-update path fetches.
+    if not args.no_msi:
+        msi = _build_msi(windows_exe_payload, args.version)
+        if windows_codesign_cert:
+            # Nothing is ever appended to the MSI afterwards, unlike the .exe
+            # whose per-company config block invalidates its signature at
+            # download time -- so this signature is the one an end user's
+            # machine actually verifies.
+            msi = _authenticode_sign(
+                msi, windows_codesign_cert, windows_codesign_password, suffix=".msi"
+            )
+        else:
+            print("  (WINDOWS_CODESIGN_CERT_PATH not set — MSI shipped unsigned)")
+
+        msi_path = UPDATES_DIR / "AssetlyAgent.msi"
+        msi_path.write_bytes(msi)
+        artifacts["windows_msi"] = {
+            "sha256": hashlib.sha256(msi).hexdigest(),
+            "size": len(msi),
+            "path": "/static/updates/AssetlyAgent.msi",
+        }
+        print(f"windows_msi: {artifacts['windows_msi']['sha256']} ({len(msi)} bytes)")
+    else:
+        print("  (--no-msi — this release publishes no installer)")
 
     manifest = {
         "version": args.version,

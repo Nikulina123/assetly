@@ -43,7 +43,14 @@ $DefaultSchedule = [PSCustomObject]@{
     cancel_retry_seconds     = 86400      # 24 hours
 }
 $TaskName         = "AssetlyInventoryAgent"
-$AgentVersion     = "2.0"
+# Single source of truth for the version. Build_Windows_EXE.ps1 parses this
+# line out of this file and passes it to ps2exe, so the number the portal
+# receives in the check-in payload and the number a user reads off the .exe's
+# Properties dialog are the same string. They used to differ (2.0 here against
+# a hardcoded 1.0.0.0 in the build), which made a version reported over the
+# phone impossible to match against anything. Keep it three-part numeric --
+# the build appends the fourth component ps2exe requires.
+$AgentVersion     = "2.1.0"
 # Fallback only — the live per-company list arrives on the department entry of
 # the field config. Kept in sync with DEFAULT_DEPARTMENT_OPTIONS in
 # backend/app/field_config.py and inventory_agent.py.
@@ -76,13 +83,50 @@ $IsExe      = $ScriptPath -like "*.exe" -and $ScriptPath -notlike "*powershell*"
 $ScriptDest = if ($IsExe) { "$StateDir\AssetlyAgent_Windows.exe" } `
                           else { "$StateDir\AssetlyAgent_Windows.ps1" }
 
+# ── Managed (MSI) install detection ──────────────────────────────────────────
+# The MSI installs into Program Files -- a location a standard user cannot
+# write to -- and registers the scheduled task itself, machine-wide, so that
+# every user of the PC is covered by one install rather than only whoever
+# happened to double-click the .exe.
+#
+# An agent that finds this marker beside itself must therefore leave both jobs
+# alone. Without it, the first run under Program Files would copy itself into
+# %LOCALAPPDATA% and register a second, per-user task competing with the
+# machine-wide one, and would then keep attempting an in-place binary update it
+# has no permission to perform -- failing on every run, forever, in the log.
+#
+# Managed machines still get updates; they get them through the deployment tool
+# (a new MSI) instead of through the agent. That is the deliberate trade for
+# not putting a self-overwriting binary in a user-writable directory, which is
+# exactly what AppLocker and WDAC rules exist to stop.
+$ManagedMarker    = Join-Path (Split-Path -Path $ScriptPath -Parent) "assetly-managed.marker"
+$IsManagedInstall = Test-Path $ManagedMarker
+
 # ── Ensure state dir ─────────────────────────────────────────────────────────
 if (-not (Test-Path $StateDir)) { New-Item -ItemType Directory -Path $StateDir -Force | Out-Null }
 
 # ── Logging ──────────────────────────────────────────────────────────────────
+# The log is on someone else's disk and this agent runs hourly for the life of
+# the machine, so the file needs a ceiling. One rollover generation is kept:
+# enough to still hold the run before the one being investigated, bounded at
+# ~2 MB total no matter how many years pass or how often the network fails.
+$LogMaxBytes = 1MB
+
 function Write-Log {
     param([string]$Msg, [string]$Level = "INFO")
     $line = "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')  $Level  $Msg"
+    try {
+        $existing = Get-Item -LiteralPath $LogFile -ErrorAction SilentlyContinue
+        if ($existing -and $existing.Length -ge $LogMaxBytes) {
+            # -Force: the previous generation is overwritten rather than
+            # failing the move, which would leave the log growing unbounded
+            # from the second rotation onwards.
+            Move-Item -LiteralPath $LogFile -Destination "$LogFile.1" -Force
+        }
+    } catch {
+        # Rotation is best-effort: never let housekeeping stop the agent from
+        # recording what it was actually doing.
+    }
     Add-Content -Path $LogFile -Value $line -Encoding UTF8
     # Write-Host intentionally omitted — ps2exe -NoConsole turns every Write-Host into a popup dialog
 }
@@ -118,6 +162,64 @@ function Get-EmbeddedConfig {
     }
 }
 
+# ════════════════════════════════════════════════════════════════════════════════
+#  HTTP PROXY
+#  Every call this agent makes goes through Invoke-RestMethod/Invoke-WebRequest,
+#  which default to the *process* proxy -- not the user's WinINET settings, and
+#  never with credentials attached. Behind an authenticating corporate proxy
+#  that meant enrollment, check-in, config fetch and update check all failed
+#  with 407 on every run, silently, into the log file. From the portal such a
+#  machine is indistinguishable from one that is switched off, which is the
+#  worst possible failure mode: nothing to see and nothing to act on.
+#
+#  Resolved once, into a hashtable that is splatted onto every web call below.
+#  An empty hashtable splats to nothing, so the direct-connection case is
+#  byte-for-byte the behaviour this agent has always had.
+# ════════════════════════════════════════════════════════════════════════════════
+$script:ProxyArgs = @{}
+
+function Initialize-Proxy {
+    param([object]$CfgObj, [string]$TargetUrl)
+
+    # An explicit proxy in config wins. The system setting is occasionally
+    # wrong on machines that roam between networks, and IT needs a way to
+    # override it that does not involve editing the registry on each PC.
+    if ($CfgObj -and $CfgObj.proxy_url) {
+        $script:ProxyArgs = @{ Proxy = [string]$CfgObj.proxy_url; ProxyUseDefaultCredentials = $true }
+        Write-Log "Using the proxy configured in config.json: $($CfgObj.proxy_url)"
+        return
+    }
+
+    try {
+        $uri      = [Uri]$TargetUrl
+        $resolved = [System.Net.WebRequest]::GetSystemWebProxy().GetProxy($uri)
+        # GetProxy hands back the destination itself when no proxy applies to
+        # it, so comparing against the destination is how "a proxy is in play"
+        # is actually detected -- there is no direct "is there one" API.
+        if ($resolved -and $resolved.AbsoluteUri -ne $uri.AbsoluteUri) {
+            $script:ProxyArgs = @{ Proxy = $resolved.AbsoluteUri; ProxyUseDefaultCredentials = $true }
+            Write-Log "Using the system proxy for $($uri.Host): $($resolved.AbsoluteUri)"
+        }
+    } catch {
+        Write-Log "Could not determine the system proxy, connecting directly: $_" "WARN"
+    }
+}
+
+function Get-WebErrorHint {
+    <#  407 is the one HTTP status a user-facing agent should never report as a
+        generic failure: it is not the server refusing the data, it is the
+        network refusing the agent, and the fix is a proxy setting rather than
+        anything about this check-in. Called from the catch blocks so that
+        "never checked in" is diagnosable from the log alone. #>
+    param([int]$Status)
+    if ($Status -eq 407) {
+        return " -- the proxy demanded credentials this agent could not supply." +
+               " Set proxy_url in config.json, or allow this machine's user to" +
+               " authenticate to the proxy."
+    }
+    return ""
+}
+
 # ── Resolve the running config ───────────────────────────────────────────────
 # Three sources, in decreasing order of how specific they are to this machine:
 #   1. %LOCALAPPDATA%\AssetlyInventory\config.json — written by this agent once
@@ -125,12 +227,42 @@ function Get-EmbeddedConfig {
 #   2. the block embedded in the .exe — what a fresh download carries.
 #   3. config.json next to the script/exe — how agents deployed before
 #      single-file downloads were configured, and still how the plain .ps1 is.
+#   1b. HKLM\SOFTWARE\Assetly\Agent — written by the MSI from its command-line
+#      properties, and separately settable by Group Policy preferences on
+#      machines that are already installed. Read before the embedded block so
+#      that an administrator's policy wins over whatever the downloaded
+#      executable happened to be built with, and after the state file so that
+#      it never displaces a device credential this machine has already earned.
 # Returns the parsed config object too (not just checkin_api_url) so
 # Resolve-Credential below can read device_credential / enrollment_token /
 # company_api_key. The write-back path is always the state directory: the
 # embedded block cannot be rewritten in place, and the directory the exe was
 # run from is often read-only (a network share, a USB stick, Downloads under a
 # managed policy).
+function Get-MachinePolicyConfig {
+    <#  The MSI's configuration surface. Returns $null unless at least a
+        check-in URL is present -- a key holding only, say, a proxy setting is
+        not a usable configuration and must not stop the embedded block from
+        being consulted. #>
+    $key = "HKLM:\SOFTWARE\Assetly\Agent"
+    try {
+        if (-not (Test-Path $key)) { return $null }
+        $values = Get-ItemProperty -Path $key -ErrorAction Stop
+        if (-not $values.CheckinApiUrl) { return $null }
+        $cfg = [PSCustomObject]@{ checkin_api_url = [string]$values.CheckinApiUrl }
+        if ($values.EnrollmentToken) {
+            $cfg | Add-Member -NotePropertyName enrollment_token -NotePropertyValue ([string]$values.EnrollmentToken)
+        }
+        if ($values.ProxyUrl) {
+            $cfg | Add-Member -NotePropertyName proxy_url -NotePropertyValue ([string]$values.ProxyUrl)
+        }
+        return $cfg
+    } catch {
+        Write-Log "Failed to read machine configuration from $key : $_" "WARN"
+        return $null
+    }
+}
+
 function Get-CheckinConfig {
     $ownDir = Split-Path -Path $ScriptPath -Parent
     $sideCarFile = "$ownDir\config.json"
@@ -148,6 +280,10 @@ function Get-CheckinConfig {
         }
     }
     if (-not $cfg) {
+        $cfg = Get-MachinePolicyConfig
+        if ($cfg) { $source = "HKLM\SOFTWARE\Assetly\Agent" }
+    }
+    if (-not $cfg) {
         $cfg = Get-EmbeddedConfig
         if ($cfg) { $source = "the config embedded in $ScriptPath" }
     }
@@ -161,7 +297,7 @@ function Get-CheckinConfig {
     }
 
     if (-not $cfg) {
-        Write-Log "No configuration found (no $stateConfigFile, no embedded config block, no $sideCarFile) — using placeholder checkin URL, all submissions will fail auth." "WARN"
+        Write-Log "No configuration found (no $stateConfigFile, no HKLM\SOFTWARE\Assetly\Agent, no embedded config block, no $sideCarFile) — using placeholder checkin URL, all submissions will fail auth." "WARN"
         return $result
     }
 
@@ -179,6 +315,8 @@ $ConfigFilePath = $CheckinConfig.ConfigFile
 $Cfg            = $CheckinConfig.Cfg
 $EnrollApiUrl   = $CheckinApiUrl -replace '/inventory/checkin$', '/enroll'
 $ConfigApiUrl   = $CheckinApiUrl -replace '/checkin$', '/config'
+# Must run before the first web call (Resolve-Credential's enrollment, below).
+Initialize-Proxy $Cfg $CheckinApiUrl
 
 # ════════════════════════════════════════════════════════════════════════════════
 #  CREDENTIAL RESOLUTION / ENROLLMENT
@@ -196,7 +334,7 @@ function Invoke-Enroll($bearer) {
     try {
         $resp = Invoke-RestMethod -Uri $EnrollApiUrl -Method POST -Body $body `
                     -ContentType "application/json" `
-                    -Headers @{ Authorization = "Bearer $bearer" } -TimeoutSec 15
+                    -Headers @{ Authorization = "Bearer $bearer" } -TimeoutSec 15 @ProxyArgs
     } catch {
         $detail = $_.Exception.Message
         if ($_.ErrorDetails -and $_.ErrorDetails.Message) {
@@ -205,7 +343,9 @@ function Invoke-Enroll($bearer) {
                 if ($errBody.detail) { $detail = $errBody.detail }
             } catch {}
         }
-        Write-Log "Enrollment failed: $detail" "ERROR"
+        $status = $null
+        if ($_.Exception.Response) { $status = [int]$_.Exception.Response.StatusCode }
+        Write-Log "Enrollment failed: $detail$(Get-WebErrorHint $status)" "ERROR"
         exit 1
     }
     if (-not $resp.credential) {
@@ -289,7 +429,7 @@ function Get-FieldConfig {
        config-fetch problem never blocks check-in entirely. #>
     try {
         $config = Invoke-RestMethod -Uri $ConfigApiUrl -Method GET `
-                      -Headers @{ Authorization = "Bearer $DeviceCredential" } -TimeoutSec 10
+                      -Headers @{ Authorization = "Bearer $DeviceCredential" } -TimeoutSec 10 @ProxyArgs
         if (-not (Test-FieldConfig $config)) {
             throw "Malformed field config response: $($config | ConvertTo-Json -Compress -Depth 5)"
         }
@@ -647,7 +787,7 @@ function Invoke-SelfUpdateExe {
         Write-Log "Checking for updates…"
         $base = $CheckinApiUrl -split '/api/v1/' | Select-Object -First 1
         $envelope = Invoke-RestMethod -Uri "$base/api/v1/agent/manifest" `
-            -Headers @{ Authorization = "Bearer $DeviceCredential" } -TimeoutSec 15
+            -Headers @{ Authorization = "Bearer $DeviceCredential" } -TimeoutSec 15 @ProxyArgs
 
         $manifestBytes = [System.Text.Encoding]::UTF8.GetBytes($envelope.manifest)
         if (-not (Test-ManifestSignature $manifestBytes $envelope.signature $UpdateSigningPublicKey)) {
@@ -675,7 +815,7 @@ function Invoke-SelfUpdateExe {
             return
         }
 
-        Invoke-WebRequest -Uri "$base$($artifact.path)" -OutFile $tmp -UseBasicParsing -TimeoutSec 120
+        Invoke-WebRequest -Uri "$base$($artifact.path)" -OutFile $tmp -UseBasicParsing -TimeoutSec 120 @ProxyArgs
         $newBytes = [System.IO.File]::ReadAllBytes($tmp)
 
         # Cheap early-out, kept from the previous implementation: a captive
@@ -733,6 +873,15 @@ function Invoke-SelfUpdateExe {
 }
 
 function Invoke-SelfUpdate {
+    if ($IsManagedInstall) {
+        # The MSI is the update unit on managed machines -- see the
+        # $IsManagedInstall comment at the top of this script. Returning here
+        # rather than attempting and failing keeps the log honest: an
+        # access-denied write to Program Files on every hourly run would read
+        # like a broken agent when it is in fact a deliberate deployment model.
+        Write-Log "Managed install — updates arrive by MSI redeployment, skipping the self-update check."
+        return
+    }
     if ($IsExe) { Invoke-SelfUpdateExe; return }
     # The .ps1 form is not a signed release artifact: the manifest carries the
     # compiled exe and the POSIX script only. Rather than keep an unverified
@@ -833,7 +982,7 @@ function Submit-ToSheets {
         $body = $Payload | ConvertTo-Json -Compress -Depth 10
         $resp = Invoke-RestMethod -Uri $CheckinApiUrl -Method POST -Body $body `
                     -ContentType "application/json" `
-                    -Headers @{ Authorization = "Bearer $DeviceCredential" } -TimeoutSec 15
+                    -Headers @{ Authorization = "Bearer $DeviceCredential" } -TimeoutSec 15 @ProxyArgs
         return ($resp.status -eq "ok")
     } catch {
         $status = $null
@@ -849,7 +998,7 @@ function Submit-ToSheets {
         # true of network errors. A 4xx is the server refusing the submission
         # and will refuse every retry identically, so log the status code --
         # after the fact it is the only way to tell the two apart.
-        Write-Log "HTTP submit failed (status: $status): $_" "WARN"
+        Write-Log "HTTP submit failed (status: $status): $_$(Get-WebErrorHint $status)" "WARN"
         return $false
     }
 }
@@ -1509,10 +1658,17 @@ Write-Log "=== Assetly Inventory Agent started ==="
 $DeviceCredential = Resolve-Credential $Cfg $ConfigFilePath
 
 # Register startup task if not already registered
-$task = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
-if (-not $task) {
-    Write-Log "First run — registering startup task…"
-    Register-StartupTask
+# The MSI registers its own machine-wide task covering every user of the PC,
+# so a managed install must not add a competing per-user one -- nor copy itself
+# out of Program Files into %LOCALAPPDATA% to do it.
+if ($IsManagedInstall) {
+    Write-Log "Managed install — the scheduled task is owned by the MSI, not registering one."
+} else {
+    $task = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+    if (-not $task) {
+        Write-Log "First run — registering startup task…"
+        Register-StartupTask
+    }
 }
 
 # Self-update check

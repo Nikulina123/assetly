@@ -1,4 +1,4 @@
-name: Build Windows agent
+name: Build Windows agent and MSI
 
 # AssetlyAgent_Windows.exe is a compiled snapshot of AssetlyAgent_Windows.ps1,
 # and the admin portal reads it straight off disk to serve "Download for
@@ -14,6 +14,7 @@ on:
     paths:
       - AssetlyAgent_Windows.ps1
       - Build_Windows_EXE.ps1
+      - installer/**
       - .github/workflows/build-windows-agent.yml
   workflow_dispatch:
 
@@ -36,9 +37,29 @@ jobs:
       # ps2exe does not work. Do not switch this.
       - name: Compile the agent with ps2exe
         shell: powershell
+        # Deliberately produces an UNSIGNED executable. No code-signing key
+        # exists in this workflow and none should be added: signing happens
+        # offline in backend/scripts/sign_release.py, and
+        # release-consistency.yml proves the signed release was built from the
+        # current source by comparing this unsigned output against the
+        # manifest's unsigned_sha256. A signing step here would break that
+        # check and would hand a repository compromise the power to mint
+        # artifacts the fleet installs.
         run: |
           Set-ExecutionPolicy -Scope Process Bypass -Force
           .\Build_Windows_EXE.ps1
+
+      # Built on every change so that a broken .wxs is caught here rather than
+      # at release time, but NOT committed: the MSI that ships is built by
+      # sign_release.py around the *signed* executable, and an MSI in this
+      # repository containing an unsigned one would be an artifact that looks
+      # releasable and is not. This one exists to be downloaded from the run
+      # page and test-installed on a VM.
+      - name: Build the MSI (unsigned, for inspection only)
+        shell: powershell
+        run: |
+          Set-ExecutionPolicy -Scope Process Bypass -Force
+          .\installer\Build_Windows_MSI.ps1 -OutputFile "$env:RUNNER_TEMP\AssetlyAgent.msi"
 
       # Downloadable from the run page, so a build can be tested on a real
       # Windows machine before anyone trusts the committed copy.
@@ -46,7 +67,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: AssetlyAgent_Windows
-          path: backend/static/AssetlyAgent_Windows.exe
+          path: |
+            backend/static/AssetlyAgent_Windows.exe
+            ${{ runner.temp }}/AssetlyAgent.msi
 
       - name: Commit the rebuilt executable
         shell: bash
