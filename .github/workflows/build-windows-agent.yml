@@ -1,4 +1,4 @@
-name: Build Windows agent
+name: Build Windows agent and MSI
 
 # AssetlyAgent_Windows.exe is a compiled snapshot of AssetlyAgent_Windows.ps1,
 # and the admin portal reads it straight off disk to serve "Download for
@@ -14,6 +14,18 @@ on:
     paths:
       - AssetlyAgent_Windows.ps1
       - Build_Windows_EXE.ps1
+      - installer/**
+      - .github/workflows/build-windows-agent.yml
+  # Also on pull requests, so that a change which does not compile is caught
+  # in review rather than after merge. Before this, the only way to learn that
+  # the agent or the installer no longer builds was to push to main and watch
+  # -- which is the wrong moment to find out, because main is what the portal
+  # serves from. The commit step below is skipped for pull requests.
+  pull_request:
+    paths:
+      - AssetlyAgent_Windows.ps1
+      - Build_Windows_EXE.ps1
+      - installer/**
       - .github/workflows/build-windows-agent.yml
   workflow_dispatch:
 
@@ -31,14 +43,64 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # The commit step below asks git whether the agent source changed
+          # since the committed executable was built. actions/checkout defaults
+          # to fetch-depth 1, which is a shallow clone holding ONE commit -- so
+          # that question has no answer, `git log <exe-commit>..HEAD` is always
+          # empty, and the guard concluded "unchanged" on every run. It skipped
+          # a genuine 2.2.1 agent change, which would have shipped a release
+          # containing a binary reporting 2.2.0.
+          fetch-depth: 0
 
       # `powershell` is Windows PowerShell 5.1; `pwsh` is PowerShell Core, where
       # ps2exe does not work. Do not switch this.
+      # Windows PowerShell 5.1 decodes a BOM-less file as Windows-1252 rather
+      # than UTF-8. That is not cosmetic: the third byte of a UTF-8 em dash is
+      # 0x94, which decodes to a curly right quote under 1252, and PowerShell
+      # honours curly quotes as string delimiters -- so a single em dash in a
+      # comment or a message silently terminates a string early and the file
+      # fails to parse. It cost a red build here, and it is invisible on the
+      # macOS and Linux machines these scripts are written on, so it is worth
+      # a machine check rather than a convention nobody can see breaking.
+      - name: Check PowerShell files are UTF-8 with a BOM
+        shell: bash
+        run: |
+          set -euo pipefail
+          bad=0
+          while IFS= read -r f; do
+            if [ "$(head -c3 "$f" | xxd -p)" != "efbbbf" ]; then
+              echo "::error file=$f::$f has no UTF-8 BOM; Windows PowerShell 5.1 will decode it as Windows-1252."
+              bad=1
+            fi
+          done < <(git ls-files '*.ps1')
+          [ "$bad" -eq 0 ] && echo "All .ps1 files carry a UTF-8 BOM."
+
       - name: Compile the agent with ps2exe
         shell: powershell
+        # Deliberately produces an UNSIGNED executable. No code-signing key
+        # exists in this workflow and none should be added: signing happens
+        # offline in backend/scripts/sign_release.py, and
+        # release-consistency.yml proves the signed release was built from the
+        # current source by comparing this unsigned output against the
+        # manifest's unsigned_sha256. A signing step here would break that
+        # check and would hand a repository compromise the power to mint
+        # artifacts the fleet installs.
         run: |
           Set-ExecutionPolicy -Scope Process Bypass -Force
           .\Build_Windows_EXE.ps1
+
+      # Built on every change so that a broken .wxs is caught here rather than
+      # at release time, but NOT committed: the MSI that ships is built by
+      # sign_release.py around the *signed* executable, and an MSI in this
+      # repository containing an unsigned one would be an artifact that looks
+      # releasable and is not. This one exists to be downloaded from the run
+      # page and test-installed on a VM.
+      - name: Build the MSI (unsigned, for inspection only)
+        shell: powershell
+        run: |
+          Set-ExecutionPolicy -Scope Process Bypass -Force
+          .\installer\Build_Windows_MSI.ps1 -OutputFile "$env:GITHUB_WORKSPACE\ci-artifacts\AssetlyAgent.msi"
 
       # Downloadable from the run page, so a build can be tested on a real
       # Windows machine before anyone trusts the committed copy.
@@ -46,21 +108,92 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: AssetlyAgent_Windows
-          path: backend/static/AssetlyAgent_Windows.exe
+          # Both paths inside the workspace on purpose. upload-artifact roots
+          # the archive at the common ancestor of everything it is given, so
+          # mixing a workspace path with one under RUNNER_TEMP buried both
+          # under a D:\a\... prefix and made it impossible to tell at a glance
+          # whether the MSI had been included at all. ci-artifacts/ is
+          # untracked and the commit step below adds only the .exe by name, so
+          # nothing here can reach a commit.
+          path: |
+            backend/static/AssetlyAgent_Windows.exe
+            ci-artifacts/AssetlyAgent.msi
+          if-no-files-found: error
 
+      # Push and manual runs only. A pull_request run builds from a merge ref
+      # that belongs to no branch, so there is nothing it could correctly push
+      # to; and a fork's PR has no write token at all.
       - name: Commit the rebuilt executable
+        if: github.event_name != 'pull_request'
         shell: bash
         run: |
           set -euo pipefail
           EXE=backend/static/AssetlyAgent_Windows.exe
+          SOURCES="AssetlyAgent_Windows.ps1 Build_Windows_EXE.ps1"
+
+          # Belt and braces for the above. If the checkout is ever shallow
+          # again, the guard cannot answer its question -- and the safe
+          # response to "I cannot tell" is to stop, not to assume nothing
+          # changed. Silently skipping is how a stale executable reaches a
+          # signed release.
+          if [ "$(git rev-parse --is-shallow-repository)" = "true" ]; then
+            echo "::error::Shallow checkout: cannot tell whether the agent source changed."
+            echo "::error::Set fetch-depth: 0 on actions/checkout."
+            exit 1
+          fi
+
+          # ps2exe is NOT reproducible: compiling an unchanged .ps1 twice gives
+          # different bytes. This workflow also triggers on installer/** and on
+          # itself, neither of which affects the executable -- so without this
+          # guard, editing the .wxs recompiled the agent, committed bytes that
+          # differed from the ones the signed manifest covers, and turned
+          # release-consistency red, demanding a re-signed release for a change
+          # that never touched the agent. It nearly happened on 8f1b772 and was
+          # averted only because that run's push lost a race.
+          #
+          # So the question is not "did the bytes change" -- they always do --
+          # but "has the source changed since the committed executable was
+          # built". Asked via history rather than event metadata, which keeps
+          # this correct for workflow_dispatch too, where github.event.before
+          # does not exist.
+          LAST_EXE_COMMIT="$(git log -1 --format=%H -- "$EXE" || true)"
+          if [ -n "$LAST_EXE_COMMIT" ]; then
+            SOURCE_CHANGES="$(git log --oneline "$LAST_EXE_COMMIT..HEAD" -- $SOURCES)"
+            if [ -z "$SOURCE_CHANGES" ]; then
+              echo "Agent source unchanged since the committed executable was built."
+              echo "Leaving it alone: recompiling it would only churn non-reproducible bytes"
+              echo "and invalidate the signed release."
+              exit 0
+            fi
+            echo "Source commits since the committed executable was built:"
+            echo "$SOURCE_CHANGES"
+          else
+            echo "No committed executable yet; committing the first build."
+          fi
+
           # --porcelain, not `git diff`: on the very first run the executable is
           # untracked, which `git diff` reports as no change at all.
           if [ -z "$(git status --porcelain -- "$EXE")" ]; then
             echo "Executable is byte-identical to the committed one; nothing to do."
             exit 0
           fi
+
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add "$EXE"
           git commit -m "build: recompile AssetlyAgent_Windows.exe from ${GITHUB_SHA:0:7}"
-          git push
+
+          # A release signed and pushed while this job was compiling moves main
+          # underneath it, and a bare `git push` then fails on a race rather
+          # than on anything being wrong. Rebase onto whatever landed and try
+          # again; give up after a few attempts rather than loop forever.
+          for attempt in 1 2 3; do
+            if git push; then
+              echo "Pushed on attempt $attempt."
+              exit 0
+            fi
+            echo "Push rejected (attempt $attempt) -- main moved while this build ran. Rebasing."
+            git pull --rebase origin main
+          done
+          echo "::error::Could not push the rebuilt executable after 3 attempts."
+          exit 1

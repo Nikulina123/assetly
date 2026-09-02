@@ -92,20 +92,65 @@ def _windows_base_bytes(data: bytes) -> bytes:
     return data[:index]
 
 
-def _authenticode_sign(payload: bytes, cert_path: str, password: str) -> bytes:
+def _load_prebuilt_msi(path: Path) -> bytes:
+    """Reads an MSI built elsewhere, and sanity-checks that it is one.
+
+    This used to invoke `wix build` here, on the assumption that WiX v4+ being
+    a cross-platform dotnet tool meant it could package on the release owner's
+    Mac. It cannot. The tool installs and runs anywhere, but announces
+    "The WiX Toolset only supports Windows. All behavior after this point is
+    undefined" and then fails on absolute paths -- so the MSI has to be built
+    on Windows, which in practice means the CI job that already builds one on
+    every change to the agent or the installer.
+
+    So the release owner supplies it: download the `AssetlyAgent_Windows`
+    artifact from the Build workflow and pass --msi. Signing still happens
+    here, offline, because that is where the certificate is.
+
+    One consequence to be aware of once a code-signing certificate exists: an
+    MSI built by CI necessarily packages CI's UNSIGNED executable, since CI has
+    no key. At that point the MSI must be built on a Windows machine around the
+    signed .exe this script produces, and passed back in here to be signed. The
+    signature on the installer and the signature on the binary it installs are
+    separate things, and AppLocker publisher rules care about the second.
+    """
+    if not path.is_file():
+        raise RuntimeError(
+            f"No MSI at {path}. Build one on Windows -- CI does this on every "
+            "change; download the AssetlyAgent_Windows artifact from the "
+            "'Build Windows agent and MSI' workflow run -- or pass --no-msi to "
+            "publish this release without an installer."
+        )
+    data = path.read_bytes()
+    # MSIs are OLE compound documents. A wrong file here would otherwise be
+    # published, hashed into the signed manifest, and only discovered when it
+    # failed to install on someone's machine.
+    if not data.startswith(b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"):
+        raise RuntimeError(
+            f"{path} is not an MSI (missing the OLE compound-document header)."
+        )
+    return data
+
+
+def _authenticode_sign(
+    payload: bytes, cert_path: str, password: str, suffix: str = ".exe"
+) -> bytes:
     """Authenticode-signs Windows exe bytes with signtool.exe (native) or
     osslsigncode (cross-signing from Linux/macOS), whichever is on PATH.
 
     Runs locally, same custody model as the RSA update-signing key above:
-    never invoked automatically, never in CI. See docs/RELEASE_SIGNING.md.
+    never invoked automatically, never in CI. See WINDOWS_DEPLOYMENT.md.
     """
     import shutil
     import subprocess
     import tempfile
 
     with tempfile.TemporaryDirectory() as tmp:
-        unsigned_path = Path(tmp) / "unsigned.exe"
-        signed_path = Path(tmp) / "signed.exe"
+        # The suffix is carried through because osslsigncode dispatches on the
+        # file it is given: an MSI handed to it named ".exe" is not treated as
+        # the OLE compound document it is.
+        unsigned_path = Path(tmp) / f"unsigned{suffix}"
+        signed_path = Path(tmp) / f"signed{suffix}"
         unsigned_path.write_bytes(payload)
 
         if shutil.which("signtool.exe") or shutil.which("signtool"):
@@ -130,7 +175,7 @@ def _authenticode_sign(payload: bytes, cert_path: str, password: str) -> bytes:
         raise RuntimeError(
             "WINDOWS_CODESIGN_CERT_PATH is set but neither signtool nor "
             "osslsigncode is on PATH. Install one or unset the variable to "
-            "ship unsigned (see docs/RELEASE_SIGNING.md)."
+            "ship unsigned (see WINDOWS_DEPLOYMENT.md)."
         )
 
 
@@ -138,7 +183,31 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--version", required=True, help="e.g. 2.1.0")
     parser.add_argument("--key", required=True, type=Path, help="PEM private key")
+    parser.add_argument(
+        "--msi",
+        type=Path,
+        help=(
+            "Path to a Windows-built AssetlyAgent.msi to publish with this "
+            "release. MSIs cannot be built off Windows; CI builds one on every "
+            "change, downloadable from the Build workflow's artifact."
+        ),
+    )
+    parser.add_argument(
+        "--no-msi",
+        action="store_true",
+        help="Publish without the per-machine MSI. The portal's MSI download stays unavailable.",
+    )
     args = parser.parse_args()
+
+    # Checked before the key is even loaded: publishing without an installer
+    # has to be a decision someone made, not something that happens because an
+    # argument was forgotten.
+    if not args.msi and not args.no_msi:
+        parser.error(
+            "pass --msi PATH with a Windows-built AssetlyAgent.msi, or --no-msi "
+            "to publish this release without an installer (the portal's MSI "
+            "download then returns 503). See WINDOWS_DEPLOYMENT.md."
+        )
 
     private_key = serialization.load_pem_private_key(
         args.key.read_bytes(), password=None
@@ -147,6 +216,16 @@ def main() -> None:
     UPDATES_DIR.mkdir(parents=True, exist_ok=True)
     windows_codesign_cert = os.environ.get("WINDOWS_CODESIGN_CERT_PATH")
     windows_codesign_password = os.environ.get("WINDOWS_CODESIGN_PASSWORD", "")
+
+    # Nothing is written to UPDATES_DIR until every artifact has been built
+    # successfully. A previous version wrote each artifact as it went and built
+    # the MSI afterwards, so a missing WiX tool aborted the run with the new
+    # .exe already on disk and manifest.json still describing the PREVIOUS
+    # release. That directory is what the portal serves and what agents verify
+    # against, so the half-finished state was worse than either release: fresh
+    # downloads got an executable whose hash no signed manifest covered, and
+    # self-update rejected it. Build first, write last.
+    pending_writes = {}
 
     artifacts = {}
     for name, source in ARTIFACTS.items():
@@ -162,8 +241,7 @@ def main() -> None:
         elif name == "windows_exe":
             print("  (WINDOWS_CODESIGN_CERT_PATH not set — shipping unsigned, as before)")
 
-        destination = UPDATES_DIR / source.name
-        destination.write_bytes(signed_payload)
+        pending_writes[UPDATES_DIR / source.name] = signed_payload
         entry = {
             "sha256": hashlib.sha256(signed_payload).hexdigest(),
             "size": len(signed_payload),
@@ -176,6 +254,45 @@ def main() -> None:
             entry["unsigned_sha256"] = unsigned_sha256
         artifacts[name] = entry
         print(f"{name}: {entry['sha256']} ({entry['size']} bytes)")
+
+    # ── Per-machine MSI ──────────────────────────────────────────────────────
+    # Built here, after the executable has been signed, and signed itself with
+    # the same certificate. This is the artifact IT deploys through Intune,
+    # SCCM or GPO; the .exe above remains what a single user downloads for
+    # their own machine and what the agent's self-update path fetches.
+    if args.msi:
+        # Read and validated before the write pass below, so a missing or wrong
+        # file leaves the published directory exactly as it was.
+        msi = _load_prebuilt_msi(args.msi)
+        if windows_codesign_cert:
+            # Nothing is ever appended to the MSI afterwards, unlike the .exe
+            # whose per-company config block invalidates its signature at
+            # download time -- so this signature is the one an end user's
+            # machine actually verifies.
+            msi = _authenticode_sign(
+                msi, windows_codesign_cert, windows_codesign_password, suffix=".msi"
+            )
+        else:
+            print("  (WINDOWS_CODESIGN_CERT_PATH not set — MSI shipped unsigned)")
+
+        pending_writes[UPDATES_DIR / "AssetlyAgent.msi"] = msi
+        artifacts["windows_msi"] = {
+            "sha256": hashlib.sha256(msi).hexdigest(),
+            "size": len(msi),
+            "path": "/static/updates/AssetlyAgent.msi",
+        }
+        print(f"windows_msi: {artifacts['windows_msi']['sha256']} ({len(msi)} bytes)")
+    else:
+        print("  (--no-msi — this release publishes no installer)")
+
+    # ── Write pass ───────────────────────────────────────────────────────────
+    # Every artifact built, so committing them to disk cannot now fail partway
+    # for a reason that was knowable earlier. manifest.json is written after
+    # these, and it is the file that gives them meaning: an artifact no
+    # manifest describes is inert, whereas a manifest describing artifacts that
+    # are not there yet would be actively wrong.
+    for destination, payload in pending_writes.items():
+        destination.write_bytes(payload)
 
     manifest = {
         "version": args.version,

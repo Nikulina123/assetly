@@ -257,6 +257,89 @@ async def test_download_windows_does_not_mint_token_when_exe_missing(login_as, e
     assert await list_tokens(db_pool, str(company_id)) == []
 
 
+async def test_download_windows_msi_serves_a_zip_with_the_msi_and_a_deploy_command(
+    login_as, enrolled_admin, company, db_pool, tmp_path, monkeypatch
+):
+    """The MSI must leave the route byte-for-byte as it was published.
+
+    Config cannot be appended to it the way it is to the .exe: an MSI is a
+    structured OLE compound document, and trailing bytes are precisely what
+    invalidates an Authenticode signature. Since the MSI exists to be the
+    artifact that reaches a managed fleet with its signature intact, this
+    asserts the bytes are unmodified and that the token instead travels in a
+    separate Deploy.cmd.
+    """
+    import io as _io
+    import zipfile as _zipfile
+
+    import app.routers.admin as admin_module
+    from app.enrollment import list_tokens
+
+    placeholder = tmp_path / "AssetlyAgent.msi"
+    # Real MSIs start with the OLE compound-document magic; using it here keeps
+    # the fixture honest about what is being served.
+    msi_bytes = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1" + b"placeholder-msi" * 64
+    placeholder.write_bytes(msi_bytes)
+    monkeypatch.setattr(admin_module, "WINDOWS_MSI_PATH", placeholder)
+
+    company_id, _ = company
+    client = await _logged_in_client(login_as, enrolled_admin)
+    try:
+        csrf_token = await _get_csrf_token(client, company_id)
+        resp = await client.post(
+            f"/admin/companies/{company_id}/download/windows-msi",
+            data={"csrf_token": csrf_token, "device_count": "25", "token_days": "14"},
+        )
+    finally:
+        await client.aclose()
+
+    assert resp.status_code == 200
+    assert resp.headers["content-type"] == "application/zip"
+
+    archive = _zipfile.ZipFile(_io.BytesIO(resp.content))
+    assert sorted(archive.namelist()) == ["AssetlyAgent.msi", "Deploy.cmd"]
+    # The whole point: unmodified, so a signature over it still verifies.
+    assert archive.read("AssetlyAgent.msi") == msi_bytes
+
+    deploy = archive.read("Deploy.cmd").decode()
+    tokens = await list_tokens(db_pool, str(company_id))
+    assert len(tokens) == 1
+    # The freshly minted token has to actually reach the command line, or the
+    # download is a file the admin cannot deploy.
+    assert "ENROLLMENTTOKEN=" in deploy
+    assert "CHECKINAPIURL=" in deploy
+    assert "msiexec" in deploy
+    # A batch file with bare LF line endings behaves unpredictably under cmd.
+    assert "\r\n" in deploy
+
+
+async def test_download_windows_msi_does_not_mint_token_when_msi_missing(
+    login_as, enrolled_admin, company, db_pool, monkeypatch
+):
+    """Same validate-before-mutate ordering the .exe route has: an unsigned
+    instance (no release published yet) must not leave tokens behind."""
+    from pathlib import Path
+
+    import app.routers.admin as admin_module
+    from app.enrollment import list_tokens
+
+    monkeypatch.setattr(admin_module, "WINDOWS_MSI_PATH", Path("/nonexistent/AssetlyAgent.msi"))
+
+    company_id, _ = company
+    client = await _logged_in_client(login_as, enrolled_admin)
+    try:
+        csrf_token = await _get_csrf_token(client, company_id)
+        resp = await client.post(
+            f"/admin/companies/{company_id}/download/windows-msi",
+            data={"csrf_token": csrf_token, "device_count": "25", "token_days": "14"},
+        )
+    finally:
+        await client.aclose()
+
+    assert resp.status_code == 503
+    assert await list_tokens(db_pool, str(company_id)) == []
+
+
 async def test_downloading_two_platforms_leaves_both_installers_working(login_as, enrolled_admin, company, db_pool):
     """The bug this whole design exists to fix: downloading macOS then Linux
     used to invalidate the macOS installer's key (both installers embedded
@@ -306,6 +389,12 @@ async def test_company_detail_shows_download_buttons(login_as, enrolled_admin, c
     assert b"Download for macOS" in resp.content
     assert b"Download for Linux" in resp.content
     assert b"Download for Windows" in resp.content
+    # The MSI card, in the redesigned platform-grid layout: the button label is
+    # the shared "Download" string, so the platform is asserted through the
+    # markup that actually distinguishes the cards -- the visible name and the
+    # aria-label a screen reader announces.
+    assert b"Download for Windows MSI" in resp.content
+    assert b">Windows MSI<" in resp.content
     assert b"Not yet available" not in resp.content
     # The page must tell the admin that downloading one platform does NOT break
     # installers already downloaded for others. It previously warned the exact

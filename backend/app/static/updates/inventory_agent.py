@@ -133,6 +133,70 @@ _credential = None
 # Used only when the server cannot be reached and nothing is cached in
 # state.json. These reproduce the cadence this agent had when the interval was
 # hardcoded, so an agent that can never reach the server behaves as before.
+# Reported in every check-in. A named constant rather than a literal buried in
+# the payload, and kept in sync with $AgentVersion in AssetlyAgent_Windows.ps1:
+# this said "2.0" while the signed release stream was already at 2.1.2, so a
+# version a user read back over the phone matched nothing on either platform.
+AGENT_VERSION = "2.2.1"
+
+# ── Device identity ──────────────────────────────────────────────────────────
+# The serial number IS the device: rows are keyed UNIQUE (company_id,
+# serial_number). Firmware supplies it, and on custom-built machines the
+# integrator routinely never programs the field -- so an office of whitebox
+# PCs all report the same literal "System Serial Number" and collapse into one
+# device row sharing one credential.
+#
+# Kept in sync with $PlaceholderIdentifiers in AssetlyAgent_Windows.ps1 and
+# PLACEHOLDER_SERIALS in backend/app/device_identity.py.
+PLACEHOLDER_SERIALS = frozenset({
+    "system serial number", "chassis serial number", "serial number",
+    "to be filled by o.e.m.", "to be filled by oem", "default string",
+    "not specified", "not applicable", "not available", "none", "null",
+    "n/a", "na", "unknown", "invalid", "oem", "o.e.m.", "default",
+    "system uuid", "product uuid", "0", "1234567890", "123456789",
+})
+
+
+def _is_usable_identifier(value: str | None) -> bool:
+    """False when a firmware string identifies no particular machine."""
+    if not value:
+        return False
+    trimmed = value.strip()
+    if len(trimmed) < 3:
+        return False
+    lowered = trimmed.casefold()
+    if lowered in PLACEHOLDER_SERIALS:
+        return False
+    # The two SMBIOS UUIDs meaning "unset", and zero/dash stubs.
+    return not (re.match(r"^[0\s\-]+$", lowered) or re.match(r"^[f\s\-]+$", lowered))
+
+
+def _resolve_serial(bios_serial, uuid_getter, machine_id_getter):
+    """Firmware serial, else the SMBIOS UUID, else the OS machine id.
+
+    Same order and same reasoning as Resolve-DeviceSerial in
+    AssetlyAgent_Windows.ps1: the UUID survives an OS reinstall but not a
+    motherboard swap, the machine id the other way round, and re-imaging is
+    much the commoner event. The source is prefixed onto the value so support
+    can see which rung was used, and so a real serial shaped like a GUID can
+    never collide with a UUID-derived one.
+    """
+    if _is_usable_identifier(bios_serial):
+        return bios_serial.strip()
+
+    log.warning("Firmware serial is a placeholder (%r) - falling back.", bios_serial)
+    uuid = uuid_getter()
+    if _is_usable_identifier(uuid):
+        return "UUID:" + uuid.strip().upper()
+
+    machine_id = machine_id_getter()
+    if _is_usable_identifier(machine_id):
+        log.warning("SMBIOS UUID unusable too - using the OS machine id.")
+        return "MACHINEGUID:" + machine_id.strip().upper()
+
+    log.error("No stable machine identifier available - falling back to hostname.")
+    return "HOSTNAME:" + socket.gethostname()
+
 DEFAULT_SCHEDULE = {
     "checkin_interval_seconds": 15552000,   # 180 days
     "cancel_retry_seconds":     86400,      # 24 hours
@@ -544,7 +608,17 @@ def collect_hardware() -> dict:
 
         hw["brand"]         = "Apple"
         hw["model"]         = _e("Model Name") or _e("Model Identifier")
-        hw["serial_number"] = _e(r"Serial Number \(system\)") or _e("Serial Number")
+        # Apple always programs a real serial, so the fallback should never
+        # fire here -- but a Mac whose serial reads "N/A" because the
+        # system_profiler parse missed must not enroll as the same device as
+        # every other such Mac, so the same resolution applies.
+        hw["serial_number"] = _resolve_serial(
+            _e(r"Serial Number \(system\)") or _e("Serial Number"),
+            lambda: _run(["sh", "-c",
+                          "ioreg -rd1 -c IOPlatformExpertDevice | "
+                          "awk -F'\"' '/IOPlatformUUID/{print $4}'"]),
+            lambda: "",
+        )
         hw["cpu"]           = _run(["sysctl", "-n", "machdep.cpu.brand_string"]) or _e("Chip")
         ram_b               = int(_run(["sysctl", "-n", "hw.memsize"]) or 0)
         hw["ram"]           = f"{round(ram_b / 1024**3)} GB" if ram_b else _e("Memory")
@@ -555,25 +629,45 @@ def collect_hardware() -> dict:
 
     else:  # Linux
         def _dmi(key: str) -> str:
-            # Try sudo dmidecode first, then /sys fallback
-            out = _run(["dmidecode", "-s", key], sudo=True)
+            # Try /sys first: world-readable on modern distros, needs no
+            # privilege, and reads the same SMBIOS field dmidecode does --
+            # promoting it ahead of dmidecode is what lets the installer skip
+            # provisioning a standing NOPASSWD sudo rule for most machines.
+            # dmidecode remains the fallback for systems where /sys/class/dmi
+            # isn't populated or readable.
+            _sys_map = {
+                "system-manufacturer":  "/sys/class/dmi/id/sys_vendor",
+                "system-product-name":  "/sys/class/dmi/id/product_name",
+                "system-serial-number": "/sys/class/dmi/id/product_serial",
+            }
+            out = ""
+            try:
+                out = Path(_sys_map[key]).read_text().strip()
+            except Exception:
+                pass
+            if not out:
+                out = _run(["dmidecode", "-s", key], sudo=True)
             if not out:
                 out = _run(["dmidecode", "-s", key])
-            if not out:
-                _sys_map = {
-                    "system-manufacturer":  "/sys/class/dmi/id/sys_vendor",
-                    "system-product-name":  "/sys/class/dmi/id/product_name",
-                    "system-serial-number": "/sys/class/dmi/id/product_serial",
-                }
-                try:
-                    out = Path(_sys_map[key]).read_text().strip()
-                except Exception:
-                    pass
             return _clean(out)
 
         hw["brand"]         = _dmi("system-manufacturer")
         hw["model"]         = _dmi("system-product-name")
-        hw["serial_number"] = _dmi("system-serial-number")
+        def _machine_id():
+            # /etc/machine-id is world-readable and stable for the life of the
+            # installation; dbus's copy is the fallback for systems that
+            # predate it.
+            for path in ("/etc/machine-id", "/var/lib/dbus/machine-id"):
+                try:
+                    with open(path) as handle:
+                        return handle.read().strip()
+                except OSError:
+                    continue
+            return ""
+
+        hw["serial_number"] = _resolve_serial(
+            _dmi("system-serial-number"), lambda: _dmi("system-uuid"), _machine_id
+        )
 
         cpu_raw = _run(["cat", "/proc/cpuinfo"])
         m = re.search(r"model name\s*:\s*(.+)", cpu_raw)
@@ -732,7 +826,7 @@ def submit_to_sheets(user_data: dict, hw: dict, enabled_hardware_fields: list) -
     payload = {
         **user_data, **filtered_hw,
         "checkin_id":      str(uuid.uuid4()),
-        "agent_version":   "2.0",
+        "agent_version":   AGENT_VERSION,
         "submission_type": "online",
         "platform":        {"Darwin": "macos", "Linux": "linux", "Windows": "windows"}.get(_sys, "unknown"),
     }

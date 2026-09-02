@@ -37,6 +37,7 @@
         ('macos', 'macos', 'macOS', 'double-clickable .pkg'),
         ('windows', 'windows', 'Windows', 'single .exe'),
         ('linux', 'linux', 'Linux', 'shell installer'),
+        ('windows_msi', 'windows-msi', 'Windows MSI', 'per-machine, for IT'),
       ] %}
       <form method="post" action="/admin/companies/{{ company['id'] }}/download/{{ url_name }}"
             class="platform-card">

@@ -369,7 +369,10 @@ STRINGS: dict[str, dict[str, str]] = {
               "out together and devices already reporting are unaffected. "
               "<strong>Expected devices</strong> caps how many machines that token may enroll "
               "(leave headroom for re-imaged machines); <strong>token valid for</strong> sets "
-              "how long it stays usable.",
+              "how long it stays usable. <strong>Windows MSI</strong> is for IT rather than "
+              "one person: a zip holding the installer and a Deploy.cmd with the msiexec line "
+              "for Intune, SCCM or GPO. It installs per machine, covers every user of a PC, "
+              "and uninstalls from Add/Remove Programs.",
         "ka": "თითოეული ჩამოტვირთვა შეიცავს ახალ სარეგისტრაციო ტოკენს, უკვე კონფიგურირებულს "
               "ამ კომპანიისთვის — ჩამოტვირთვის შემდეგ არაფრის რედაქტირება არ სჭირდება. "
               "ერთი პლატფორმის ჩამოტვირთვა არ მოქმედებს ადრე ჩამოტვირთულ ინსტალატორებზე, "
@@ -377,7 +380,11 @@ STRINGS: dict[str, dict[str, str]] = {
               "მოწყობილობებზე ზეგავლენის გარეშე. <strong>მოსალოდნელი მოწყობილობები</strong> "
               "განსაზღვრავს, რამდენ მანქანას შეუძლია ამ ტოკენით რეგისტრაცია (დატოვეთ მარაგი "
               "ხელახლა დაყენებული მანქანებისთვის); <strong>ტოკენის ვადა</strong> კი — რამდენ "
-              "ხანს დარჩება გამოსადეგი.",
+              "ხანს დარჩება გამოსადეგი. <strong>Windows MSI</strong> განკუთვნილია IT-სთვის და "
+              "არა ერთი მომხმარებლისთვის: zip არქივი, რომელიც შეიცავს ინსტალატორს და "
+              "Deploy.cmd-ს msiexec ბრძანებით Intune-ის, SCCM-ის ან GPO-სთვის. ის ეყენება "
+              "მთელ მანქანაზე, მოიცავს კომპიუტერის ყველა მომხმარებელს და იშლება "
+              "Add/Remove Programs-იდან.",
     },
     "settings.expected_devices": {"en": "Expected devices", "ka": "მოსალოდნელი მოწყობილობები"},
     "settings.token_valid_for": {"en": "Token valid for", "ka": "ტოკენის ვადა"},

@@ -112,3 +112,47 @@ async def test_token_from_company_a_cannot_enroll_into_company_b(db_pool, compan
         await _enroll(client, token_a, serial="SN-AAA")
     assert len(await list_device_credentials(db_pool, company_a_id)) == 1
     assert await list_device_credentials(db_pool, company_b_id) == []
+
+
+@pytest.mark.parametrize(
+    "serial",
+    [
+        "System Serial Number",
+        "  to be filled by O.E.M.  ",
+        "Default string",
+        "N/A",
+        "0",
+        "00000000-0000-0000-0000-000000000000",
+        "FFFFFFFF-FFFF-FFFF-FFFF-FFFFFFFFFFFF",
+    ],
+)
+async def test_enroll_refuses_firmware_placeholder_serials(db_pool, company, serial):
+    """A placeholder serial is not one machine's identity, it is shared by
+    every machine whose integrator left the SMBIOS fields unprogrammed.
+
+    Accepting one merges them into a single device row -- rows are keyed
+    UNIQUE (company_id, serial_number) -- sharing a single credential, each
+    check-in overwriting the last, so an office of whitebox PCs reports as one
+    device. Found on a real machine: "System manufacturer" / "System Product
+    Name" / "System Serial Number".
+    """
+    company_id, _ = company
+    token = await create_enrollment_token(db_pool, company_id, label="whitebox")
+    async with await _client() as client:
+        resp = await _enroll(client, token, serial=serial)
+    assert resp.status_code == 422
+    assert "placeholder" in resp.json()["detail"].lower()
+
+
+async def test_two_whitebox_machines_enroll_as_separate_devices(db_pool, company):
+    """The fix, from the server's side: agents that fall back to a machine
+    identifier present distinct serials, so they get distinct devices. Before
+    it, both sent "System Serial Number" and became one."""
+    company_id, _ = company
+    token = await create_enrollment_token(db_pool, company_id, label="whitebox", max_devices=5)
+    async with await _client() as client:
+        first = await _enroll(client, token, serial="UUID:4C4C4544-0037-5A10", hostname="pc-1")
+        second = await _enroll(client, token, serial="UUID:9F8E7D6C-0042-11AA", hostname="pc-2")
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert first.json()["credential"] != second.json()["credential"]
