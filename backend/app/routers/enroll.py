@@ -8,6 +8,7 @@ from fastapi import APIRouter, Header, HTTPException, Request
 from app.auth import resolve_company_id
 from app.config import RATE_LIMIT_ENROLL_IP, RATE_LIMIT_ENROLL_TOKEN
 from app.db import get_pool
+from app.device_identity import is_placeholder_serial
 from app.enrollment import (
     EnrollmentError,
     UnknownTokenError,
@@ -53,6 +54,23 @@ async def enroll(
     # bucket alone wouldn't catch since each bogus token gets its own bucket.
     ip_limit, ip_window = RATE_LIMIT_ENROLL_IP
     await enforce_rate_limit(pool, f"enroll:ip:{client_ip(request)}", ip_limit, ip_window)
+
+    # Checked after rate limiting (so it cannot be used to probe cheaply) and
+    # before enroll_device touches the table. A placeholder serial is not this
+    # machine's identity, it is the identity of every machine whose integrator
+    # left the SMBIOS fields unprogrammed -- accepting one merges them all into
+    # a single device row sharing a single credential. Current agents resolve a
+    # real identifier themselves; this catches the older ones still deployed.
+    if is_placeholder_serial(payload.serial_number):
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "This machine reports a firmware placeholder serial number "
+                f"({payload.serial_number!r}), which does not identify it. "
+                "Upgrade the agent: current versions fall back to the SMBIOS "
+                "UUID or the OS machine id."
+            ),
+        )
 
     try:
         credential = await enroll_device(pool, bearer, payload.serial_number, payload.hostname)

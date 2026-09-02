@@ -82,7 +82,7 @@ MACOS_PKG_IDENTIFIER = os.environ.get("MACOS_PKG_IDENTIFIER", "com.assetly.inven
 # of "About This Mac -> Software" or `pkgutil --pkg-info`. Tracks AGENT_VERSION
 # in inventory_agent.py: leaving it at 2.0 while the agent reported 2.2.0 would
 # reproduce, one layer up, exactly the mismatch that bump was made to remove.
-MACOS_PKG_VERSION = os.environ.get("MACOS_PKG_VERSION", "2.2.0")
+MACOS_PKG_VERSION = os.environ.get("MACOS_PKG_VERSION", "2.2.1")
 PUBLIC_API_BASE_URL = os.environ.get("PUBLIC_API_BASE_URL", "https://api.example.com")
 CHECKIN_API_URL_FOR_DOWNLOAD = f"{PUBLIC_API_BASE_URL}/api/v1/inventory/checkin"
 

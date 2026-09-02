@@ -64,11 +64,14 @@ Write-InstallLog "Registering scheduled task '$TaskName' for $ExePath"
 
 $action = New-ScheduledTaskAction -Execute $ExePath
 
-# Any user's logon, with the same 90-second delay the per-user registration
-# used: the form is a WinForms dialog and wants a desktop that has finished
-# coming up.
+# Any user's logon, after a delay that lets the desktop finish coming up --
+# the form is a WinForms dialog and appearing mid-logon puts it behind the
+# shell. Was 90 seconds, which real use showed reads as "nothing happened":
+# the screen stays empty long enough that a person concludes the agent is
+# broken. 40 seconds is still past the shell settling on an ordinary machine
+# and short enough to feel like a consequence of logging in.
 $triggerLogon       = New-ScheduledTaskTrigger -AtLogOn
-$triggerLogon.Delay = "PT1M30S"
+$triggerLogon.Delay = "PT40S"
 
 # Indefinite hourly repetition. The start boundary is deliberately in the past
 # so the repetition is already live rather than waiting for a first occurrence.
