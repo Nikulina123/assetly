@@ -939,6 +939,86 @@ function Test-ShouldRun($Schedule) {
 }
 
 # ════════════════════════════════════════════════════════════════════════════════
+#  DEVICE IDENTITY
+#  The serial number is the device's identity: devices are keyed
+#  UNIQUE (company_id, serial_number). Taking it straight from the BIOS is
+#  fine on branded hardware and wrong everywhere else -- integrators of
+#  custom-built machines routinely leave the SMBIOS fields at their factory
+#  placeholders, so a whole office of whitebox PCs reports the SAME literal
+#  "System Serial Number" and collapses into one device row sharing one
+#  credential, each machine's check-in overwriting the last.
+#
+#  Found on a real machine: brand "System manufacturer", model "System Product
+#  Name", serial "System Serial Number" -- none of them identifying anything.
+#
+#  Kept in sync with _resolve_serial in inventory_agent.py and
+#  PLACEHOLDER_SERIALS in backend/app/enroll_identity.py.
+# ════════════════════════════════════════════════════════════════════════════════
+# Compared case-insensitively after trimming. These are the values firmware
+# ships when the field was never programmed, not values anyone chose.
+$PlaceholderIdentifiers = @(
+    'system serial number', 'chassis serial number', 'serial number',
+    'to be filled by o.e.m.', 'to be filled by oem', 'default string',
+    'not specified', 'not applicable', 'not available', 'none', 'null',
+    'n/a', 'na', 'unknown', 'invalid', 'oem', 'o.e.m.', 'default',
+    'system uuid', 'product uuid', '0', '1234567890', '123456789'
+)
+
+function Test-UsableIdentifier {
+    <#  True when a firmware-supplied string actually identifies this machine.
+        Length floor of 3 rejects "0"/"-"/"." style stubs; the all-zero and
+        all-F patterns reject the two SMBIOS UUIDs that mean "unset" rather
+        than a value. #>
+    param([string]$Value)
+    if ([string]::IsNullOrWhiteSpace($Value)) { return $false }
+    $v = $Value.Trim()
+    if ($v.Length -lt 3) { return $false }
+    $lower = $v.ToLowerInvariant()
+    if ($PlaceholderIdentifiers -contains $lower) { return $false }
+    if ($lower -match '^[0\s\-]+$') { return $false }
+    if ($lower -match '^[f\s\-]+$') { return $false }
+    return $true
+}
+
+function Resolve-DeviceSerial {
+    <#  BIOS serial, else the SMBIOS product UUID, else Windows' MachineGuid.
+
+        That order is a deliberate trade. The UUID survives an OS reinstall but
+        not a motherboard swap; MachineGuid is the other way round. Preferring
+        the UUID keeps a re-imaged machine recognisable as itself, which is the
+        commoner event by far in the fleets this agent runs in.
+
+        The source is prefixed onto the value so that support can tell at a
+        glance which rung was used, and so a real BIOS serial that happens to
+        look like a GUID can never collide with a UUID-derived one. #>
+    param([string]$BiosSerial, [string]$ProductUuid)
+
+    if (Test-UsableIdentifier $BiosSerial) { return $BiosSerial.Trim() }
+
+    Write-Log "BIOS serial is a firmware placeholder ('$BiosSerial') — falling back to a machine identifier." "WARN"
+    if (Test-UsableIdentifier $ProductUuid) {
+        return "UUID:" + $ProductUuid.Trim().ToUpperInvariant()
+    }
+
+    try {
+        $guid = (Get-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Cryptography" `
+                     -Name MachineGuid -ErrorAction Stop).MachineGuid
+        if (Test-UsableIdentifier $guid) {
+            Write-Log "SMBIOS UUID unusable too — using Windows MachineGuid." "WARN"
+            return "MACHINEGUID:" + $guid.Trim().ToUpperInvariant()
+        }
+    } catch {
+        Write-Log "Could not read MachineGuid: $_" "WARN"
+    }
+
+    # Last resort. Hostnames can collide across companies but not usually
+    # within one, and a colliding hostname is still a better identity than a
+    # placeholder every whitebox machine shares.
+    Write-Log "No stable machine identifier available — falling back to hostname." "ERROR"
+    return "HOSTNAME:" + $env:COMPUTERNAME
+}
+
+# ════════════════════════════════════════════════════════════════════════════════
 #  HARDWARE COLLECTION
 # ════════════════════════════════════════════════════════════════════════════════
 function Get-Hardware {
@@ -951,10 +1031,13 @@ function Get-Hardware {
         $os   = Get-CimInstance Win32_OperatingSystem -ErrorAction Stop
         $net  = Get-CimInstance Win32_NetworkAdapterConfiguration -Filter "IPEnabled=True" |
                 Select-Object -First 1
+        # Not -ErrorAction Stop: the UUID is a fallback, so failing to read it
+        # must not take down collection of everything else.
+        $csp  = Get-CimInstance Win32_ComputerSystemProduct -ErrorAction SilentlyContinue
 
         $hw.brand   = ($cs.Manufacturer -replace '\s+',' ').Trim()
         $hw.model   = ($cs.Model        -replace '\s+',' ').Trim()
-        $hw.serial_number = $bios.SerialNumber.Trim()
+        $hw.serial_number = Resolve-DeviceSerial $bios.SerialNumber $csp.UUID
         $hw.cpu     = ($cpu.Name        -replace '\s+',' ').Trim()
         $ram_gb     = [math]::Round($cs.TotalPhysicalMemory / 1GB)
         $hw.ram     = "$ram_gb GB"
@@ -966,7 +1049,11 @@ function Get-Hardware {
         $hw.timestamp  = (Get-Date -Format "yyyy-MM-ddTHH:mm:ss")
     } catch {
         Write-Log "Hardware collection error: $_" "ERROR"
-        $hw.brand = $hw.model = $hw.serial_number = $hw.cpu = $hw.ram = $hw.storage = "N/A"
+        $hw.brand = $hw.model = $hw.cpu = $hw.ram = $hw.storage = "N/A"
+        # Everything else can be "N/A"; the serial cannot. It is the device's
+        # identity, and every machine that failed collection would otherwise
+        # enroll as the same "N/A" device.
+        $hw.serial_number = Resolve-DeviceSerial $null $null
         $hw.os = [System.Environment]::OSVersion.VersionString
         $hw.hostname = $env:COMPUTERNAME
         $hw.ip_address = "N/A"
@@ -1625,7 +1712,9 @@ function Register-StartupTask {
     }
 
     $triggerLogon       = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
-    $triggerLogon.Delay = "PT1M30S"   # wait 90 s for desktop to be ready (ISO 8601 format)
+    # 40 s for the desktop to be ready (ISO 8601). Kept in sync with
+    # installer/Install-AssetlyTask.ps1 -- see the note there on why not 90.
+    $triggerLogon.Delay = "PT40S"
 
     # Hourly trigger so the 24-h cancel retry fires even when the user stays logged in
     $triggerHourly = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(2) `

@@ -42,9 +42,29 @@
     <!-- Secure="yes" is what lets these survive the switch to the elevated
          service during a silent install; without it the values are visible to
          the UI sequence and then lost before anything can write them. -->
-    <Property Id="CHECKINAPIURL"   Secure="yes" />
-    <Property Id="ENROLLMENTTOKEN" Secure="yes" />
-    <Property Id="PROXYURL"        Secure="yes" />
+    <!-- Each property reads its own previously-installed value back out of the
+         registry. Without this, any operation that does not carry the values
+         on the command line re-evaluates the component conditions below as
+         false, and Windows Installer removes a component whose condition has
+         become false. A repair — which Windows can start on its own, without
+         anyone asking — would therefore delete the machine's check-in URL and
+         enrollment token, leaving the agent running against no configuration.
+
+         Values given on the command line still win: command-line properties
+         take precedence over anything AppSearch finds, so an admin can always
+         re-point or re-token a machine by reinstalling with new values. -->
+    <Property Id="CHECKINAPIURL" Secure="yes">
+      <RegistrySearch Id="FindCheckinApiUrl" Root="HKLM"
+                      Key="SOFTWARE\Assetly\Agent" Name="CheckinApiUrl" Type="raw" />
+    </Property>
+    <Property Id="ENROLLMENTTOKEN" Secure="yes">
+      <RegistrySearch Id="FindEnrollmentToken" Root="HKLM"
+                      Key="SOFTWARE\Assetly\Agent" Name="EnrollmentToken" Type="raw" />
+    </Property>
+    <Property Id="PROXYURL" Secure="yes">
+      <RegistrySearch Id="FindProxyUrl" Root="HKLM"
+                      Key="SOFTWARE\Assetly\Agent" Name="ProxyUrl" Type="raw" />
+    </Property>
 
     <Launch Condition="Installed OR CHECKINAPIURL"
             Message="CHECKINAPIURL was not supplied. The agent cannot reach a server without it. See WINDOWS_DEPLOYMENT.md for the msiexec command line." />
