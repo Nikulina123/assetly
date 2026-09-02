@@ -55,7 +55,7 @@ $TaskName         = "AssetlyInventoryAgent"
 # 2.1.2 while this constant still said 2.0 -- the very drift this single source
 # of truth exists to end. Anything at or below 2.1.2 would have shipped an
 # agent reporting a version older than one already in the field.
-$AgentVersion     = "2.2.0"
+$AgentVersion     = "2.2.1"
 # Fallback only — the live per-company list arrives on the department entry of
 # the field config. Kept in sync with DEFAULT_DEPARTMENT_OPTIONS in
 # backend/app/field_config.py and inventory_agent.py.

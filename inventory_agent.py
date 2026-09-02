@@ -137,7 +137,7 @@ _credential = None
 # the payload, and kept in sync with $AgentVersion in AssetlyAgent_Windows.ps1:
 # this said "2.0" while the signed release stream was already at 2.1.2, so a
 # version a user read back over the phone matched nothing on either platform.
-AGENT_VERSION = "2.2.0"
+AGENT_VERSION = "2.2.1"
 
 # ── Device identity ──────────────────────────────────────────────────────────
 # The serial number IS the device: rows are keyed UNIQUE (company_id,
