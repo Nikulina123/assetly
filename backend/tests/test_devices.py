@@ -5,7 +5,7 @@ import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
 import app.db as db_module
-from app.devices import dashboard_stats, get_checkin_history, get_device, list_devices
+from app.devices import dashboard_stats, get_checkin_history, get_device, legacy_key_conversion, list_devices
 from app.main import app
 
 pytestmark = pytest.mark.asyncio
@@ -141,3 +141,55 @@ async def test_queries_never_cross_tenant_boundary(db_pool, company):
     stats_b = await dashboard_stats(db_pool, company_b_id)
     assert stats_a["total"] == 1
     assert stats_b["total"] == 1
+
+
+async def test_legacy_key_conversion_empty_company(db_pool, company):
+    company_id, _api_key = company
+    result = await legacy_key_conversion(db_pool, company_id)
+    assert result == {
+        "total": 0, "converted": 0, "legacy": 0,
+        "last_legacy_checkin": None, "legacy_devices": [],
+    }
+
+
+async def test_legacy_key_conversion_counts_legacy_device(db_pool, company):
+    company_id, api_key = company
+    await _submit(api_key, "LEGACY-SN-1")
+    result = await legacy_key_conversion(db_pool, company_id)
+    assert result["total"] == 1
+    assert result["converted"] == 0
+    assert result["legacy"] == 1
+    assert result["last_legacy_checkin"] is not None
+    assert [d["serial_number"] for d in result["legacy_devices"]] == ["LEGACY-SN-1"]
+
+
+async def test_legacy_key_conversion_counts_converted_device(db_pool, company, enrolled_device):
+    company_id, _api_key = company
+    credential, serial = enrolled_device
+    await _submit(credential, serial)
+    result = await legacy_key_conversion(db_pool, company_id)
+    assert result["total"] == 1
+    assert result["converted"] == 1
+    assert result["legacy"] == 0
+    assert result["last_legacy_checkin"] is None
+    assert result["legacy_devices"] == []
+
+
+async def test_legacy_key_conversion_matches_serial_case_insensitively(db_pool, company, enrolled_device):
+    """enrolled_device enrolls a device credential for serial 'ENROLLED-SERIAL-1'
+    (stored normalised, lower/stripped, by migration 015). If the agent's
+    check-in payload reports different casing/whitespace for the same
+    physical machine's serial, this must still count as converted -- matching
+    the .strip().casefold() comparison checkin.py's M-1 binding check already
+    uses, not a raw string equality that would double-count the same machine
+    as both converted and legacy."""
+    credential, serial = enrolled_device
+    company_id, _api_key = company
+    # Submit with real case AND whitespace divergence from the enrolled
+    # serial "ENROLLED-SERIAL-1" -- the M-1 binding check in checkin.py
+    # normalises both sides before comparing, so this is accepted, and
+    # devices.serial_number stores exactly this divergent string verbatim.
+    await _submit(credential, "  Enrolled-Serial-1  ")
+    result = await legacy_key_conversion(db_pool, company_id)
+    assert result["converted"] == 1
+    assert result["legacy"] == 0

@@ -346,6 +346,20 @@ async def test_diagnostics_requires_login():
     assert resp.status_code == 303
 
 
+async def test_diagnostics_refuses_scoped_admin(login_as, scoped_admin):
+    """A full admin scoped to one company has no legitimate need to see
+    deployment-wide internals (repo_root, the full artifact listing) that
+    have nothing to do with their one tenant. require_global_admin is the
+    existing dependency for exactly this class of route (see company
+    creation) -- diagnostics should use it too."""
+    client = await _logged_in_client(login_as, scoped_admin)
+    try:
+        resp = await client.get("/admin/diagnostics")
+    finally:
+        await client.aclose()
+    assert resp.status_code == 403
+
+
 async def test_download_mints_a_capped_token(login_as, enrolled_admin, company, db_pool):
     """Unlimited devices for 90 days makes a leaked installer maximally
     valuable and gives no natural expiry pressure."""

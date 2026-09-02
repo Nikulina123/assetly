@@ -41,7 +41,9 @@ READ_ROUTES = ["/admin/companies", "/admin/companies/{company_id}"]
 # Every state-changing route, plus the three installer downloads (they are
 # POSTs and they MINT ENROLLMENT TOKENS, which is exactly the capability
 # `support` must not have) and /admin/diagnostics (a GET, but it discloses
-# server filesystem paths).
+# server filesystem paths; now gated to global admins only via
+# require_global_admin, one level past the full-admin check this list
+# otherwise tracks).
 def _write_routes(company_id, token_id, serial):
     return [
         ("POST", "/admin/companies"),

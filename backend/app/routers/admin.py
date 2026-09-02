@@ -38,6 +38,7 @@ from app.config import (
     WINDOWS_EXE_PATH,
 )
 from app.db import get_pool
+from app.devices import legacy_key_conversion
 from app.rate_limit import client_ip, enforce_rate_limit, hashed_bucket
 from app.enrollment import (
     create_enrollment_token,
@@ -120,8 +121,10 @@ async def require_admin(request: Request) -> AdminContext:
 
 async def require_full_admin(admin: AdminContext = Depends(require_admin)) -> AdminContext:
     """Read-only `support` admins are refused. Applied to every state-changing
-    route, to the three installer downloads (they mint enrollment tokens), and
-    to /admin/diagnostics (it discloses server filesystem paths).
+    route, to the three installer downloads (they mint enrollment tokens).
+    /admin/diagnostics is gated one level further, by require_global_admin
+    below -- it discloses deployment-wide internals, not anything scoped to
+    one company.
 
     The templates also hide these controls, but THIS is the enforcement -- a
     hidden button is not an authorisation control, it is a nicety."""
@@ -539,7 +542,12 @@ async def companies_list(request: Request, admin: AdminContext = Depends(require
     return templates.TemplateResponse(
         request,
         "companies_list.html",
-        {"companies": companies, "csrf_token": _new_csrf_token(request), "admin": admin},
+        {
+            "companies": companies,
+            "csrf_token": _new_csrf_token(request),
+            "admin": admin,
+            "conversion_by_company": await _conversion_by_company(pool, companies),
+        },
     )
 
 
@@ -581,6 +589,7 @@ async def companies_create(
             "csrf_token": _new_csrf_token(request),
             "new_api_key": api_key,
             "admin": admin,
+            "conversion_by_company": await _conversion_by_company(pool, companies),
         },
     )
 
@@ -690,6 +699,39 @@ async def _agent_ui_context(pool, company_id: uuid.UUID) -> dict:
     return {"agent_ui": await resolve_agent_ui_for_admin(pool, str(company_id))}
 
 
+async def _conversion_by_company(pool, companies) -> dict:
+    """Maps each company's id (as a string) to its legacy-key conversion
+    summary, for companies_list.html's per-row column.
+
+    Called at every site that renders that template -- companies_list (GET)
+    and companies_create (POST, which re-renders the same template) -- since
+    the template references conversion_by_company[company.id|string]
+    unconditionally and a handler that skipped this would crash with
+    jinja2.exceptions.UndefinedError, the same bug company_detail.html had
+    before _legacy_conversion_context was introduced.
+
+    One legacy_key_conversion call per company (~3 round trips each) --
+    accepted at current tenant counts; revisit if this becomes the slow path
+    on /admin/companies.
+    """
+    return {
+        str(c["id"]): await legacy_key_conversion(pool, str(c["id"]))
+        for c in companies
+    }
+
+
+async def _legacy_conversion_context(pool, company_id: uuid.UUID) -> dict:
+    """Everything company_detail.html needs to render the legacy-key
+    conversion card.
+
+    Called alongside _schedule_context and _agent_ui_context at every site
+    that renders that template -- a handler that skipped it would crash with
+    jinja2.exceptions.UndefinedError, since the template references
+    legacy_conversion.converted/.total unconditionally.
+    """
+    return {"legacy_conversion": await legacy_key_conversion(pool, str(company_id))}
+
+
 @router.get("/companies/{company_id}")
 async def company_detail(
     request: Request, company_id: uuid.UUID, admin: AdminContext = Depends(require_admin)
@@ -710,6 +752,7 @@ async def company_detail(
     }
     context.update(await _schedule_context(pool, company_id))
     context.update(await _agent_ui_context(pool, company_id))
+    context.update(await _legacy_conversion_context(pool, company_id))
     return templates.TemplateResponse(request, "company_detail.html", context)
 
 
@@ -755,6 +798,7 @@ async def rotate_key(
     }
     context.update(await _schedule_context(pool, company_id))
     context.update(await _agent_ui_context(pool, company_id))
+    context.update(await _legacy_conversion_context(pool, company_id))
     return templates.TemplateResponse(request, "company_detail.html", context)
 
 
@@ -808,6 +852,7 @@ async def revoke_company(
     }
     context.update(await _schedule_context(pool, company_id))
     context.update(await _agent_ui_context(pool, company_id))
+    context.update(await _legacy_conversion_context(pool, company_id))
     return templates.TemplateResponse(request, "company_detail.html", context)
 
 
@@ -889,6 +934,7 @@ async def update_schedule(
         }
         context.update(await _schedule_context(pool, company_id))
         context.update(await _agent_ui_context(pool, company_id))
+        context.update(await _legacy_conversion_context(pool, company_id))
         return templates.TemplateResponse(
             request, "company_detail.html", context, status_code=200
         )
@@ -961,6 +1007,7 @@ async def update_agent_ui(
         }
         context.update(await _schedule_context(pool, company_id))
         context.update(await _agent_ui_context(pool, company_id))
+        context.update(await _legacy_conversion_context(pool, company_id))
         return templates.TemplateResponse(
             request, "company_detail.html", context, status_code=200
         )
@@ -1066,6 +1113,7 @@ async def add_custom_field_route(
         }
         context.update(await _schedule_context(pool, company_id))
         context.update(await _agent_ui_context(pool, company_id))
+        context.update(await _legacy_conversion_context(pool, company_id))
         return templates.TemplateResponse(request, "company_detail.html", context)
     return RedirectResponse(f"/admin/companies/{company_id}", status_code=303)
 
@@ -1189,7 +1237,7 @@ def _render_installer_script(template_text: str, checkin_api_url: str, enrollmen
 
 
 @router.get("/diagnostics")
-async def diagnostics(request: Request, admin: AdminContext = Depends(require_full_admin)):
+async def diagnostics(request: Request, admin: AdminContext = Depends(require_global_admin)):
     """Reports what this instance actually has on disk.
 
     Every file a download route reads is committed to the repository, which
@@ -1199,6 +1247,9 @@ async def diagnostics(request: Request, admin: AdminContext = Depends(require_fu
     once because a served executable did not match the committed one. Hashes
     are included so a served artifact can be compared with `sha256sum` against
     a local checkout without downloading anything.
+
+    This endpoint discloses deployment-wide internals (repo_root, full artifact
+    listing) and is restricted to global admins only via require_global_admin.
     """
     pool = await get_pool()
     await record_audit(pool, request, admin, "admin.diagnostics_viewed")
