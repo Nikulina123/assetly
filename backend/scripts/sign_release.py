@@ -113,7 +113,8 @@ def _build_msi(signed_exe: bytes, version: str) -> bytes:
     if not wix:
         raise RuntimeError(
             "The WiX tool is not on PATH, so the MSI cannot be built. Install "
-            "it with `dotnet tool install --global wix --version 5.*`, or pass "
+            "it with `dotnet tool install --global wix --version '5.*'` (the "
+            "quotes matter: zsh expands 5.* before dotnet sees it), or pass "
             "--no-msi to publish this release without one."
         )
 
@@ -208,6 +209,16 @@ def main() -> None:
     windows_codesign_cert = os.environ.get("WINDOWS_CODESIGN_CERT_PATH")
     windows_codesign_password = os.environ.get("WINDOWS_CODESIGN_PASSWORD", "")
 
+    # Nothing is written to UPDATES_DIR until every artifact has been built
+    # successfully. A previous version wrote each artifact as it went and built
+    # the MSI afterwards, so a missing WiX tool aborted the run with the new
+    # .exe already on disk and manifest.json still describing the PREVIOUS
+    # release. That directory is what the portal serves and what agents verify
+    # against, so the half-finished state was worse than either release: fresh
+    # downloads got an executable whose hash no signed manifest covered, and
+    # self-update rejected it. Build first, write last.
+    pending_writes = {}
+
     artifacts = {}
     for name, source in ARTIFACTS.items():
         raw = source.read_bytes()
@@ -222,8 +233,7 @@ def main() -> None:
         elif name == "windows_exe":
             print("  (WINDOWS_CODESIGN_CERT_PATH not set — shipping unsigned, as before)")
 
-        destination = UPDATES_DIR / source.name
-        destination.write_bytes(signed_payload)
+        pending_writes[UPDATES_DIR / source.name] = signed_payload
         entry = {
             "sha256": hashlib.sha256(signed_payload).hexdigest(),
             "size": len(signed_payload),
@@ -246,6 +256,9 @@ def main() -> None:
     # SCCM or GPO; the .exe above remains what a single user downloads for
     # their own machine and what the agent's self-update path fetches.
     if not args.no_msi:
+        # Raises when WiX is unavailable -- deliberately before the write pass
+        # below, so an environment without it leaves the published directory
+        # exactly as it was.
         msi = _build_msi(windows_exe_payload, args.version)
         if windows_codesign_cert:
             # Nothing is ever appended to the MSI afterwards, unlike the .exe
@@ -258,8 +271,7 @@ def main() -> None:
         else:
             print("  (WINDOWS_CODESIGN_CERT_PATH not set — MSI shipped unsigned)")
 
-        msi_path = UPDATES_DIR / "AssetlyAgent.msi"
-        msi_path.write_bytes(msi)
+        pending_writes[UPDATES_DIR / "AssetlyAgent.msi"] = msi
         artifacts["windows_msi"] = {
             "sha256": hashlib.sha256(msi).hexdigest(),
             "size": len(msi),
@@ -268,6 +280,15 @@ def main() -> None:
         print(f"windows_msi: {artifacts['windows_msi']['sha256']} ({len(msi)} bytes)")
     else:
         print("  (--no-msi — this release publishes no installer)")
+
+    # ── Write pass ───────────────────────────────────────────────────────────
+    # Every artifact built, so committing them to disk cannot now fail partway
+    # for a reason that was knowable earlier. manifest.json is written after
+    # these, and it is the file that gives them meaning: an artifact no
+    # manifest describes is inert, whereas a manifest describing artifacts that
+    # are not there yet would be actively wrong.
+    for destination, payload in pending_writes.items():
+        destination.write_bytes(payload)
 
     manifest = {
         "version": args.version,

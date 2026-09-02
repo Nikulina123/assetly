@@ -108,7 +108,7 @@ backend/venv/bin/python backend/scripts/sign_release.py \
     --version 2.1.0 --key ~/.assetly/release_key.pem
 ```
 
-Needs `wix` on PATH (`dotnet tool install --global wix --version 5.*`; WiX v4+
+Needs `wix` on PATH (`dotnet tool install --global wix --version '5.*'`; WiX v4+
 is cross-platform, so this works on macOS). Pass `--no-msi` to publish a
 release without an installer.
 
