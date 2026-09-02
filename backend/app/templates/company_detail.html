@@ -253,6 +253,10 @@
       be rolled out together. Devices already reporting are unaffected.
       macOS gets a double-clickable <code>.pkg</code> and Windows a single
       <code>.exe</code> — both configured for this company, nothing to edit.
+      The Windows <code>MSI</code> is for IT rather than for one person: a zip
+      holding the installer and a <code>Deploy.cmd</code> with the msiexec line
+      for Intune, SCCM or GPO. It installs per machine, covers every user of a
+      PC, and uninstalls from Add/Remove Programs.
     </div>
     <div class="banner">
       Expected devices sets the enrollment cap for the token this download embeds
@@ -264,6 +268,7 @@
         ('macos', 'macos', 'Download for macOS'),
         ('linux', 'linux', 'Download for Linux'),
         ('windows', 'windows', 'Download for Windows'),
+        ('windows_msi', 'windows-msi', 'Download Windows MSI (IT)'),
       ] %}
       <form method="post" action="/admin/companies/{{ company['id'] }}/download/{{ url_name }}"
             style="min-width:220px">

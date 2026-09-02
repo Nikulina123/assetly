@@ -6,7 +6,7 @@ Two distribution shapes, both built from the same source and the same
 | | `AssetlyAgent_Windows.exe` | `AssetlyAgent.msi` |
 |---|---|---|
 | Who installs it | one user, on their own PC | IT, across a fleet |
-| How | download from the portal, double-click | `msiexec /qn`, Intune, SCCM, GPO, PDQ |
+| How | download from the portal, double-click | download from the portal (zip), then `msiexec /qn`, Intune, SCCM, GPO, PDQ |
 | Installs to | `%LOCALAPPDATA%\AssetlyInventory` | `C:\Program Files\Assetly` |
 | Scheduled task | per user, registered on first run | machine-wide, registered by the MSI |
 | Covers other users of the PC | no | yes |
@@ -19,6 +19,24 @@ The `.exe` is unchanged and remains the default for a single user. The MSI is
 additional.
 
 ## Deploying the MSI
+
+Get it from the portal: a company's page has **Download Windows MSI (IT)**,
+which returns `AssetlyAgent_Windows_MSI.zip` holding the installer and a
+`Deploy.cmd` already carrying that company's check-in URL and a freshly minted
+enrollment token. Run the .cmd from an elevated prompt, or lift the msiexec
+line out of it into your deployment tool.
+
+Unlike the .exe download, the MSI is served byte-for-byte as
+`sign_release.py` published it. Nothing is appended to it, because appended
+bytes are exactly what invalidates an Authenticode signature — and being the
+artifact that arrives with its signature intact is the MSI's whole purpose.
+That is why the token travels in a second file rather than inside the
+installer.
+
+The button returns 503 until a release has been signed, since the MSI is
+published by `sign_release.py` rather than committed. Until then, use the .exe.
+
+The command itself, if you would rather write it yourself:
 
 ```
 msiexec /i AssetlyAgent.msi /qn ^
@@ -128,8 +146,5 @@ that installed the agent years earlier.
   development environment and no test runs the `.ps1`, so every change to the
   agent and to the installer is eye-reviewed only. A VM pass is the next step:
   install → enroll → form → check-in → reboot → task fires → uninstall.
-- The portal has no "Download MSI" button. The file is reachable at
-  `/static/updates/AssetlyAgent.msi` once a release is signed; a button is a
-  UI change that has not been made.
 - Execution from `%LOCALAPPDATA%` still applies to the `.exe` path. Only the
   MSI puts the binary somewhere AppLocker's default rules permit.
