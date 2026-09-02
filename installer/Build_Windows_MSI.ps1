@@ -50,7 +50,7 @@ Write-Host "[1/3] Agent version from source: $agentVersion"
 # ── WiX ──────────────────────────────────────────────────────────────────────
 Write-Host "[2/3] Ensuring the WiX toolset is available..."
 if (-not (Get-Command wix -ErrorAction SilentlyContinue)) {
-    dotnet tool install --global wix --version 5.*
+    dotnet tool install --global wix --version '5.*'
     # The tool lands in ~\.dotnet\tools, which is only on PATH for shells
     # started after the install.
     $env:PATH = "$env:PATH;$env:USERPROFILE\.dotnet\tools"
