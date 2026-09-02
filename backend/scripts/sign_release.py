@@ -149,7 +149,7 @@ def _authenticode_sign(
     osslsigncode (cross-signing from Linux/macOS), whichever is on PATH.
 
     Runs locally, same custody model as the RSA update-signing key above:
-    never invoked automatically, never in CI. See docs/RELEASE_SIGNING.md.
+    never invoked automatically, never in CI. See WINDOWS_DEPLOYMENT.md.
     """
     import shutil
     import subprocess
@@ -185,7 +185,7 @@ def _authenticode_sign(
         raise RuntimeError(
             "WINDOWS_CODESIGN_CERT_PATH is set but neither signtool nor "
             "osslsigncode is on PATH. Install one or unset the variable to "
-            "ship unsigned (see docs/RELEASE_SIGNING.md)."
+            "ship unsigned (see WINDOWS_DEPLOYMENT.md)."
         )
 
 
