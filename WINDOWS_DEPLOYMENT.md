@@ -97,20 +97,35 @@ compromise mints artifacts the whole fleet trusts. `release-consistency.yml`
 depends on CI's build being unsigned.
 
 Signing happens offline, in `backend/scripts/sign_release.py`, when
-`WINDOWS_CODESIGN_CERT_PATH` and `WINDOWS_CODESIGN_PASSWORD` are set. That
-script signs the executable, builds the MSI **around the signed executable**,
-and signs the MSI too.
+`WINDOWS_CODESIGN_CERT_PATH` and `WINDOWS_CODESIGN_PASSWORD` are set.
+
+**An MSI can only be built on Windows.** WiX v4+ installs and runs as a
+cross-platform dotnet tool, but building anywhere else prints
+`The WiX Toolset only supports Windows. All behavior after this point is
+undefined` and then fails. So the release script does not build one — it
+adopts a Windows-built MSI you pass in. CI builds one on every change to the
+agent or the installer; download the `AssetlyAgent_Windows` artifact from the
+"Build Windows agent and MSI" workflow run.
 
 ```
-export WINDOWS_CODESIGN_CERT_PATH=~/.assetly/codesign.pfx
-export WINDOWS_CODESIGN_PASSWORD=...
+gh run download --repo <owner>/<repo> --name AssetlyAgent_Windows --dir /tmp/agent
 backend/venv/bin/python backend/scripts/sign_release.py \
-    --version 2.1.0 --key ~/.assetly/release_key.pem
+    --version 2.2.0 --key ~/.assetly/release_key.pem \
+    --msi /tmp/agent/ci-artifacts/AssetlyAgent.msi
 ```
 
-Needs `wix` on PATH (`dotnet tool install --global wix --version '5.*'`; WiX v4+
-is cross-platform, so this works on macOS). Pass `--no-msi` to publish a
-release without an installer.
+Pass `--no-msi` instead to publish a release without an installer; the portal's
+MSI download then returns 503. One of the two is required — the script refuses
+to guess.
+
+### Once a certificate exists
+
+CI has no signing key, so an MSI built by CI necessarily packages CI's
+**unsigned** executable. At that point the MSI has to be built on a Windows
+machine around the signed `.exe` this script produces, and passed back in here
+to be signed. The signature on the installer and the signature on the binary it
+installs are separate things, and AppLocker publisher rules care about the
+second.
 
 ### The .exe cannot carry a valid signature to an end user
 

@@ -52,8 +52,8 @@ def _run_sign_release(tmp_path, monkeypatch, env_extra=None):
 
     sys_argv = sys.argv
     # --no-msi: these tests cover the signing and manifest round-trip, not
-    # installer packaging. Building the MSI would require the WiX tool on the
-    # test machine, which would make a signing test fail for a reason that has
+    # installer packaging, and an MSI can only be built on Windows -- so
+    # requiring one here would make a signing test fail for a reason that has
     # nothing to do with signing.
     sys.argv = [
         "sign_release.py", "--version", "9.9.9", "--key", str(key_path), "--no-msi",
@@ -84,15 +84,14 @@ def test_sha256_equals_unsigned_sha256_when_signing_is_not_configured(tmp_path, 
 def test_a_failed_msi_build_leaves_the_published_directory_untouched(tmp_path, monkeypatch):
     """Signing must be all-or-nothing.
 
-    An earlier version wrote each artifact as it went and built the MSI
-    afterwards, so a machine without the WiX tool aborted with the NEW
+    An earlier version wrote each artifact as it went and handled the MSI
+    afterwards, so a missing or invalid installer aborted with the NEW
     executable already on disk and manifest.json still describing the previous
     release. That directory is what the portal serves and what agents verify
     against, so the half-written state was worse than either release on its
     own: a fresh download got an executable no signed manifest covered, and
     self-update rejected the same bytes it had just fetched.
     """
-    import shutil
     import sys as _sys
     from pathlib import Path
 
@@ -137,15 +136,15 @@ def test_a_failed_msi_build_leaves_the_published_directory_untouched(tmp_path, m
     )
     sign_release.UPDATES_DIR = updates_dir
 
-    # No WiX on PATH -- the same failure a release owner hits on a machine
-    # where the tool was never installed.
-    monkeypatch.setattr(shutil, "which", lambda name: None)
-
     sys_argv = _sys.argv
-    # Note: no --no-msi, so the MSI build is attempted and fails.
-    _sys.argv = ["sign_release.py", "--version", "9.9.9", "--key", str(key_path)]
+    # An --msi that is not there: the failure a release owner hits when the CI
+    # artifact was never downloaded, or landed in another directory.
+    _sys.argv = [
+        "sign_release.py", "--version", "9.9.9", "--key", str(key_path),
+        "--msi", str(tmp_path / "not-downloaded" / "AssetlyAgent.msi"),
+    ]
     try:
-        with pytest.raises(RuntimeError, match="WiX"):
+        with pytest.raises(RuntimeError, match="No MSI at"):
             sign_release.main()
     finally:
         _sys.argv = sys_argv
