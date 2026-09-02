@@ -1,0 +1,140 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Per-machine MSI for the Assetly Inventory Agent.
+
+  Why this exists at all: before it, the only way onto a PC was for a human to
+  download AssetlyAgent_Windows.exe and double-click it, because that
+  interactive run is what registered the scheduled task. That meant no silent
+  install, no Intune/SCCM/GPO deployment, an install location under
+  %LOCALAPPDATA% that default AppLocker and WDAC rules deny execution from, a
+  task bound to one user so a second user of the same PC got nothing, and no
+  uninstaller of any kind.
+
+  Configuration comes in through public properties written to HKLM rather than
+  through a config file, for two reasons: it needs no custom action to
+  template a file, and it gives IT a second, entirely separate way to set the
+  same values via Group Policy preferences on machines already installed.
+
+      msiexec /i AssetlyAgent.msi /qn ^
+              CHECKINAPIURL="https://portal.example.com/api/v1/inventory/checkin" ^
+              ENROLLMENTTOKEN="<the company enrollment token>"
+
+  PROXYURL is optional and only needed where the system proxy setting is not
+  the one the agent should use.
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+
+  <Package Name="Assetly Inventory Agent"
+           Manufacturer="Assetly"
+           Version="$(var.AgentVersion)"
+           UpgradeCode="8f3b6c21-4a7e-4d59-9c2f-6e1a0b5d7c84"
+           Scope="perMachine"
+           Compressed="yes"
+           InstallerVersion="500">
+
+    <!-- Redeploying a newer MSI is the update mechanism for managed machines:
+         the agent itself does not self-update when installed this way (see
+         $IsManagedInstall in AssetlyAgent_Windows.ps1), because it has no
+         write access to Program Files and should not be given any. -->
+    <MajorUpgrade DowngradeErrorMessage="A newer version of the Assetly Inventory Agent is already installed. Uninstall it first if you genuinely need to go back." />
+    <MediaTemplate EmbedCab="yes" />
+
+    <!-- Secure="yes" is what lets these survive the switch to the elevated
+         service during a silent install; without it the values are visible to
+         the UI sequence and then lost before anything can write them. -->
+    <Property Id="CHECKINAPIURL"   Secure="yes" />
+    <Property Id="ENROLLMENTTOKEN" Secure="yes" />
+    <Property Id="PROXYURL"        Secure="yes" />
+
+    <Launch Condition="Installed OR CHECKINAPIURL"
+            Message="CHECKINAPIURL was not supplied. The agent cannot reach a server without it. See WINDOWS_DEPLOYMENT.md for the msiexec command line." />
+
+    <StandardDirectory Id="ProgramFiles6432Folder">
+      <Directory Id="INSTALLFOLDER" Name="Assetly" />
+    </StandardDirectory>
+
+    <ComponentGroup Id="AgentFiles" Directory="INSTALLFOLDER">
+      <Component Id="AgentExe">
+        <File Id="AgentExeFile" Source="$(var.AgentExe)" KeyPath="yes" />
+      </Component>
+
+      <Component Id="TaskInstallerScript">
+        <File Id="TaskInstallerFile" Source="$(var.TaskScript)" Name="Install-AssetlyTask.ps1" KeyPath="yes" />
+      </Component>
+
+      <!-- The marker the agent looks for beside itself to know it is a managed
+           install: with it present it registers no per-user task and attempts
+           no self-update. Its content is irrelevant; its presence is the
+           signal. -->
+      <Component Id="ManagedMarker">
+        <File Id="ManagedMarkerFile" Source="$(var.MarkerFile)" Name="assetly-managed.marker" KeyPath="yes" />
+      </Component>
+    </ComponentGroup>
+
+    <!-- Configuration in HKLM. One component per value, each carrying a
+         Condition attribute (WiX v4 replaced v3's <Condition> child element
+         with this attribute; launch conditions became <Launch>), so an install that omits PROXYURL leaves no empty value
+         behind for the agent to try to parse as a proxy. -->
+    <ComponentGroup Id="AgentConfig" Directory="INSTALLFOLDER">
+      <Component Id="ConfigApiUrl" Guid="c1a4d2e6-9b83-4f17-8a05-2d6c9e3b7f41" Condition="CHECKINAPIURL">
+        <RegistryValue Root="HKLM" Key="SOFTWARE\Assetly\Agent"
+                       Name="CheckinApiUrl" Type="string" Value="[CHECKINAPIURL]" KeyPath="yes" />
+      </Component>
+      <Component Id="ConfigEnrollmentToken" Guid="b7e2f508-3c94-4a6d-9e18-5f0b2a7c4d63" Condition="ENROLLMENTTOKEN">
+        <RegistryValue Root="HKLM" Key="SOFTWARE\Assetly\Agent"
+                       Name="EnrollmentToken" Type="string" Value="[ENROLLMENTTOKEN]" KeyPath="yes" />
+      </Component>
+      <Component Id="ConfigProxyUrl" Guid="4d9c1b73-6e28-4f05-b3a7-8c2e5d0f9a16" Condition="PROXYURL">
+        <RegistryValue Root="HKLM" Key="SOFTWARE\Assetly\Agent"
+                       Name="ProxyUrl" Type="string" Value="[PROXYURL]" KeyPath="yes" />
+      </Component>
+    </ComponentGroup>
+
+    <Feature Id="Main" Title="Assetly Inventory Agent" Level="1">
+      <ComponentGroupRef Id="AgentFiles" />
+      <ComponentGroupRef Id="AgentConfig" />
+    </Feature>
+
+    <!-- ── Scheduled task ──────────────────────────────────────────────────
+         Registered by a shipped PowerShell script rather than by schtasks on
+         the command line, because the task needs two triggers (logon plus an
+         hourly repetition, so the cancel-retry window still fires on a machine
+         that stays logged in for weeks) and schtasks cannot express that in
+         one invocation.
+
+         These are directory-based exe custom actions, so [INSTALLFOLDER] is
+         resolved when the action is written to the execution script — the
+         path survives an admin choosing a non-default install directory,
+         which a deferred action reading properties at run time would not. -->
+    <CustomAction Id="RegisterTask"
+                  Directory="INSTALLFOLDER"
+                  ExeCommand="powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -File &quot;[INSTALLFOLDER]Install-AssetlyTask.ps1&quot; -ExePath &quot;[INSTALLFOLDER]AssetlyAgent_Windows.exe&quot;"
+                  Execute="deferred" Impersonate="no" Return="check" />
+
+    <!-- Rollback runs only if the install fails after RegisterTask, and must
+         not leave a task pointing at files that are about to be removed. -->
+    <CustomAction Id="RollbackTask"
+                  Directory="INSTALLFOLDER"
+                  ExeCommand="powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -File &quot;[INSTALLFOLDER]Install-AssetlyTask.ps1&quot; -Remove"
+                  Execute="rollback" Impersonate="no" Return="ignore" />
+
+    <!-- Return="ignore": a missing task must not be able to block an
+         uninstall. Leaving software that cannot be removed on an end user's
+         machine is worse than leaving an orphaned task entry. -->
+    <CustomAction Id="UnregisterTask"
+                  Directory="INSTALLFOLDER"
+                  ExeCommand="powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -File &quot;[INSTALLFOLDER]Install-AssetlyTask.ps1&quot; -Remove"
+                  Execute="deferred" Impersonate="no" Return="ignore" />
+
+    <InstallExecuteSequence>
+      <!-- Rollback is scheduled before the action it undoes: MSI runs the
+           rollback script backwards, so anything scheduled after would never
+           run for a failure inside RegisterTask itself. -->
+      <Custom Action="RollbackTask"   After="InstallFiles"  Condition="NOT REMOVE" />
+      <Custom Action="RegisterTask"   After="RollbackTask"  Condition="NOT REMOVE" />
+      <!-- Before RemoveFiles, while Install-AssetlyTask.ps1 still exists. -->
+      <Custom Action="UnregisterTask" Before="RemoveFiles"  Condition="REMOVE=&quot;ALL&quot;" />
+    </InstallExecuteSequence>
+
+  </Package>
+</Wix>

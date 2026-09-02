@@ -42,8 +42,10 @@ def test_signed_release_verifies_with_the_stdlib_verifier(private_key_pem, monke
     monkeypatch.setenv("UPDATES_DIR", str(updates_dir))
 
     result = subprocess.run(
+        # --no-msi: this exercises signer/verifier agreement, which does not
+        # involve the installer and must not require WiX to be installed.
         [sys.executable, str(REPO_ROOT / "backend" / "scripts" / "sign_release.py"),
-         "--version", "9.9.9", "--key", str(key_path)],
+         "--version", "9.9.9", "--key", str(key_path), "--no-msi"],
         capture_output=True, text=True, env={**os.environ, "UPDATES_DIR": str(updates_dir)},
     )
     assert result.returncode == 0, result.stderr
@@ -142,6 +144,7 @@ async def test_signed_artifact_is_reachable_through_the_running_app(
             sys.executable,
             str(REPO_ROOT / "backend" / "scripts" / "sign_release.py"),
             "--version", "5.0.0",
+            "--no-msi",
             "--key", str(key_path),
         ],
         capture_output=True,

@@ -51,7 +51,13 @@ def _run_sign_release(tmp_path, monkeypatch, env_extra=None):
     sign_release.UPDATES_DIR = updates_dir
 
     sys_argv = sys.argv
-    sys.argv = ["sign_release.py", "--version", "9.9.9", "--key", str(key_path)]
+    # --no-msi: these tests cover the signing and manifest round-trip, not
+    # installer packaging. Building the MSI would require the WiX tool on the
+    # test machine, which would make a signing test fail for a reason that has
+    # nothing to do with signing.
+    sys.argv = [
+        "sign_release.py", "--version", "9.9.9", "--key", str(key_path), "--no-msi",
+    ]
     try:
         sign_release.main()
     finally:

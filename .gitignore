@@ -10,3 +10,7 @@ __pycache__/
 
 .vercel/
 .worktrees/
+
+# Where CI builds the inspection-only MSI. Inside the workspace so that
+# upload-artifact roots the archive sensibly, which means it needs ignoring.
+ci-artifacts/
