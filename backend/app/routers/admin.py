@@ -1,9 +1,11 @@
 import datetime
 import hashlib
+import io
 import json
 import re
 import time
 import uuid
+import zipfile
 from pathlib import Path
 from urllib.parse import quote
 
@@ -36,6 +38,7 @@ from app.config import (
     RATE_LIMIT_MFA_IP,
     REPO_ROOT,
     WINDOWS_EXE_PATH,
+    WINDOWS_MSI_PATH,
 )
 from app.db import get_pool
 from app.devices import legacy_key_conversion
@@ -1270,6 +1273,7 @@ async def diagnostics(request: Request, admin: AdminContext = Depends(require_gl
         "repo_root": str(REPO_ROOT),
         "checkin_api_url": CHECKIN_API_URL_FOR_DOWNLOAD,
         "windows_exe": describe(WINDOWS_EXE_PATH),
+        "windows_msi": describe(WINDOWS_MSI_PATH),
         "agent_source": describe(REPO_ROOT / "inventory_agent.py"),
         "macos_postinstall": describe(REPO_ROOT / "AssetlyAgent_macOS_postinstall.sh"),
         "linux_installer": describe(REPO_ROOT / "AssetlyAgent_Linux.sh"),
@@ -1513,4 +1517,108 @@ async def download_windows(
         ),
         media_type="application/vnd.microsoft.portable-executable",
         headers={"Content-Disposition": 'attachment; filename="AssetlyAgent_Windows.exe"'},
+    )
+
+
+# Written into the zip beside the MSI. {token} and {url} are filled per
+# download; nothing else is substituted, so a brace in either value cannot
+# reach str.format as a field.
+_MSI_DEPLOY_CMD = """@echo off
+REM Assetly Inventory Agent - per-machine install.
+REM
+REM Run from an ELEVATED command prompt, or push the msiexec line below
+REM through Intune, SCCM, GPO or PDQ. /qn is silent; drop it to watch the
+REM install and see any error on screen.
+REM
+REM The enrollment token below is specific to this company and expires -- see
+REM the portal for its remaining lifetime and device cap.
+
+msiexec /i "%~dp0AssetlyAgent.msi" /qn ^
+        CHECKINAPIURL="{url}" ^
+        ENROLLMENTTOKEN="{token}"
+
+REM Troubleshooting: add  /l*v "%~dp0install.log"  to the line above.
+REM Uninstall:  msiexec /x "%~dp0AssetlyAgent.msi" /qn
+"""
+
+
+@router.post("/companies/{company_id}/download/windows-msi")
+async def download_windows_msi(
+    request: Request,
+    company_id: uuid.UUID,
+    csrf_token: str = Form(...),
+    device_count: int = Form(...),
+    token_days: int = Form(INSTALLER_TOKEN_DAYS),
+    admin: AdminContext = Depends(require_full_admin),
+):
+    """Serves the per-machine MSI as a zip: the installer plus a Deploy.cmd
+    carrying this company's URL and a freshly minted enrollment token.
+
+    Deliberately NOT the single-file treatment download_windows gives the .exe.
+    Config cannot be appended to an MSI the way it is to a PE image: an MSI is
+    a structured OLE compound document, and bytes added after it are exactly
+    what invalidates an Authenticode signature. Since the whole reason the MSI
+    exists is to be the artifact that reaches a managed fleet with its
+    signature intact, it has to leave this route byte-for-byte as
+    sign_release.py published it.
+
+    The two-files objection that drove the .exe to a single file does not apply
+    here either. That was about an end user emailing an installer to themselves
+    and losing the config half. This artifact's audience is whoever runs
+    Intune, SCCM or GPO, for whom a zip holding an installer and its command
+    line is the ordinary shape of the thing.
+    """
+    _check_csrf(request, csrf_token)
+    # Same validate-before-mutate ordering as the routes above: a missing build
+    # artifact must not leave an enrollment token minted with nothing to
+    # download.
+    if not WINDOWS_MSI_PATH.exists():
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Windows MSI not yet available. It is published by signing a "
+                "release (backend/scripts/sign_release.py); until then use the "
+                ".exe download. See WINDOWS_DEPLOYMENT.md."
+            ),
+        )
+    msi_bytes = WINDOWS_MSI_PATH.read_bytes()
+    pool = await get_pool()
+    await _get_active_company_or_404(pool, company_id, admin)
+    max_devices, expires_at = _installer_token_terms(device_count, token_days)
+    new_token_id = uuid.uuid4()
+    async with audited(
+        pool, request, admin, "installer.downloaded",
+        target_company_id=company_id,
+        metadata={"platform": "windows_msi", "max_devices": max_devices},
+    ) as scope:
+        token = await create_enrollment_token(
+            pool, str(company_id), label=f"Windows MSI ({device_count} devices)",
+            expires_at=expires_at, max_devices=max_devices, conn=scope.conn,
+            token_id=new_token_id,
+        )
+        await record_audit_on_conn(
+            scope.conn, request, admin, "enrollment_token.created",
+            target_company_id=company_id, target_id=new_token_id,
+            metadata={"max_devices": max_devices, "expires_at": expires_at.isoformat(),
+                      "token_prefix": token[:18]},
+        )
+
+    buffer = io.BytesIO()
+    # ZIP_DEFLATED: an MSI is mostly an already-compressed cabinet, but the
+    # Deploy.cmd is text and a stored-only zip is a needless surprise to
+    # anything that inspects it.
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("AssetlyAgent.msi", msi_bytes)
+        archive.writestr(
+            "Deploy.cmd",
+            # CRLF: this is a Windows batch file, and a bare LF one behaves
+            # unpredictably under cmd.exe.
+            _MSI_DEPLOY_CMD.format(url=CHECKIN_API_URL_FOR_DOWNLOAD, token=token)
+            .replace("\n", "\r\n"),
+        )
+
+    return Response(
+        content=buffer.getvalue(),
+        media_type="application/zip",
+        headers={"Content-Disposition": 'attachment; filename="AssetlyAgent_Windows_MSI.zip"'},
     )

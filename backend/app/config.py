@@ -61,6 +61,17 @@ WINDOWS_EXE_PATH = Path(
     os.environ.get("WINDOWS_EXE_PATH", str(Path(UPDATES_DIR) / "AssetlyAgent_Windows.exe"))
 )
 
+# The per-machine installer IT deploys through Intune, SCCM or GPO. Same
+# directory and same reasoning as WINDOWS_EXE_PATH above: what the portal hands
+# out is the artifact sign_release.py published, so it cannot drift from the
+# manifest, and an unsigned build is never distributed. It is absent until a
+# release has been signed -- the download route reports that as a 503 rather
+# than a broken file, because an MSI is the artifact a fleet installs and a
+# corrupt one is worse than a missing one.
+WINDOWS_MSI_PATH = Path(
+    os.environ.get("WINDOWS_MSI_PATH", str(Path(UPDATES_DIR) / "AssetlyAgent.msi"))
+)
+
 # Identity of the macOS installer package. The identifier is what macOS keys
 # receipts on, so changing it turns every future install into a second, parallel
 # product rather than an upgrade of this one -- treat it as permanent. The
