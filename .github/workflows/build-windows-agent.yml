@@ -120,14 +120,60 @@ jobs:
         run: |
           set -euo pipefail
           EXE=backend/static/AssetlyAgent_Windows.exe
+          SOURCES="AssetlyAgent_Windows.ps1 Build_Windows_EXE.ps1"
+
+          # ps2exe is NOT reproducible: compiling an unchanged .ps1 twice gives
+          # different bytes. This workflow also triggers on installer/** and on
+          # itself, neither of which affects the executable -- so without this
+          # guard, editing the .wxs recompiled the agent, committed bytes that
+          # differed from the ones the signed manifest covers, and turned
+          # release-consistency red, demanding a re-signed release for a change
+          # that never touched the agent. It nearly happened on 8f1b772 and was
+          # averted only because that run's push lost a race.
+          #
+          # So the question is not "did the bytes change" -- they always do --
+          # but "has the source changed since the committed executable was
+          # built". Asked via history rather than event metadata, which keeps
+          # this correct for workflow_dispatch too, where github.event.before
+          # does not exist.
+          LAST_EXE_COMMIT="$(git log -1 --format=%H -- "$EXE" || true)"
+          if [ -n "$LAST_EXE_COMMIT" ]; then
+            SOURCE_CHANGES="$(git log --oneline "$LAST_EXE_COMMIT..HEAD" -- $SOURCES)"
+            if [ -z "$SOURCE_CHANGES" ]; then
+              echo "Agent source unchanged since the committed executable was built."
+              echo "Leaving it alone: recompiling it would only churn non-reproducible bytes"
+              echo "and invalidate the signed release."
+              exit 0
+            fi
+            echo "Source commits since the committed executable was built:"
+            echo "$SOURCE_CHANGES"
+          else
+            echo "No committed executable yet; committing the first build."
+          fi
+
           # --porcelain, not `git diff`: on the very first run the executable is
           # untracked, which `git diff` reports as no change at all.
           if [ -z "$(git status --porcelain -- "$EXE")" ]; then
             echo "Executable is byte-identical to the committed one; nothing to do."
             exit 0
           fi
+
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add "$EXE"
           git commit -m "build: recompile AssetlyAgent_Windows.exe from ${GITHUB_SHA:0:7}"
-          git push
+
+          # A release signed and pushed while this job was compiling moves main
+          # underneath it, and a bare `git push` then fails on a race rather
+          # than on anything being wrong. Rebase onto whatever landed and try
+          # again; give up after a few attempts rather than loop forever.
+          for attempt in 1 2 3; do
+            if git push; then
+              echo "Pushed on attempt $attempt."
+              exit 0
+            fi
+            echo "Push rejected (attempt $attempt) -- main moved while this build ran. Rebasing."
+            git pull --rebase origin main
+          done
+          echo "::error::Could not push the rebuilt executable after 3 attempts."
+          exit 1
