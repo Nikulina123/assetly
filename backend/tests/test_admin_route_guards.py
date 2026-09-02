@@ -41,6 +41,15 @@ ALLOWLISTED_ROUTES = {
     # logged-in admin (support included) can manage their own MFA recovery
     # codes without needing a full-admin role.
     ("POST", "/admin/mfa/recovery-codes"),
+    # The language switcher writes one display-preference cookie and touches
+    # no tenant state, no account state, and no database. It is deliberately
+    # reachable without a session because it has to work on the login and
+    # MFA screens, where there is no admin identity yet -- an admin who
+    # cannot read English needs the login page in Georgian, which is exactly
+    # where a role guard would make it unreachable. The handler validates
+    # `lang` against a fixed set and `next` as a same-site path, so the worst
+    # an unauthenticated caller can do is set their own cookie.
+    ("POST", "/admin/language"),
 }
 
 

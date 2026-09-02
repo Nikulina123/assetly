@@ -1,115 +1,168 @@
 {% extends "portal_base.html" %}
 {% import "_icons.html" as icons %}
-{% block title %}Settings — Assetly{% endblock %}
-{% block subtitle %}<div class="topbar-subtitle">Organization & account preferences</div>{% endblock %}
+{% block title %}{{ t("settings.title") }}{% endblock %}
+{% block subtitle %}<div class="topbar-subtitle">{{ t("settings.subtitle") }}</div>{% endblock %}
 {% block content %}
-<div style="max-width:720px;display:flex;flex-direction:column;gap:16px">
+<div class="page-col">
+
+{% if saved_message %}
+<div class="banner banner-success">{{ saved_message }}</div>
+{% endif %}
 
 {% if new_api_key %}
 <div class="banner banner-success">
-  <strong>New API key — save it now, it will not be shown again:</strong>
+  <strong>{{ t("companies.save_api_key") }}</strong>
   <div class="mono" style="margin-top:6px"><code>{{ new_api_key }}</code></div>
 </div>
 {% endif %}
 
-<div class="card flush">
-  <div class="card-header"><div class="card-title">{{ icons.icon('building', 14, extra_class='spec-row-icon') }}&nbsp;Company</div></div>
-  <div class="card-body">
-    <div class="spec-grid">
-      <div><div class="spec-label">API key prefix</div><div class="spec-value mono">{{ company['api_key_prefix'] }}…</div></div>
-      <div><div class="spec-label">Status</div><div class="spec-value">{% if company['revoked_at'] %}Revoked{% else %}Active{% endif %}</div></div>
-    </div>
-  </div>
+<div class="section-head">
+  <div class="section-title">{{ t("settings.sec_rollout") }}</div>
+  <div class="section-sub">{{ t("settings.sec_rollout_sub") }}</div>
 </div>
 
 <div class="card flush">
-  <div class="card-header"><div class="card-title">{{ icons.icon('mail', 14, extra_class='spec-row-icon') }}&nbsp;Notification email</div></div>
+  <div class="card-header"><div class="card-title">{{ icons.icon('download', 14, extra_class='spec-row-icon') }}&nbsp;{{ t("settings.download") }}</div></div>
   <div class="card-body">
-    {% if admin.is_full_admin %}
-    <form method="post" action="/admin/companies/{{ company['id'] }}/notification-email">
-      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-      <div style="display:flex;gap:10px;flex-wrap:wrap">
-        <input class="input" type="email" name="notification_email"
-               value="{{ company['notification_email'] or '' }}" required style="flex:1;min-width:240px">
-        <button type="submit" class="btn">Update</button>
-      </div>
-    </form>
+    {% if company['revoked_at'] %}
+    <div class="muted">{{ t("settings.download_revoked") }}</div>
+    {% elif not admin.is_full_admin %}
+    <div class="muted">{{ t("settings.download_read_only") }}</div>
     {% else %}
-    <div class="muted">{{ company['notification_email'] or '—' }}</div>
+    <div class="banner">
+      {{ t("settings.download_explainer") | safe }}
+    </div>
+    <div class="platform-grid">
+      {% for platform, url_name, platform_label, file_note in [
+        ('macos', 'macos', 'macOS', 'double-clickable .pkg'),
+        ('windows', 'windows', 'Windows', 'single .exe'),
+        ('linux', 'linux', 'Linux', 'shell installer'),
+        ('windows_msi', 'windows-msi', 'Windows MSI', 'per-machine, for IT'),
+      ] %}
+      <form method="post" action="/admin/companies/{{ company['id'] }}/download/{{ url_name }}"
+            class="platform-card">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <div class="platform-name">{{ platform_label }}</div>
+        <div class="platform-note">{{ file_note }}</div>
+        <label class="field-label" for="devices-{{ platform }}">{{ t("settings.expected_devices") }}</label>
+        <input class="input" id="devices-{{ platform }}" type="number" name="device_count"
+               min="1" max="10000" value="25" required>
+        <label class="field-label" for="tokendays-{{ platform }}">{{ t("settings.token_valid_for") }}</label>
+        <select class="input" id="tokendays-{{ platform }}" name="token_days">
+          {% for days in [7, 14, 30, 90] %}
+          <option value="{{ days }}" {% if days == 14 %}selected{% endif %}>{{ t('settings.days', n=days) }}</option>
+          {% endfor %}
+        </select>
+        <button type="submit" class="btn btn-secondary" aria-label="{{ t('settings.download_for', platform=platform_label) }}"
+                style="margin-top:auto;width:100%;justify-content:center">{{ icons.icon('download', 14) }}{{ t('settings.download_btn') }}</button>
+      </form>
+      {% endfor %}
+    </div>
     {% endif %}
   </div>
 </div>
 
 <div class="card flush">
-  <div class="card-header"><div class="card-title">{{ icons.icon('key', 14, extra_class='spec-row-icon') }}&nbsp;API key</div></div>
+  <div class="card-header"><div class="card-title">{{ icons.icon('key', 14, extra_class='spec-row-icon') }}&nbsp;{{ t("settings.tokens") }}</div></div>
   <div class="card-body">
-    {% if admin.is_full_admin %}
-    <div style="display:flex;gap:10px;flex-wrap:wrap">
-      <form method="post" action="/admin/companies/{{ company['id'] }}/rotate-key">
-        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-        <button type="submit" class="btn btn-secondary">{{ icons.icon('refresh', 14) }}Rotate API key</button>
-      </form>
-      {% if not company['revoked_at'] %}
-      <form method="post" action="/admin/companies/{{ company['id'] }}/revoke">
-        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-        <button type="submit" class="btn btn-danger">Revoke company</button>
-      </form>
-      {% endif %}
+    <div class="banner">
+      {{ t("settings.tokens_explainer") }}
+    </div>
+    {% if tokens %}
+    <div style="overflow-x:auto">
+    <table class="table">
+      <thead>
+        <tr>
+          <th>{{ t("settings.tok_label") }}</th><th>{{ t("settings.tok_token") }}</th><th>{{ t("settings.tok_expires") }}</th><th>{{ t("settings.tok_devices") }}</th><th>{{ t("settings.status") }}</th><th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for tok in tokens %}
+        <tr>
+          <td>{{ tok['label'] or '—' }}</td>
+          <td class="mono">{{ tok['token_prefix'] }}…</td>
+          <td class="mono muted">{{ tok['expires_at'].strftime('%Y-%m-%d %H:%M') }}</td>
+          <td class="mono {% if tok['max_devices'] and tok['used_count'] >= tok['max_devices'] * 0.8 %}warn{% endif %}">
+            {{ tok['used_count'] }} / {{ tok['max_devices'] if tok['max_devices'] is not none else t('settings.tok_unlimited') }}
+          </td>
+          <td>
+            <span class="badge {% if tok['status'] == 'active' %}online{% elif tok['status'] == 'revoked' %}offline{% else %}pending{% endif %}">{{ t('token_status.' ~ tok['status']) }}</span>
+          </td>
+          <td>
+            {% if tok['status'] == 'active' and admin.is_full_admin %}
+            <form method="post" action="/admin/companies/{{ company['id'] }}/tokens/{{ tok['id'] }}/revoke">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+              <button type="submit" class="btn btn-danger">{{ t("common.revoke") }}</button>
+            </form>
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
     </div>
     {% else %}
-    <div class="muted">Read-only — full admin required to rotate or revoke.</div>
+    <div class="muted">{{ t("settings.tokens_none") }}</div>
     {% endif %}
   </div>
 </div>
 
+
+<div class="section-head">
+  <div class="section-title">{{ t("settings.sec_behaviour") }}</div>
+  <div class="section-sub">{{ t("settings.sec_behaviour_sub") }}</div>
+</div>
+
 <div class="card flush">
-  <div class="card-header"><div class="card-title">{{ icons.icon('settings', 14, extra_class='spec-row-icon') }}&nbsp;Check-in schedule</div></div>
+  <div class="card-header"><div class="card-title">{{ icons.icon('settings', 14, extra_class='spec-row-icon') }}&nbsp;{{ t("settings.schedule") }}</div></div>
   <div class="card-body">
     {% if schedule_error %}
     <div class="banner banner-error">{{ schedule_error }}</div>
     {% endif %}
     <div class="banner">{{ schedule_summary }}</div>
     {% if admin.is_full_admin %}
-    <form method="post" action="/admin/companies/{{ company['id'] }}/schedule">
+    <form method="post" action="/admin/companies/{{ company['id'] }}/schedule" class="sched-form">
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
 
-      <label class="muted" style="display:block;margin:12px 0 4px">Prompt employees every</label>
-      <select class="input" name="interval_preset" style="width:100%">
+      <label class="field-label" for="interval_preset">{{ t("settings.prompt_every") }}</label>
+      <select class="input" id="interval_preset" name="interval_preset">
         {% for label, seconds in presets %}
         <option value="{{ seconds }}" {% if not interval_is_custom and seconds == schedule['checkin_interval_seconds'] %}selected{% endif %}>{{ label }}</option>
         {% endfor %}
         {# A stored interval that matches no preset must select this option. If
            nothing is selected the browser picks the first one, which made the
            form offer to overwrite a custom interval with 12 hours. #}
-        <option value="custom" {% if interval_is_custom %}selected{% endif %}>Custom…</option>
+        <option value="custom" {% if interval_is_custom %}selected{% endif %}>{{ t("settings.custom_option") }}</option>
       </select>
 
-      <label class="muted" style="display:block;margin:12px 0 4px">Custom interval &mdash; used only when &ldquo;Custom…&rdquo; is selected above</label>
-      <div style="display:flex;gap:10px;flex-wrap:wrap">
-        <input class="input" type="number" name="custom_count" value="{{ custom_count }}"
-               min="1" max="{{ custom_count_max }}" placeholder="e.g. 5" style="flex:1;min-width:120px">
+      <div class="when-custom">
+      <label class="field-label" for="custom_count">{{ t("settings.custom_interval") }}</label>
+      <div class="field-row">
+        <input class="input" id="custom_count" type="number" name="custom_count" value="{{ custom_count }}"
+               min="1" max="{{ custom_count_max }}" placeholder="e.g. 5" style="min-width:120px">
         <select class="input" name="custom_unit" style="flex:1;min-width:140px">
           {% for unit in ['hours', 'days', 'weeks', 'months', 'years'] %}
-          <option value="{{ unit }}" {% if unit == custom_unit %}selected{% endif %}>{{ unit }}</option>
+          <option value="{{ unit }}" {% if unit == custom_unit %}selected{% endif %}>{{ t('unit.' ~ unit) }}</option>
           {% endfor %}
         </select>
       </div>
+      </div>
 
-      <label class="muted" style="display:block;margin:12px 0 4px">If they cancel, ask again after</label>
-      <select class="input" name="cancel_retry_seconds" style="width:100%">
+      <label class="field-label" for="cancel_retry_seconds">{{ t("settings.cancel_retry") }}</label>
+      <select class="input" id="cancel_retry_seconds" name="cancel_retry_seconds">
         {% for label, seconds in retry_presets %}
         <option value="{{ seconds }}" {% if seconds == schedule['cancel_retry_seconds'] %}selected{% endif %}>{{ label }}</option>
         {% endfor %}
       </select>
 
-      <button type="submit" class="btn" style="margin-top:12px">Save check-in schedule</button>
+      <div class="form-actions"><button type="submit" class="btn">{{ t("settings.save_schedule") }}</button></div>
     </form>
     {% endif %}
   </div>
 </div>
 
 <div class="card flush">
-  <div class="card-header"><div class="card-title">{{ icons.icon('settings', 14, extra_class='spec-row-icon') }}&nbsp;Check-in fields</div></div>
+  <div class="card-header"><div class="card-title">{{ icons.icon('settings', 14, extra_class='spec-row-icon') }}&nbsp;{{ t("settings.fields") }}</div></div>
   <div class="card-body">
     {% if admin.is_full_admin %}
     <form method="post" action="/admin/companies/{{ company['id'] }}/fields/hardware">
@@ -120,23 +173,41 @@
       </label>
       {% endfor %}
       <label class="check-row">
-        <input type="checkbox" name="department_enabled" {% if field_settings['department_enabled'] %}checked{% endif %}> Department field enabled
+        <input type="checkbox" name="department_enabled" {% if field_settings['department_enabled'] %}checked{% endif %}> {{ t("settings.department_enabled") }}
       </label>
       <label class="check-row" style="margin-bottom:8px">
-        <input type="checkbox" name="department_required" {% if field_settings['department_required'] %}checked{% endif %}> Department required
+        <input type="checkbox" name="department_required" {% if field_settings['department_required'] %}checked{% endif %}> {{ t("settings.department_required") }}
       </label>
-      <label class="muted" style="display:block;margin:12px 0 4px">Department options &mdash; one per line. Leave empty to restore the built-in list.</label>
-      <textarea class="input" name="department_options" rows="6" style="width:100%;font-family:inherit"
+      <label class="field-label" for="department_options">Department options &mdash; one per line. Leave empty to restore the built-in list.</label>
+      <textarea class="input" id="department_options" name="department_options" rows="6" style="font-family:inherit"
 >{% for option in field_settings['department_options'] %}{{ option }}
 {% endfor %}</textarea>
-      <button type="submit" class="btn" style="margin-top:8px">Save check-in fields</button>
+      <div class="form-actions"><button type="submit" class="btn">{{ t("settings.save_fields") }}</button></div>
     </form>
+    {% else %}
+    {# Support role: the form is hidden, so state the settings in words --
+       this card used to render an entirely empty body for read-only admins. #}
+    <div class="field-label">{{ t("settings.collected_every_checkin") }}</div>
+    <div class="tag-row">
+      {% for f in field_settings['hardware_field_options'] if f['enabled'] %}
+      <span class="tag">{{ f['label'] }}</span>
+      {% else %}
+      <span class="muted">{{ t("settings.no_hardware_fields") }}</span>
+      {% endfor %}
+    </div>
+    <div class="field-label">{{ t("device.department") }}</div>
+    <div class="muted">
+      {% if not field_settings['department_enabled'] %}{{ t("settings.dept_not_asked") }}
+      {% elif field_settings['department_required'] %}{{ t('settings.dept_required') }}
+      {% else %}{{ t("settings.dept_optional") }}{% endif %}
+    </div>
+    <div class="field-hint">{{ t("settings.read_only_hint") }}</div>
     {% endif %}
   </div>
 </div>
 
 <div class="card flush">
-  <div class="card-header"><div class="card-title">{{ icons.icon('reports', 14, extra_class='spec-row-icon') }}&nbsp;Custom fields</div></div>
+  <div class="card-header"><div class="card-title">{{ icons.icon('reports', 14, extra_class='spec-row-icon') }}&nbsp;{{ t("settings.custom_fields") }}</div></div>
   <div class="card-body">
     {% if field_error %}
     <div class="banner banner-error">{{ field_error }}</div>
@@ -144,13 +215,20 @@
     {% for cf in field_settings['custom_fields'] %}
     <div class="custom-field-row">
       <span style="flex:1">{{ cf['label'] }}
-        <span class="muted">({% if cf['required'] %}required{% else %}optional{% endif %})</span>
+        <span class="muted">({% if cf['required'] %}{{ t('common.required') }}{% else %}{{ t('common.optional') }}{% endif %})</span>
       </span>
       {% if admin.is_full_admin %}
-      <form method="post" action="/admin/companies/{{ company['id'] }}/fields/custom/{{ cf['key'] }}/remove">
-        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-        <button type="submit" class="btn btn-danger">Remove</button>
-      </form>
+        {% if removing_field == cf['key'] %}
+        <span class="muted">{{ t("settings.remove_field_q") }}</span>
+        <a class="btn btn-ghost" href="/admin/companies/{{ company['id'] }}">{{ t("common.cancel") }}</a>
+        <form method="post" action="/admin/companies/{{ company['id'] }}/fields/custom/{{ cf['key'] }}/remove">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <button type="submit" class="btn btn-danger">{{ t("settings.yes_remove") }}</button>
+        </form>
+        {% else %}
+        <a class="btn btn-danger" href="/admin/companies/{{ company['id'] }}?removing={{ cf['key'] }}"
+           aria-label="{{ t('settings.remove_named', name=cf['label']) }}">{{ t("common.remove") }}</a>
+        {% endif %}
       {% endif %}
     </div>
     {% endfor %}
@@ -158,11 +236,15 @@
     <form method="post" action="/admin/companies/{{ company['id'] }}/fields/custom" style="margin-top:14px">
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
       <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
-        <input class="input" type="text" name="label" placeholder="Field label" required style="flex:1;min-width:200px">
-        <label class="muted" style="display:flex;align-items:center;gap:6px"><input type="checkbox" name="required"> Required</label>
-        <button type="submit" class="btn">Add custom field</button>
+        <input class="input" type="text" name="label" placeholder="{{ t('settings.field_label') }}" required
+               aria-label="{{ t('settings.new_field_label') }}" style="flex:1;min-width:200px">
+        <label class="muted" style="display:flex;align-items:center;gap:6px"><input type="checkbox" name="required"> {{ t('common.required') | capitalize }}</label>
+        <button type="submit" class="btn">{{ t("settings.add_custom_field") }}</button>
       </div>
     </form>
+    {% endif %}
+    {% if not admin.is_full_admin and not field_settings['custom_fields'] %}
+    <div class="muted">{{ t("settings.no_custom_fields") }}</div>
     {% endif %}
   </div>
 </div>
@@ -172,18 +254,19 @@
    re-download anything. Values are echoed from `agent_ui_form` when a save was
    rejected, so a bad colour can be corrected without retyping the rest. #}
 {% set ui_value = agent_ui_form if agent_ui_form else agent_ui['effective'] %}
+
 <div class="card flush">
-  <div class="card-header"><div class="card-title">{{ icons.icon('settings', 14, extra_class='spec-row-icon') }}&nbsp;Agent window appearance</div></div>
+  <div class="card-header"><div class="card-title">{{ icons.icon('settings', 14, extra_class='spec-row-icon') }}&nbsp;{{ t("settings.appearance") }}</div></div>
   <div class="card-body">
     {% if agent_ui_error %}
     <div class="banner banner-error" style="white-space:pre-line">{{ agent_ui_error }}</div>
     {% endif %}
     <div class="banner">
-      Changes reach every installed agent on its next check-in — no new download needed.
+      {{ t("settings.appearance_reach") }}
       {% if agent_ui['customised'] %}
-      {{ agent_ui['customised'] | length }} of {{ agent_ui['labels'] | length }} settings are customised.
+      {{ t('settings.appearance_customised', n=agent_ui['customised'] | length, total=agent_ui['labels'] | length) }}
       {% else %}
-      Everything is currently at its built-in default.
+      {{ t("settings.appearance_default") }}
       {% endif %}
     </div>
     {% if admin.is_full_admin %}
@@ -191,28 +274,27 @@
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
 
       {% for key, max_length in agent_ui['copy_keys'].items() %}
-      <label class="muted" style="display:block;margin:12px 0 4px">
+      <label class="field-label" for="ui-{{ key }}">
         {{ agent_ui['labels'][key] }}
         {% if agent_ui['placeholders'].get(key) %}
-          &mdash; may use
+          &mdash; {{ t("settings.may_use") }}
           {% for p in agent_ui['placeholders'][key] %}<code>{{ '{' }}{{ p }}{{ '}' }}</code>{% if not loop.last %}, {% endif %}{% endfor %}
         {% endif %}
       </label>
       {% if key == 'success_message' %}
       {# The only multi-line value: it is shown in a dialog, not on one row. #}
-      <textarea class="input" name="{{ key }}" rows="3" maxlength="{{ max_length }}"
-                style="width:100%;resize:vertical"
+      <textarea class="input" id="ui-{{ key }}" name="{{ key }}" rows="3" maxlength="{{ max_length }}"
+                style="resize:vertical"
                 placeholder="{{ agent_ui['defaults'][key] }}">{{ ui_value[key] }}</textarea>
       {% else %}
-      <input class="input" type="text" name="{{ key }}" value="{{ ui_value[key] }}"
-             maxlength="{{ max_length }}" style="width:100%"
+      <input class="input" id="ui-{{ key }}" type="text" name="{{ key }}" value="{{ ui_value[key] }}"
+             maxlength="{{ max_length }}"
              placeholder="{{ agent_ui['defaults'][key] }}">
       {% endif %}
       {% endfor %}
 
-      <label class="muted" style="display:block;margin:18px 0 4px">
-        Colours &mdash; six hex digits, e.g. <code>#1866F2</code>. Combinations that would be
-        unreadable on an employee&rsquo;s screen are rejected when you save.
+      <label class="field-label" style="margin-top:20px">
+        {{ t("settings.colours") | safe }}
       </label>
       {% for key in agent_ui['color_keys'] %}
       <div style="display:flex;gap:10px;align-items:center;margin:8px 0">
@@ -224,87 +306,105 @@
                      background:{{ agent_ui['effective'][key] }}"></span>
         <span class="muted" style="flex:1;min-width:160px">{{ agent_ui['labels'][key] }}</span>
         <input class="input" type="text" name="{{ key }}" value="{{ ui_value[key] }}"
+               aria-label="{{ t('settings.colour_aria', name=agent_ui['labels'][key]) }}"
                pattern="#[0-9A-Fa-f]{6}" maxlength="7" spellcheck="false"
                style="flex:none;width:110px;font-family:ui-monospace,Consolas,monospace"
                placeholder="{{ agent_ui['defaults'][key] }}">
       </div>
       {% endfor %}
 
-      <button type="submit" class="btn" style="margin-top:12px">Save appearance</button>
-      <div class="muted" style="margin-top:8px">
-        Clear any box and save to put that one setting back to its built-in default.
+      <div class="form-actions"><button type="submit" class="btn">{{ t("settings.save_appearance") }}</button></div>
+      <div class="field-hint">
+        {{ t("settings.clear_to_default") }}
       </div>
     </form>
-    {% endif %}
-  </div>
-</div>
-
-<div class="card flush">
-  <div class="card-header"><div class="card-title">{{ icons.icon('download', 14, extra_class='spec-row-icon') }}&nbsp;Download agent</div></div>
-  <div class="card-body">
-    {% if company['revoked_at'] %}
-    <div class="muted">Company is revoked — downloads are disabled.</div>
-    {% elif not admin.is_full_admin %}
-    <div class="muted">Read-only — full admin required to download installers.</div>
     {% else %}
-    <div class="banner">
-      Each download embeds a fresh enrollment token. Downloading one platform does
-      not affect installers you downloaded earlier, so macOS, Windows and Linux can
-      be rolled out together. Devices already reporting are unaffected.
-      macOS gets a double-clickable <code>.pkg</code> and Windows a single
-      <code>.exe</code> — both configured for this company, nothing to edit.
-      The Windows <code>MSI</code> is for IT rather than for one person: a zip
-      holding the installer and a <code>Deploy.cmd</code> with the msiexec line
-      for Intune, SCCM or GPO. It installs per machine, covers every user of a
-      PC, and uninstalls from Add/Remove Programs.
+    {# Same read-only hole as the check-in fields card: without this the
+       support role can see that settings are customised but not what to. #}
+    {% for key in agent_ui['copy_keys'] %}
+    <div class="field-label">{{ agent_ui['labels'][key] }}</div>
+    <div class="muted">{{ agent_ui['effective'][key] }}</div>
+    {% endfor %}
+    {% for key in agent_ui['color_keys'] %}
+    <div style="display:flex;gap:10px;align-items:center;margin:10px 0 0">
+      <span style="width:26px;height:26px;flex:none;border-radius:5px;
+                   border:1px solid rgba(255,255,255,.25);
+                   background:{{ agent_ui['effective'][key] }}"></span>
+      <span class="muted" style="flex:1">{{ agent_ui['labels'][key] }}</span>
+      <span class="mono">{{ agent_ui['effective'][key] }}</span>
     </div>
-    <div class="banner">
-      Expected devices sets the enrollment cap for the token this download embeds
-      (with headroom for re-imaged machines) &mdash; and token lifetime how long it
-      stays usable. Set both for whichever platform you download.
+    {% endfor %}
+    <div class="field-hint">{{ t("settings.read_only_hint") }}</div>
+    {% endif %}
+  </div>
+</div>
+
+
+<div class="section-head">
+  <div class="section-title">{{ t("settings.sec_org") }}</div>
+  <div class="section-sub">{{ t("settings.sec_org_sub") }}</div>
+</div>
+
+<div class="card flush">
+  <div class="card-header"><div class="card-title">{{ icons.icon('building', 14, extra_class='spec-row-icon') }}&nbsp;{{ t("settings.company") }}</div></div>
+  <div class="card-body">
+    <div class="spec-grid">
+      <div><div class="spec-label">{{ t("settings.api_key_prefix") }}</div><div class="spec-value mono">{{ company['api_key_prefix'] }}…</div></div>
+      <div><div class="spec-label">{{ t("settings.status") }}</div><div class="spec-value">{% if company['revoked_at'] %}{{ t('common.revoked') }}{% else %}{{ t('common.active') }}{% endif %}</div></div>
     </div>
-    <div style="display:flex;gap:20px;flex-wrap:wrap">
-      {% for platform, url_name, download_label in [
-        ('macos', 'macos', 'Download for macOS'),
-        ('linux', 'linux', 'Download for Linux'),
-        ('windows', 'windows', 'Download for Windows'),
-        ('windows_msi', 'windows-msi', 'Download Windows MSI (IT)'),
-      ] %}
-      <form method="post" action="/admin/companies/{{ company['id'] }}/download/{{ url_name }}"
-            style="min-width:220px">
-        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-        <label class="muted" style="display:block;margin:0 0 4px">Expected devices</label>
-        <input class="input" type="number" name="device_count"
-               min="1" max="10000" value="25" required style="width:100%">
-        <label class="muted" style="display:block;margin:10px 0 4px">Token valid for</label>
-        <select class="input" name="token_days" style="width:100%">
-          <option value="7">7 days</option>
-          <option value="14" selected>14 days</option>
-          <option value="30">30 days</option>
-          <option value="90">90 days</option>
-        </select>
-        <button type="submit" class="btn btn-secondary" style="margin-top:10px;width:100%">{{ icons.icon('download', 14) }}{{ download_label }}</button>
-      </form>
-      {% endfor %}
-    </div>
+  </div>
+</div>
+
+<div class="card flush">
+  <div class="card-header"><div class="card-title">{{ icons.icon('mail', 14, extra_class='spec-row-icon') }}&nbsp;{{ t("settings.notification_email") }}</div></div>
+  <div class="card-body">
+    {% if admin.is_full_admin %}
+    <form method="post" action="/admin/companies/{{ company['id'] }}/notification-email">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <label class="field-label" for="notification_email">{{ t("settings.send_alerts_to") }}</label>
+      <div class="field-row">
+        <input class="input" id="notification_email" type="email" name="notification_email"
+               value="{{ company['notification_email'] or '' }}" required style="min-width:240px">
+        <button type="submit" class="btn">{{ t("settings.save_email") }}</button>
+      </div>
+    </form>
+    {% else %}
+    <div class="muted">{{ company['notification_email'] or '—' }}</div>
     {% endif %}
   </div>
 </div>
 
 <div class="card flush">
-  <div class="card-header"><div class="card-title">{{ icons.icon('key', 14, extra_class='spec-row-icon') }}&nbsp;Legacy key conversion</div></div>
+  <div class="card-header"><div class="card-title">{{ icons.icon('key', 14, extra_class='spec-row-icon') }}&nbsp;{{ t("settings.api_key") }}</div></div>
+  <div class="card-body">
+    {% if admin.is_full_admin %}
+    <div class="banner">
+      {{ t("settings.rotate_explainer") }}
+    </div>
+    <form method="post" action="/admin/companies/{{ company['id'] }}/rotate-key">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <button type="submit" class="btn btn-secondary">{{ icons.icon('refresh', 14) }}{{ t('settings.rotate') }}</button>
+    </form>
+    {% else %}
+    <div class="muted">{{ t("settings.api_key_read_only") }}</div>
+    {% endif %}
+  </div>
+</div>
+
+<div class="card flush">
+  <div class="card-header"><div class="card-title">{{ icons.icon('key', 14, extra_class='spec-row-icon') }}&nbsp;{{ t("settings.legacy") }}</div></div>
   <div class="card-body">
     <div class="muted">
-      {% if legacy_conversion.total == 0 %}No devices yet.{% else %}{{ legacy_conversion.converted }} / {{ legacy_conversion.total }} devices have converted to a per-device credential.{% endif %}
+      {% if legacy_conversion.total == 0 %}{{ t('settings.legacy_none') }}{% else %}{{ t('settings.legacy_converted', converted=legacy_conversion.converted, total=legacy_conversion.total) }}{% endif %}
       {% if legacy_conversion.last_legacy_checkin %}
-      Most recent legacy check-in: {{ legacy_conversion.last_legacy_checkin }}.
+      {{ t('settings.legacy_last', when=legacy_conversion.last_legacy_checkin) }}
       {% endif %}
     </div>
     {% if legacy_conversion.legacy_devices %}
     <div style="overflow-x:auto">
     <table class="table">
       <thead>
-        <tr><th>Serial number</th><th>Last check-in</th></tr>
+        <tr><th>{{ t("device.serial_number") }}</th><th>{{ t("device.last_checkin") }}</th></tr>
       </thead>
       <tbody>
         {% for d in legacy_conversion.legacy_devices %}
@@ -320,51 +420,22 @@
   </div>
 </div>
 
-<div class="card flush">
-  <div class="card-header"><div class="card-title">{{ icons.icon('key', 14, extra_class='spec-row-icon') }}&nbsp;Enrollment tokens</div></div>
+
+{% if admin.is_full_admin and not company['revoked_at'] %}
+<div class="card flush danger">
+  <div class="card-header"><div class="card-title">{{ icons.icon('alert', 14, extra_class='spec-row-icon') }}&nbsp;{{ t("settings.danger") }}</div></div>
   <div class="card-body">
     <div class="banner">
-      Revoking a token blocks future enrollments from that installer only — it does not
-      touch devices that already enrolled with it, and they keep checking in normally.
+      {{ t("settings.danger_explainer") }}
     </div>
-    {% if tokens %}
-    <div style="overflow-x:auto">
-    <table class="table">
-      <thead>
-        <tr>
-          <th>Label</th><th>Token</th><th>Expires</th><th>Devices</th><th>Status</th><th></th>
-        </tr>
-      </thead>
-      <tbody>
-        {% for t in tokens %}
-        <tr>
-          <td>{{ t['label'] or '—' }}</td>
-          <td class="mono">{{ t['token_prefix'] }}…</td>
-          <td class="mono muted">{{ t['expires_at'].strftime('%Y-%m-%d %H:%M') }}</td>
-          <td class="mono {% if t['max_devices'] and t['used_count'] >= t['max_devices'] * 0.8 %}warn{% endif %}">
-            {{ t['used_count'] }} / {{ t['max_devices'] if t['max_devices'] is not none else 'unlimited' }}
-          </td>
-          <td>
-            <span class="badge {% if t['status'] == 'active' %}online{% elif t['status'] == 'revoked' %}offline{% else %}pending{% endif %}">{{ t['status'] | capitalize }}</span>
-          </td>
-          <td>
-            {% if t['status'] == 'active' and admin.is_full_admin %}
-            <form method="post" action="/admin/companies/{{ company['id'] }}/tokens/{{ t['id'] }}/revoke">
-              <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-              <button type="submit" class="btn btn-danger">Revoke</button>
-            </form>
-            {% endif %}
-          </td>
-        </tr>
-        {% endfor %}
-      </tbody>
-    </table>
-    </div>
-    {% else %}
-    <div class="muted">No enrollment tokens yet. Download an installer above to create one.</div>
-    {% endif %}
+    <form method="post" action="/admin/companies/{{ company['id'] }}/revoke">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <button type="submit" class="btn btn-danger">{{ t("settings.revoke_named", name=company["name"]) }}</button>
+    </form>
   </div>
 </div>
+{% endif %}
+
 
 </div>
 {% endblock %}

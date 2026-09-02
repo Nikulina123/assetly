@@ -1,19 +1,19 @@
 {% extends "portal_base.html" %}
 {% import "_icons.html" as icons %}
-{% block title %}Computers — Assetly{% endblock %}
-{% block subtitle %}<div class="topbar-subtitle">{{ devices | length }} device{{ '' if devices | length == 1 else 's' }} total</div>{% endblock %}
+{% block title %}{{ t("computers.title") }}{% endblock %}
+{% block subtitle %}<div class="topbar-subtitle">{{ t("computers.devices_total", n=devices | length, s='' if devices | length == 1 else 's') }}</div>{% endblock %}
 {% block content %}
 {% if devices %}
 <div class="toolbar">
   <div class="search-field" style="min-width:280px;flex:1;max-width:340px">
     {{ icons.icon('search', 14) }}
-    <input class="input" id="q" type="search" placeholder="Search hostname, serial, department…">
+    <input class="input" id="q" type="search" placeholder="{{ t('computers.search_placeholder') }}">
   </div>
   <div class="filter-pills" id="status-filter" data-active="">
-    <button type="button" class="filter-pill active" data-status="">All</button>
-    <button type="button" class="filter-pill" data-status="online">Online</button>
-    <button type="button" class="filter-pill" data-status="pending">Pending</button>
-    <button type="button" class="filter-pill" data-status="offline">Offline</button>
+    <button type="button" class="filter-pill active" data-status="">{{ t("computers.all") }}</button>
+    <button type="button" class="filter-pill" data-status="online">{{ t("computers.online") }}</button>
+    <button type="button" class="filter-pill" data-status="pending">{{ t("computers.pending") }}</button>
+    <button type="button" class="filter-pill" data-status="offline">{{ t("computers.offline") }}</button>
   </div>
 </div>
 
@@ -21,8 +21,8 @@
   <table class="table" id="devices">
     <thead>
       <tr>
-        <th>Device</th><th>Department</th><th>OS</th><th>RAM</th>
-        <th>Last check-in</th><th>Status</th>
+        <th>{{ t("computers.device") }}</th><th>{{ t("computers.department") }}</th><th>{{ t("computers.os") }}</th><th>{{ t("computers.ram") }}</th>
+        <th>{{ t("computers.last_checkin") }}</th><th>{{ t("computers.status") }}</th>
       </tr>
     </thead>
     <tbody>
@@ -37,7 +37,7 @@
         <td>{% if d['department'] %}<span class="tag">{{ d['department'] }}</span>{% else %}<span class="muted">—</span>{% endif %}</td>
         <td class="muted">{{ d['os'] or '—' }}</td>
         <td class="muted mono">{{ d['ram'] or '—' }}</td>
-        <td class="muted mono">{{ d['last_seen_at'].strftime('%Y-%m-%d') if d['last_seen_at'] else 'never' }}</td>
+        <td class="muted mono">{{ d['last_seen_at'].strftime('%Y-%m-%d') if d['last_seen_at'] else t('computers.never') }}</td>
         <td><span class="badge {{ d['status'] }}">{{ d['status'] | capitalize }}</span></td>
       </tr>
       {% endfor %}

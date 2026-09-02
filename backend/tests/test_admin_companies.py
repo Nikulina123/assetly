@@ -274,3 +274,76 @@ async def test_companies_list_shows_conversion_summary(login_as, enrolled_admin,
     assert resp.status_code == 200
     # 0 converted / 1 total for this company.
     assert "0 / 1" in resp.text
+
+
+async def test_saving_a_setting_confirms_it_on_the_next_page(login_as, enrolled_admin, company):
+    """Every settings form redirects back to a page that looked identical
+    whether the write landed or not. The redirect now carries a ?saved= slug
+    that the page turns into a confirmation banner."""
+    company_id, _ = company
+    client = await _logged_in_client(login_as, enrolled_admin)
+    try:
+        get_resp = await client.get(f"/admin/companies/{company_id}")
+        csrf_token = get_resp.text.split('name="csrf_token" value="')[1].split('"')[0]
+        # Nothing has been saved yet, so nothing should be claimed.
+        assert b"Notification email updated." not in get_resp.content
+
+        resp = await client.post(
+            f"/admin/companies/{company_id}/notification-email",
+            data={"csrf_token": csrf_token, "notification_email": "ops@example.com"},
+        )
+        assert resp.status_code == 303
+        assert resp.headers["location"].endswith("?saved=email")
+
+        followed = await client.get(resp.headers["location"])
+    finally:
+        await client.aclose()
+    assert followed.status_code == 200
+    assert b"Notification email updated." in followed.content
+
+
+async def test_unknown_saved_slug_renders_no_banner(login_as, enrolled_admin, company):
+    """?saved= is looked up in a fixed table, so a hand-edited query string
+    can only ever produce one of our own strings -- or nothing at all."""
+    company_id, _ = company
+    client = await _logged_in_client(login_as, enrolled_admin)
+    try:
+        resp = await client.get(
+            f"/admin/companies/{company_id}",
+            params={"saved": "<img src=x onerror=alert(1)>"},
+        )
+    finally:
+        await client.aclose()
+    assert resp.status_code == 200
+    assert b"onerror" not in resp.content
+    assert b"banner-success" not in resp.content
+
+
+async def test_removing_a_custom_field_takes_two_clicks(login_as, enrolled_admin, company):
+    """The Remove control used to delete on a single click. It is now a link
+    to a confirm step; only the second click POSTs."""
+    company_id, _ = company
+    client = await _logged_in_client(login_as, enrolled_admin)
+    try:
+        get_resp = await client.get(f"/admin/companies/{company_id}")
+        csrf_token = get_resp.text.split('name="csrf_token" value="')[1].split('"')[0]
+        await client.post(
+            f"/admin/companies/{company_id}/fields/custom",
+            data={"csrf_token": csrf_token, "label": "Asset tag"},
+        )
+
+        listed = await client.get(f"/admin/companies/{company_id}")
+        # First click is a GET link, not a form submission.
+        assert b"?removing=asset_tag" in listed.content
+
+        confirming = await client.get(
+            f"/admin/companies/{company_id}", params={"removing": "asset_tag"}
+        )
+        assert b"Yes, remove" in confirming.content
+        assert b"Remove this field?" in confirming.content
+
+        # The field survives merely being asked about.
+        still_there = await client.get(f"/admin/companies/{company_id}")
+        assert b"Asset tag" in still_there.content
+    finally:
+        await client.aclose()

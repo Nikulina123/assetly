@@ -1,40 +1,40 @@
 {% extends "portal_base.html" %}
 {% import "_icons.html" as icons %}
-{% block title %}Dashboard — Assetly{% endblock %}
-{% block subtitle %}<div class="topbar-subtitle">{{ stats['total'] }} device{{ '' if stats['total'] == 1 else 's' }} across this company</div>{% endblock %}
+{% block title %}{{ t("dashboard.title") }}{% endblock %}
+{% block subtitle %}<div class="topbar-subtitle">{{ t("dashboard.devices_across_company", n=stats['total'], s='' if stats['total'] == 1 else 's') }}</div>{% endblock %}
 {% block content %}
 <div class="stat-row">
   <div class="card stat-card">
     <div class="stat-card-top">
-      <div class="stat-label">Total Devices</div>
+      <div class="stat-label">{{ t("dashboard.total_devices") }}</div>
       <div class="stat-icon blue">{{ icons.icon('computers', 14) }}</div>
     </div>
     <div class="stat-val">{{ stats['total'] }}</div>
-    <div class="stat-sub">across this company</div>
+    <div class="stat-sub">{{ t("dashboard.across_this_company") }}</div>
   </div>
   <div class="card stat-card">
     <div class="stat-card-top">
-      <div class="stat-label">Online</div>
+      <div class="stat-label">{{ t("dashboard.online") }}</div>
       <div class="stat-icon teal">{{ icons.icon('wifi', 14) }}</div>
     </div>
     <div class="stat-val">{{ stats['by_status']['online'] }}</div>
-    <div class="stat-sub teal">checked in within {{ checkin_interval_label }}</div>
+    <div class="stat-sub teal">{{ t("dashboard.checked_in_within", label=checkin_interval_label) }}</div>
   </div>
   <div class="card stat-card">
     <div class="stat-card-top">
-      <div class="stat-label">Pending Sync</div>
+      <div class="stat-label">{{ t("dashboard.pending_sync") }}</div>
       <div class="stat-icon amber">{{ icons.icon('refresh', 14) }}</div>
     </div>
     <div class="stat-val">{{ stats['by_status']['pending'] }}</div>
-    <div class="stat-sub amber">overdue, needs action</div>
+    <div class="stat-sub amber">{{ t("dashboard.overdue") }}</div>
   </div>
   <div class="card stat-card">
     <div class="stat-card-top">
-      <div class="stat-label">Offline</div>
+      <div class="stat-label">{{ t("dashboard.offline") }}</div>
       <div class="stat-icon">{{ icons.icon('monitor', 14) }}</div>
     </div>
     <div class="stat-val">{{ stats['by_status']['offline'] }}</div>
-    <div class="stat-sub">stale or never reported</div>
+    <div class="stat-sub">{{ t("dashboard.stale_or_never") }}</div>
   </div>
 </div>
 
@@ -43,8 +43,8 @@
   <div class="card flush">
     <div class="card-header">
       <div>
-        <div class="card-title">OS Distribution</div>
-        <div class="card-title-sub">{{ stats['by_os'] | length }} operating system{{ '' if stats['by_os'] | length == 1 else 's' }} in the fleet</div>
+        <div class="card-title">{{ t("dashboard.os_distribution") }}</div>
+        <div class="card-title-sub">{{ t("dashboard.os_in_fleet", n=stats['by_os'] | length, s='' if stats['by_os'] | length == 1 else 's') }}</div>
       </div>
     </div>
     <div class="card-body">

@@ -389,7 +389,12 @@ async def test_company_detail_shows_download_buttons(login_as, enrolled_admin, c
     assert b"Download for macOS" in resp.content
     assert b"Download for Linux" in resp.content
     assert b"Download for Windows" in resp.content
-    assert b"Download Windows MSI (IT)" in resp.content
+    # The MSI card, in the redesigned platform-grid layout: the button label is
+    # the shared "Download" string, so the platform is asserted through the
+    # markup that actually distinguishes the cards -- the visible name and the
+    # aria-label a screen reader announces.
+    assert b"Download for Windows MSI" in resp.content
+    assert b">Windows MSI<" in resp.content
     assert b"Not yet available" not in resp.content
     # The page must tell the admin that downloading one platform does NOT break
     # installers already downloaded for others. It previously warned the exact

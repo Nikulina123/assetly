@@ -37,6 +37,24 @@ app.mount(
 )
 
 
+@app.get("/", include_in_schema=False)
+@app.get("/admin", include_in_schema=False)
+async def root():
+    """Send the bare domain somewhere useful.
+
+    Every route in this app lives under a prefix -- /admin/login,
+    /admin/companies, /checkin -- so hitting https://<host>/ produced
+    FastAPI's own {"detail":"Not Found"}, which reads as a broken
+    deployment rather than "you wanted the portal". Same for /admin, which
+    is a router prefix with no route of its own.
+
+    Redirects to the companies list rather than to the login page: an admin
+    with a live session lands where they meant to go, and one without is
+    bounced to /admin/login by the NotAuthenticated handler anyway.
+    """
+    return RedirectResponse("/admin/companies", status_code=307)
+
+
 @app.get("/healthz", include_in_schema=False)
 async def healthz():
     """Liveness plus database reachability, for uptime monitoring and for
