@@ -43,6 +43,15 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # The commit step below asks git whether the agent source changed
+          # since the committed executable was built. actions/checkout defaults
+          # to fetch-depth 1, which is a shallow clone holding ONE commit -- so
+          # that question has no answer, `git log <exe-commit>..HEAD` is always
+          # empty, and the guard concluded "unchanged" on every run. It skipped
+          # a genuine 2.2.1 agent change, which would have shipped a release
+          # containing a binary reporting 2.2.0.
+          fetch-depth: 0
 
       # `powershell` is Windows PowerShell 5.1; `pwsh` is PowerShell Core, where
       # ps2exe does not work. Do not switch this.
@@ -121,6 +130,17 @@ jobs:
           set -euo pipefail
           EXE=backend/static/AssetlyAgent_Windows.exe
           SOURCES="AssetlyAgent_Windows.ps1 Build_Windows_EXE.ps1"
+
+          # Belt and braces for the above. If the checkout is ever shallow
+          # again, the guard cannot answer its question -- and the safe
+          # response to "I cannot tell" is to stop, not to assume nothing
+          # changed. Silently skipping is how a stale executable reaches a
+          # signed release.
+          if [ "$(git rev-parse --is-shallow-repository)" = "true" ]; then
+            echo "::error::Shallow checkout: cannot tell whether the agent source changed."
+            echo "::error::Set fetch-depth: 0 on actions/checkout."
+            exit 1
+          fi
 
           # ps2exe is NOT reproducible: compiling an unchanged .ps1 twice gives
           # different bytes. This workflow also triggers on installer/** and on
