@@ -133,6 +133,12 @@ _credential = None
 # Used only when the server cannot be reached and nothing is cached in
 # state.json. These reproduce the cadence this agent had when the interval was
 # hardcoded, so an agent that can never reach the server behaves as before.
+# Reported in every check-in. A named constant rather than a literal buried in
+# the payload, and kept in sync with $AgentVersion in AssetlyAgent_Windows.ps1:
+# this said "2.0" while the signed release stream was already at 2.1.2, so a
+# version a user read back over the phone matched nothing on either platform.
+AGENT_VERSION = "2.2.0"
+
 DEFAULT_SCHEDULE = {
     "checkin_interval_seconds": 15552000,   # 180 days
     "cancel_retry_seconds":     86400,      # 24 hours
@@ -555,20 +561,26 @@ def collect_hardware() -> dict:
 
     else:  # Linux
         def _dmi(key: str) -> str:
-            # Try sudo dmidecode first, then /sys fallback
-            out = _run(["dmidecode", "-s", key], sudo=True)
+            # Try /sys first: world-readable on modern distros, needs no
+            # privilege, and reads the same SMBIOS field dmidecode does --
+            # promoting it ahead of dmidecode is what lets the installer skip
+            # provisioning a standing NOPASSWD sudo rule for most machines.
+            # dmidecode remains the fallback for systems where /sys/class/dmi
+            # isn't populated or readable.
+            _sys_map = {
+                "system-manufacturer":  "/sys/class/dmi/id/sys_vendor",
+                "system-product-name":  "/sys/class/dmi/id/product_name",
+                "system-serial-number": "/sys/class/dmi/id/product_serial",
+            }
+            out = ""
+            try:
+                out = Path(_sys_map[key]).read_text().strip()
+            except Exception:
+                pass
+            if not out:
+                out = _run(["dmidecode", "-s", key], sudo=True)
             if not out:
                 out = _run(["dmidecode", "-s", key])
-            if not out:
-                _sys_map = {
-                    "system-manufacturer":  "/sys/class/dmi/id/sys_vendor",
-                    "system-product-name":  "/sys/class/dmi/id/product_name",
-                    "system-serial-number": "/sys/class/dmi/id/product_serial",
-                }
-                try:
-                    out = Path(_sys_map[key]).read_text().strip()
-                except Exception:
-                    pass
             return _clean(out)
 
         hw["brand"]         = _dmi("system-manufacturer")
@@ -732,7 +744,7 @@ def submit_to_sheets(user_data: dict, hw: dict, enabled_hardware_fields: list) -
     payload = {
         **user_data, **filtered_hw,
         "checkin_id":      str(uuid.uuid4()),
-        "agent_version":   "2.0",
+        "agent_version":   AGENT_VERSION,
         "submission_type": "online",
         "platform":        {"Darwin": "macos", "Linux": "linux", "Windows": "windows"}.get(_sys, "unknown"),
     }
