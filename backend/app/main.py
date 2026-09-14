@@ -2,7 +2,7 @@ from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
 from fastapi.exception_handlers import http_exception_handler
-from fastapi.responses import RedirectResponse
+from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.sessions import SessionMiddleware
 
@@ -38,19 +38,27 @@ app.mount(
 
 
 @app.get("/", include_in_schema=False)
-@app.get("/admin", include_in_schema=False)
 async def root():
-    """Send the bare domain somewhere useful.
+    """Serve the marketing landing page at the bare domain.
 
-    Every route in this app lives under a prefix -- /admin/login,
-    /admin/companies, /checkin -- so hitting https://<host>/ produced
-    FastAPI's own {"detail":"Not Found"}, which reads as a broken
-    deployment rather than "you wanted the portal". Same for /admin, which
-    is a router prefix with no route of its own.
+    Every other route in this app lives under a prefix -- /admin/login,
+    /admin/companies, /checkin -- so hitting https://<host>/ previously
+    redirected into the admin area. Visitors landing on the bare domain
+    want the product page, not a login prompt.
+    """
+    return FileResponse(
+        str(Path(__file__).resolve().parent / "static" / "landing" / "index.html")
+    )
 
-    Redirects to the companies list rather than to the login page: an admin
-    with a live session lands where they meant to go, and one without is
-    bounced to /admin/login by the NotAuthenticated handler anyway.
+
+@app.get("/admin", include_in_schema=False)
+async def admin_root():
+    """Redirect the bare /admin prefix into the admin app.
+
+    /admin has no route of its own. Redirects to the companies list rather
+    than to the login page: an admin with a live session lands where they
+    meant to go, and one without is bounced to /admin/login by the
+    NotAuthenticated handler anyway.
     """
     return RedirectResponse("/admin/companies", status_code=307)
 
