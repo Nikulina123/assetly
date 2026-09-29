@@ -55,7 +55,7 @@ $TaskName         = "AssetlyInventoryAgent"
 # 2.1.2 while this constant still said 2.0 -- the very drift this single source
 # of truth exists to end. Anything at or below 2.1.2 would have shipped an
 # agent reporting a version older than one already in the field.
-$AgentVersion     = "2.2.1"
+$AgentVersion     = "2.3.0"
 # Fallback only — the live per-company list arrives on the department entry of
 # the field config. Kept in sync with DEFAULT_DEPARTMENT_OPTIONS in
 # backend/app/field_config.py and inventory_agent.py.
@@ -1021,6 +1021,94 @@ function Resolve-DeviceSerial {
 # ════════════════════════════════════════════════════════════════════════════════
 #  HARDWARE COLLECTION
 # ════════════════════════════════════════════════════════════════════════════════
+# ── Memory / disk detail (2.3.0) ──────────────────────────────────────────────
+# Mirrors the parsers in inventory_agent.py: a key is left out rather than set
+# to "N/A" when it cannot be read, so the portal shows no row instead of a
+# wrong one. Both helpers catch their own failures -- losing the detail must
+# never take the rest of the hardware collection down with it.
+#
+# CIM hands these properties back as UInt16/UInt32 and the tables below are
+# keyed by Int32, so every lookup casts to [int] first or it silently misses.
+
+# SMBIOS type 17 "Memory Type" codes.
+$SmbiosMemoryTypes = @{
+    20 = 'DDR'; 21 = 'DDR2'; 24 = 'DDR3'; 26 = 'DDR4'; 27 = 'LPDDR'
+    28 = 'LPDDR2'; 29 = 'LPDDR3'; 30 = 'LPDDR4'; 34 = 'DDR5'; 35 = 'LPDDR5'
+}
+# MSFT_PhysicalDisk.BusType / .MediaType codes.
+$DiskBusTypes   = @{ 3 = 'ATA'; 7 = 'USB'; 8 = 'RAID'; 10 = 'SAS'; 11 = 'SATA'; 12 = 'SD'; 17 = 'NVMe' }
+$DiskMediaTypes = @{ 3 = 'HDD'; 4 = 'SSD' }
+
+function Get-MemoryDetail {
+    $detail = @{}
+    try {
+        $modules = @(Get-CimInstance Win32_PhysicalMemory -ErrorAction Stop)
+        if ($modules.Count -eq 0) { return $detail }
+
+        # Use 3 = system memory; other arrays describe video or flash memory.
+        $slots = 0
+        foreach ($array in @(Get-CimInstance Win32_PhysicalMemoryArray -ErrorAction SilentlyContinue)) {
+            if ($array.Use -eq 3) { $slots += [int]$array.MemoryDevices }
+        }
+        # Some firmware reports fewer slots than it has modules in; a total
+        # that cannot be right is shown as unknown rather than as "4/2".
+        $detail.ram_slots = if ($slots -ge $modules.Count) { "$($modules.Count)/$slots" } else { "$($modules.Count)/?" }
+
+        foreach ($m in $modules) {
+            $type = $SmbiosMemoryTypes[[int]$m.SMBIOSMemoryType]
+            if ($type) { $detail.ram_type = $type; break }
+        }
+
+        # ConfiguredClockSpeed is what the module actually runs at; Speed is
+        # its rating. Mixed modules all run at the slowest one's speed.
+        $speeds = @()
+        foreach ($m in $modules) {
+            $speed = [int]$m.ConfiguredClockSpeed
+            if ($speed -le 0) { $speed = [int]$m.Speed }
+            if ($speed -gt 0) { $speeds += $speed }
+        }
+        if ($speeds.Count -gt 0) {
+            $minSpeed = ($speeds | Measure-Object -Minimum).Minimum
+            $detail.ram_speed = "$minSpeed MHz"
+        }
+    } catch {
+        Write-Log "Memory detail unavailable: $_" "WARN"
+    }
+    return $detail
+}
+
+function Get-StorageType {
+    <#  "NVMe SSD", "SATA HDD", ... for the disk the storage field describes.
+        MSFT_PhysicalDisk.DeviceId is the same number as Win32_DiskDrive.Index,
+        which is how the two are matched. Queried through CIM rather than
+        Get-PhysicalDisk so BusType/MediaType arrive as plain numbers. #>
+    param($DiskIndex)
+    try {
+        $wanted = [string]$DiskIndex
+        $pd = Get-CimInstance -Namespace 'root\Microsoft\Windows\Storage' -ClassName MSFT_PhysicalDisk -ErrorAction Stop |
+              Where-Object { $_.DeviceId -eq $wanted } | Select-Object -First 1
+        if (-not $pd) { return $null }
+
+        $busCode = [int]$pd.BusType
+        if ($busCode -eq 13) { return 'eMMC' }
+        if ($busCode -eq 14 -or $busCode -eq 15) { return 'Virtual disk' }
+
+        $bus  = $DiskBusTypes[$busCode]
+        $kind = $DiskMediaTypes[[int]$pd.MediaType]
+        # MediaType is often "Unspecified" on older drives. SpindleSpeed 0
+        # still says flash; it is not cast, since "unknown" is 0xFFFFFFFF.
+        if (-not $kind -and $pd.SpindleSpeed -eq 0) { $kind = 'SSD' }
+        if (-not $kind -and $bus -eq 'NVMe') { $kind = 'SSD' }
+
+        $parts = @($bus, $kind) | Where-Object { $_ }
+        if (-not $parts) { return $null }
+        return ($parts -join ' ')
+    } catch {
+        Write-Log "Disk interface unavailable: $_" "WARN"
+        return $null
+    }
+}
+
 function Get-Hardware {
     $hw = @{}
     try {
@@ -1043,6 +1131,10 @@ function Get-Hardware {
         $hw.ram     = "$ram_gb GB"
         $disk_gb    = if ($disk.Size) { [math]::Round($disk.Size / 1GB) } else { "?" }
         $hw.storage = "$disk_gb GB  ($($disk.Model))"
+        $storageType = Get-StorageType $disk.Index
+        if ($storageType) { $hw.storage_type = $storageType }
+        $memoryDetail = Get-MemoryDetail
+        foreach ($detailKey in $memoryDetail.Keys) { $hw[$detailKey] = $memoryDetail[$detailKey] }
         $hw.os      = "$($os.Caption) $($os.Version)"
         $hw.hostname   = $env:COMPUTERNAME
         $hw.ip_address = if ($net.IPAddress) { $net.IPAddress[0] } else { "N/A" }
@@ -1850,6 +1942,17 @@ if ($ud.ContainsKey('department')) { $payload.department = $ud.department }
 # have CPU stored anyway.
 foreach ($key in @('cpu','ram','storage','ip_address')) {
     if ($enabledHwFields -contains $key) { $payload[$key] = $hw[$key] }
+}
+# The detail fields have no toggle of their own: they ride on the field they
+# describe (HARDWARE_DETAIL_PARENT in inventory_agent.py), and are left out
+# when they could not be read.
+if ($enabledHwFields -contains 'ram') {
+    if ($hw.ram_type)  { $payload.ram_type  = $hw.ram_type }
+    if ($hw.ram_speed) { $payload.ram_speed = $hw.ram_speed }
+    if ($hw.ram_slots) { $payload.ram_slots = $hw.ram_slots }
+}
+if ($enabledHwFields -contains 'storage') {
+    if ($hw.storage_type) { $payload.storage_type = $hw.storage_type }
 }
 
 Write-Log "Submitting to Google Sheets…"

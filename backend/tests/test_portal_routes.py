@@ -123,6 +123,47 @@ async def test_device_detail_renders(db_pool, company, login_as, enrolled_admin)
     assert "SN-001" in resp.text
 
 
+async def test_device_detail_shows_memory_and_storage_details(db_pool, company, login_as, enrolled_admin):
+    company_id, api_key = company
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test", follow_redirects=True) as client:
+        await client.post(
+            "/api/v1/inventory/checkin",
+            json={
+                "checkin_id": str(uuid.uuid4()),
+                "timestamp": "2026-07-30T10:00:00",
+                "first_name": "A", "last_name": "B", "email": "a@example.com",
+                "serial_number": "SN-DETAIL", "hostname": "detail-host",
+                "brand": "Dell", "model": "OptiPlex 7090", "os": "Windows 11 Pro 23H2",
+                "ram": "16 GB", "ram_type": "DDR4", "ram_speed": "3200 MHz",
+                "ram_slots": "2/4", "storage_type": "NVMe SSD",
+            },
+            headers={"Authorization": f"Bearer {api_key}"},
+        )
+        await login_as(client, enrolled_admin)
+        resp = await client.get(f"/admin/companies/{company_id}/computers/SN-DETAIL")
+    assert resp.status_code == 200
+    assert "DDR4 · 3200 MHz" in resp.text
+    assert "2/4" in resp.text
+    assert "NVMe SSD" in resp.text
+
+
+async def test_device_detail_hides_memory_and_storage_details_when_unreported(
+    db_pool, company, login_as, enrolled_admin
+):
+    """A pre-2.3.0 agent reports none of the detail fields; the rows are
+    left out rather than shown as a column of dashes."""
+    company_id, api_key = company
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test", follow_redirects=True) as client:
+        await _submit(client, api_key, "SN-OLD", "old-host")
+        await login_as(client, enrolled_admin)
+        resp = await client.get(f"/admin/companies/{company_id}/computers/SN-OLD")
+    assert resp.status_code == 200
+    assert "RAM type / speed" not in resp.text
+    assert "Disk interface" not in resp.text
+
+
 async def test_device_detail_unknown_serial_is_404(db_pool, company, login_as, enrolled_admin):
     company_id, _ = company
     transport = ASGITransport(app=app)
