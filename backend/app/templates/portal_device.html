@@ -69,11 +69,36 @@
         <span class="spec-row-label">{{ t("device.ram") }}</span>
         <span class="spec-row-value">{{ device['ram'] or '—' }}</span>
       </div>
+      {#- Detail rows only render once an agent has reported them: agents older
+          than 2.3.0 never do, and a column of dashes would read as "unknown"
+          rather than "not collected". -#}
+      {% set ram_kind = [device['ram_type'], device['ram_speed']] | select | join(' · ') %}
+      {% if ram_kind %}
+      <div class="spec-row">
+        <span class="spec-row-icon">{{ icons.icon('cpu', 14) }}</span>
+        <span class="spec-row-label">{{ t("device.ram_type_speed") }}</span>
+        <span class="spec-row-value">{{ ram_kind }}</span>
+      </div>
+      {% endif %}
+      {% if device['ram_slots'] %}
+      <div class="spec-row">
+        <span class="spec-row-icon">{{ icons.icon('cpu', 14) }}</span>
+        <span class="spec-row-label">{{ t("device.ram_slots") }}</span>
+        <span class="spec-row-value mono">{{ device['ram_slots'] }}</span>
+      </div>
+      {% endif %}
       <div class="spec-row">
         <span class="spec-row-icon">{{ icons.icon('hdd', 14) }}</span>
         <span class="spec-row-label">{{ t("device.storage") }}</span>
         <span class="spec-row-value">{{ device['storage'] or '—' }}</span>
       </div>
+      {% if device['storage_type'] %}
+      <div class="spec-row">
+        <span class="spec-row-icon">{{ icons.icon('hdd', 14) }}</span>
+        <span class="spec-row-label">{{ t("device.storage_type") }}</span>
+        <span class="spec-row-value">{{ device['storage_type'] }}</span>
+      </div>
+      {% endif %}
       <div class="spec-row">
         <span class="spec-row-icon">{{ icons.icon('computers', 14) }}</span>
         <span class="spec-row-label">{{ t("device.brand_model") }}</span>

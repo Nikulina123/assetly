@@ -21,7 +21,8 @@ from app.schedule import resolve_schedule
 
 _DEVICE_COLUMNS = (
     "serial_number, last_seen_at, hostname, brand, model, cpu, ram, storage, "
-    "os, os_version, platform, owner_email, department"
+    "os, os_version, platform, owner_email, department, "
+    "ram_type, ram_speed, ram_slots, storage_type"
 )
 
 

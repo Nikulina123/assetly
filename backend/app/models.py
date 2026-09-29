@@ -42,6 +42,14 @@ class CheckinRequest(BaseModel):
     storage: str | None = Field(default=None, max_length=MAX_FIELD_LENGTH)
     ip_address: str | None = Field(default=None, max_length=MAX_FIELD_LENGTH)
 
+    # Sent by agents from 2.3.0 on, gated by the same portal toggle as ram /
+    # storage -- they are detail of those fields, not fields of their own, so
+    # they are deliberately absent from HARDWARE_FIELD_KEYS.
+    ram_type: str | None = Field(default=None, max_length=MAX_FIELD_LENGTH)
+    ram_speed: str | None = Field(default=None, max_length=MAX_FIELD_LENGTH)
+    ram_slots: str | None = Field(default=None, max_length=MAX_FIELD_LENGTH)
+    storage_type: str | None = Field(default=None, max_length=MAX_FIELD_LENGTH)
+
     os: str = Field(max_length=MAX_OS_LENGTH)
     agent_version: str | None = Field(default=None, max_length=MAX_FIELD_LENGTH)
     submission_type: str = Field(default="online", max_length=MAX_FIELD_LENGTH)

@@ -60,7 +60,9 @@ def test_collect_hardware_prefers_sysfs_serial_on_linux(inventory_agent, monkeyp
     assert hw["serial_number"] == "SYSFS-SERIAL-456"
     assert hw["brand"] == "Dell Inc."
     assert hw["model"] == "OptiPlex 7090"
-    assert dmidecode_calls == []  # dmidecode never invoked when sysfs works
+    # dmidecode is never invoked for identity when sysfs works. (It is still
+    # asked for the memory table, `-t 17`, which has no sysfs equivalent.)
+    assert [c for c in dmidecode_calls if "-s" in c[0]] == []
 
 
 def test_clean_normalizes_sysfs_and_dmidecode_output_identically(inventory_agent):

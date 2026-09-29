@@ -227,6 +227,64 @@ async def test_checkin_succeeds_without_optional_hardware_fields(db_pool, compan
     assert row["ip_address"] is None
 
 
+async def test_checkin_stores_memory_and_storage_details(db_pool, company):
+    """The 2.3.0 detail fields land on both the check-in record and the
+    device row the portal's device page reads."""
+    company_id, api_key = company
+    checkin_id = str(uuid.uuid4())
+    details = {
+        "ram_type": "DDR4",
+        "ram_speed": "3200 MHz",
+        "ram_slots": "2/4",
+        "storage_type": "NVMe SSD",
+    }
+    async with await _client() as client:
+        resp = await client.post(
+            "/api/v1/inventory/checkin",
+            json=_payload(checkin_id=checkin_id, **details),
+            headers={"Authorization": f"Bearer {api_key}"},
+        )
+    assert resp.status_code == 200
+
+    async with db_pool.acquire() as conn:
+        await conn.execute("SELECT set_config('app.company_id', $1, false)", company_id)
+        checkin = await conn.fetchrow(
+            "SELECT ram_type, ram_speed, ram_slots, storage_type "
+            "FROM device_checkins WHERE checkin_id = $1",
+            checkin_id,
+        )
+        device = await conn.fetchrow(
+            "SELECT ram_type, ram_speed, ram_slots, storage_type "
+            "FROM devices WHERE serial_number = $1",
+            "SN-001",
+        )
+    assert dict(checkin) == details
+    assert dict(device) == details
+
+
+async def test_checkin_without_memory_and_storage_details_stores_null(db_pool, company):
+    """Agents older than 2.3.0 send none of the detail fields; they must
+    still be accepted, and leave the columns empty rather than invented."""
+    company_id, api_key = company
+    checkin_id = str(uuid.uuid4())
+    async with await _client() as client:
+        resp = await client.post(
+            "/api/v1/inventory/checkin",
+            json=_payload(checkin_id=checkin_id),
+            headers={"Authorization": f"Bearer {api_key}"},
+        )
+    assert resp.status_code == 200
+
+    async with db_pool.acquire() as conn:
+        await conn.execute("SELECT set_config('app.company_id', $1, false)", company_id)
+        row = await conn.fetchrow(
+            "SELECT ram_type, ram_speed, ram_slots, storage_type "
+            "FROM device_checkins WHERE checkin_id = $1",
+            checkin_id,
+        )
+    assert set(dict(row).values()) == {None}
+
+
 async def test_checkin_success_triggers_notification(db_pool, company, monkeypatch):
     import app.routers.checkin as checkin_module
 
