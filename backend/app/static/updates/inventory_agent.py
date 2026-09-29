@@ -6,6 +6,7 @@ Config is loaded from  ~/.assetly_inventory/config.json  (written by the install
 """
 
 import os, sys, json, platform, subprocess, datetime, hashlib, hmac, base64, socket, re, time, argparse
+import plistlib
 import urllib.request, urllib.error
 from pathlib import Path
 import tkinter as tk
@@ -137,7 +138,15 @@ _credential = None
 # the payload, and kept in sync with $AgentVersion in AssetlyAgent_Windows.ps1:
 # this said "2.0" while the signed release stream was already at 2.1.2, so a
 # version a user read back over the phone matched nothing on either platform.
-AGENT_VERSION = "2.2.1"
+AGENT_VERSION = "2.3.0"
+
+# Detail fields have no portal toggle of their own: each is sent only when the
+# hardware field it describes is enabled, so switching RAM off stops the RAM
+# detail too.
+HARDWARE_DETAIL_PARENT = {
+    "ram_type": "ram", "ram_speed": "ram", "ram_slots": "ram",
+    "storage_type": "storage",
+}
 
 # ── Device identity ──────────────────────────────────────────────────────────
 # The serial number IS the device: rows are keyed UNIQUE (company_id,
@@ -582,6 +591,121 @@ def _run(cmd: list, sudo: bool = False) -> str:
 def _clean(s: str) -> str:
     return re.sub(r"\s+", " ", (s or "").strip()) or "N/A"
 
+# ─── Memory / disk detail (2.3.0) ─────────────────────────────────────────────
+# Each parser takes a command's text output and returns only what it could
+# actually read: a key is absent rather than "N/A", so the portal can tell
+# "not collected" (no row shown) from a real value.
+#
+# Speeds are labelled MHz, which is how memory is sold and how Windows reports
+# it. dmidecode says MT/s; for DDR the number is the same one either way.
+
+def _speed_mhz(value: str):
+    m = re.search(r"(\d+)\s*(?:MT/s|MHz)", value or "")
+    return int(m.group(1)) if m and int(m.group(1)) > 0 else None
+
+
+def _parse_dmidecode_memory(text: str) -> dict:
+    """`dmidecode -t 17` -> ram_type / ram_speed / ram_slots. One "Memory
+    Device" block per slot, populated or not."""
+    blocks = re.split(r"^Memory Device\s*$", text or "", flags=re.M)[1:]
+    if not blocks:
+        return {}
+
+    def field(block: str, label: str) -> str:
+        # Anchored on the line start, so "Size" does not match "Volatile
+        # Size" and "Type" does not match "Type Detail".
+        m = re.search(rf"^\s*{re.escape(label)}:\s*(.+?)\s*$", block, re.M)
+        return m.group(1) if m else ""
+
+    installed = [
+        b for b in blocks
+        if re.match(r"\d+\s*[KMGT]B", field(b, "Size"), re.I)
+    ]
+    details = {"ram_slots": f"{len(installed)}/{len(blocks)}"}
+
+    types = [field(b, "Type") for b in installed]
+    types = [t for t in types if t and t not in ("Unknown", "Other")]
+    if types:
+        details["ram_type"] = types[0]
+
+    speeds = []
+    for b in installed:
+        speed = (_speed_mhz(field(b, "Configured Memory Speed"))
+                 or _speed_mhz(field(b, "Configured Clock Speed"))
+                 or _speed_mhz(field(b, "Speed")))
+        if speed:
+            speeds.append(speed)
+    if speeds:
+        # Mixed modules all run at the slowest one's speed.
+        details["ram_speed"] = f"{min(speeds)} MHz"
+    return details
+
+
+def _linux_storage_type(name: str, lsblk_out: str):
+    """`lsblk -dn -o TRAN,ROTA /dev/<name>` -> "NVMe SSD", "SATA HDD", ..."""
+    parts = (lsblk_out or "").split()
+    if not parts or parts[-1] not in ("0", "1"):
+        return None
+    if name.startswith("mmcblk"):
+        return "eMMC"
+    if name.startswith(("vd", "xvd")):
+        return "Virtual disk"
+    tran = parts[0].lower() if len(parts) > 1 else ""
+    # lsblk older than 2.33 leaves TRAN empty for NVMe; the name still says it.
+    if not tran and name.startswith("nvme"):
+        tran = "nvme"
+    bus = {"nvme": "NVMe", "sata": "SATA", "ata": "ATA", "usb": "USB", "sas": "SAS"}.get(
+        tran, tran.upper())
+    kind = "SSD" if parts[-1] == "0" else "HDD"
+    return f"{bus} {kind}".strip()
+
+
+def _parse_macos_memory(text: str) -> dict:
+    """`system_profiler SPMemoryDataType -json` -> ram_type / ram_speed /
+    ram_slots. Apple Silicon has no DIMMs and reports no speed."""
+    try:
+        entry = json.loads(text)["SPMemoryDataType"][0]
+    except (ValueError, KeyError, IndexError, TypeError):
+        return {}
+
+    items = entry.get("_items")
+    if not items:
+        # Apple Silicon: unified memory in the SoC package.
+        return {"ram_type": entry["dimm_type"], "ram_slots": "Soldered"} if entry.get("dimm_type") else {}
+
+    installed = [i for i in items if i.get("dimm_size", "empty") not in ("empty", "")]
+    details = {
+        "ram_slots": "Soldered" if entry.get("is_memory_upgradeable") == "No"
+                     else f"{len(installed)}/{len(items)}",
+    }
+    types = [i.get("dimm_type") for i in installed if i.get("dimm_type") not in (None, "", "empty")]
+    if types:
+        details["ram_type"] = types[0]
+    speeds = [s for s in (_speed_mhz(i.get("dimm_speed")) for i in installed) if s]
+    if speeds:
+        details["ram_speed"] = f"{min(speeds)} MHz"
+    return details
+
+
+def _parse_macos_storage_type(text: str):
+    """`diskutil info -plist /` -> "Integrated SSD (Apple Fabric)", "PCIe SSD",
+    "SATA HDD", ... -- for the disk holding the boot volume, the same one the
+    storage field reports."""
+    try:
+        info = plistlib.loads((text or "").encode())
+    except Exception:
+        return None
+    protocol = info.get("BusProtocol")
+    if not protocol:
+        return None
+    if protocol == "Apple Fabric":
+        return "Integrated SSD (Apple Fabric)"
+    bus = "PCIe" if protocol.startswith("PCI") else protocol
+    solid = info.get("SolidState")
+    kind = "SSD" if solid is True else "HDD" if solid is False else ""
+    return f"{bus} {kind}".strip()
+
+
 def get_ip() -> str:
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -625,6 +749,10 @@ def collect_hardware() -> dict:
         df                  = _run(["df", "-Hl", "/"])
         lines               = df.splitlines()
         hw["storage"]       = lines[1].split()[1] if len(lines) > 1 else "N/A"
+        hw.update(_parse_macos_memory(_run(["system_profiler", "SPMemoryDataType", "-json"])))
+        storage_type        = _parse_macos_storage_type(_run(["diskutil", "info", "-plist", "/"]))
+        if storage_type:
+            hw["storage_type"] = storage_type
         hw["os"]            = f"macOS {platform.mac_ver()[0]}"
 
     else:  # Linux
@@ -677,8 +805,21 @@ def collect_hardware() -> dict:
         m = re.search(r"MemTotal:\s*(\d+)", mem_raw)
         hw["ram"] = f"{round(int(m.group(1)) / 1024**2)} GB" if m else "N/A"
 
-        blk = _run(["lsblk", "-d", "-o", "NAME,SIZE,MODEL", "--noheadings"])
+        # -e 7,11 leaves out loop devices (every snap is one) and optical
+        # drives, which would otherwise sort ahead of the real disk.
+        blk = _run(["lsblk", "-d", "-e", "7,11", "-o", "NAME,SIZE,MODEL", "--noheadings"])
         hw["storage"] = _clean(blk.splitlines()[0]) if blk else "N/A"
+        if blk:
+            disk = blk.split()[0]
+            storage_type = _linux_storage_type(
+                disk, _run(["lsblk", "-dn", "-o", "TRAN,ROTA", f"/dev/{disk}"]))
+            if storage_type:
+                hw["storage_type"] = storage_type
+        # Slot and speed data exists only in the SMBIOS tables, which need
+        # root: this works where the installer provisioned the dmidecode sudo
+        # rule (--with-dmidecode-sudo) and reports nothing elsewhere.
+        hw.update(_parse_dmidecode_memory(
+            _run(["dmidecode", "-t", "17"], sudo=True) or _run(["dmidecode", "-t", "17"])))
         hw["os"]      = f"Linux {platform.release()}"
 
     hw["timestamp"] = datetime.datetime.now().isoformat(timespec="seconds")
@@ -821,7 +962,9 @@ def submit_to_sheets(user_data: dict, hw: dict, enabled_hardware_fields: list) -
     always_sent_hw_keys = {"serial_number", "hostname", "brand", "model", "os", "timestamp"}
     filtered_hw = {
         key: value for key, value in hw.items()
-        if key in always_sent_hw_keys or key in enabled_hardware_fields
+        if key in always_sent_hw_keys
+        or key in enabled_hardware_fields
+        or HARDWARE_DETAIL_PARENT.get(key) in enabled_hardware_fields
     }
     payload = {
         **user_data, **filtered_hw,
