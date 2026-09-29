@@ -2,21 +2,21 @@
   "artifacts": {
     "posix_py": {
       "path": "/static/updates/inventory_agent.py",
-      "sha256": "3792d8175dcd564e6e14adab5cb8c846e3cc0058547c71a473ef4871780d1fc8",
-      "size": 65828
+      "sha256": "39ac5c71354e4f867fbdf55330b720a227cf699339e80f617046e8ce31d0fc5f",
+      "size": 65816
     },
     "windows_exe": {
       "path": "/static/updates/AssetlyAgent_Windows.exe",
-      "sha256": "6e986ebbe0c6c281cf74248c23cd8d6d6d01b24ace9410e131bbb831dbdb165a",
+      "sha256": "11e3823a380016ccc724438ead6a1d953795d90501c750a05f7ba49f2c096324",
       "size": 141312,
-      "unsigned_sha256": "6e986ebbe0c6c281cf74248c23cd8d6d6d01b24ace9410e131bbb831dbdb165a"
+      "unsigned_sha256": "11e3823a380016ccc724438ead6a1d953795d90501c750a05f7ba49f2c096324"
     },
     "windows_msi": {
       "path": "/static/updates/AssetlyAgent.msi",
-      "sha256": "84df83ff5b45c51ebe367bba00133a5333c2859ff8a5e83509c9e78ffa33b8f2",
+      "sha256": "7a3c208f9c1def3c3a6db7f94dd401efa20c988ab6d60b1f4bff09d7866bd0ce",
       "size": 86016
     }
   },
-  "released_at": "2026-09-29T19:12:04Z",
-  "version": "2.3.0"
+  "released_at": "2026-09-29T19:25:29Z",
+  "version": "2.3.1"
 }
