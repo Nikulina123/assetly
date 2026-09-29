@@ -138,7 +138,7 @@ _credential = None
 # the payload, and kept in sync with $AgentVersion in AssetlyAgent_Windows.ps1:
 # this said "2.0" while the signed release stream was already at 2.1.2, so a
 # version a user read back over the phone matched nothing on either platform.
-AGENT_VERSION = "2.3.0"
+AGENT_VERSION = "2.3.1"
 
 # Detail fields have no portal toggle of their own: each is sent only when the
 # hardware field it describes is enabled, so switching RAM off stops the RAM
@@ -166,7 +166,7 @@ PLACEHOLDER_SERIALS = frozenset({
 })
 
 
-def _is_usable_identifier(value: str | None) -> bool:
+def _is_usable_identifier(value) -> bool:
     """False when a firmware string identifies no particular machine."""
     if not value:
         return False
