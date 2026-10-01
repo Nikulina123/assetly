@@ -15,7 +15,10 @@
 # ─── CONFIGURATION — edit these two lines before distributing ────────────────
 CHECKIN_API_URL="https://api.example.com/api/v1/inventory/checkin"   # ← FILL IN (replaced automatically when downloaded from the admin portal)
 ENROLLMENT_TOKEN=""                                                   # ← FILL IN (replaced automatically when downloaded from the admin portal)
-GITHUB_RAW_URL="https://raw.githubusercontent.com/Nikulina123/Check-in_Agent/main/inventory_agent.py"
+# The agent itself, base64-encoded. Filled in by the admin portal, the same way
+# the macOS .pkg carries inventory_agent.py: the install never depends on the
+# source repository being public or GitHub being reachable from this machine.
+AGENT_SOURCE_B64=""                                                   # ← replaced automatically when downloaded from the admin portal
 # ─────────────────────────────────────────────────────────────────────────────
 
 # ─── Command-line flags ────────────────────────────────────────────────────
@@ -128,59 +131,28 @@ else
     echo "      the serial number as N/A, re-run with --with-dmidecode-sudo."
 fi
 
-# ── Step 3: Download the agent ────────────────────────────────────────────────
+# ── Step 3: Install the agent ─────────────────────────────────────────────────
 echo ""
-echo "[3/6] Downloading inventory agent from GitHub…"
-echo "      URL: $GITHUB_RAW_URL"
+echo "[3/6] Installing inventory agent…"
+if [[ -z "$AGENT_SOURCE_B64" ]]; then
+    echo ""
+    echo "  [ERROR] This installer does not contain the agent."
+    echo "  Download AssetlyAgent_Linux.sh from the Assetly admin portal"
+    echo "  (company page → Download for Linux) instead of using the raw template."
+    exit 1
+fi
 mkdir -p "$AGENT_DIR"
 
-DOWNLOAD_OK=false
-if command -v curl &>/dev/null; then
-    if curl -fL --retry 3 --retry-delay 2 --connect-timeout 15 \
-            "$GITHUB_RAW_URL" -o "$AGENT_FILE" 2>&1; then
-        DOWNLOAD_OK=true
-    fi
-fi
-
-if [[ "$DOWNLOAD_OK" == false ]] && command -v wget &>/dev/null; then
-    echo "      curl failed — trying wget…"
-    if wget --tries=3 --timeout=15 "$GITHUB_RAW_URL" -O "$AGENT_FILE" 2>&1; then
-        DOWNLOAD_OK=true
-    fi
-fi
-
-if [[ "$DOWNLOAD_OK" == false ]]; then
-    echo "      curl/wget failed — trying Python urllib…"
-    "$PYTHON3" -c "
-import urllib.request, sys
-try:
-    urllib.request.urlretrieve('$GITHUB_RAW_URL', '$AGENT_FILE')
-    print('      Downloaded via Python urllib.')
-except Exception as e:
-    print(f'      urllib failed: {e}', file=sys.stderr)
-    sys.exit(1)
-" && DOWNLOAD_OK=true
-fi
-
-if [[ "$DOWNLOAD_OK" == false ]]; then
-    echo ""
-    echo "  [ERROR] Could not download inventory_agent.py."
-    echo "  Possible causes:"
-    echo "    • GitHub repo is private — make it public or check the URL"
-    echo "    • File not yet pushed to the repo"
-    echo "    • No internet connection"
-    echo "  URL tried: $GITHUB_RAW_URL"
+if ! printf '%s' "$AGENT_SOURCE_B64" | "$PYTHON3" -c 'import base64, sys
+sys.stdout.buffer.write(base64.b64decode(sys.stdin.read(), validate=True))' > "$AGENT_FILE"; then
+    echo "  [ERROR] The embedded agent could not be decoded. The installer file"
+    echo "  is probably truncated or was edited; download it again from the portal."
+    rm -f "$AGENT_FILE"
     exit 1
 fi
 
 if [[ ! -s "$AGENT_FILE" ]]; then
-    echo "  [ERROR] Downloaded file is empty."
-    exit 1
-fi
-if head -1 "$AGENT_FILE" | grep -qi "<!DOCTYPE\|<html"; then
-    echo "  [ERROR] GitHub returned an HTML page — repo/file may not exist yet."
-    echo "  URL: $GITHUB_RAW_URL"
-    rm -f "$AGENT_FILE"
+    echo "  [ERROR] The extracted agent is empty."
     exit 1
 fi
 
@@ -222,11 +194,10 @@ except Exception:
     pass' 2>/dev/null)"
 
 if [[ -n "$CREDENTIAL" ]]; then
-    # github_raw_url is deliberately not written here. GITHUB_RAW_URL above is
-    # still used to FETCH the agent during this install -- that download needs a
-    # URL -- but inventory_agent.py never reads the config key, so persisting it
-    # only made config.json look like it had a knob it does not have. Same
-    # removal AssetlyAgent_Windows.ps1 and the macOS postinstall have made.
+    # github_raw_url is deliberately not written here: inventory_agent.py never
+    # reads the key, and the agent now ships inside this script rather than
+    # being fetched. Same removal AssetlyAgent_Windows.ps1 and the macOS
+    # postinstall have made.
     cat > "$CONFIG_FILE" <<JSON
 {
   "checkin_api_url": "$CHECKIN_API_URL",

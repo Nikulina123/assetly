@@ -125,6 +125,65 @@ async def test_download_linux_embeds_a_fresh_enrollment_token(login_as, enrolled
     assert old_resolved == company_id
 
 
+async def test_download_linux_carries_the_agent_instead_of_fetching_it(login_as, enrolled_admin, company):
+    """The installer used to pull inventory_agent.py from raw.githubusercontent.com,
+    which only works while the repository is public. The agent now travels
+    inside the script, as it already does inside the macOS package."""
+    import base64
+
+    from app.routers.admin import REPO_ROOT
+
+    company_id, _ = company
+    client = await _logged_in_client(login_as, enrolled_admin)
+    try:
+        csrf_token = await _get_csrf_token(client, company_id)
+        resp = await client.post(
+            f"/admin/companies/{company_id}/download/linux",
+            data={"csrf_token": csrf_token, "device_count": "5", "token_days": "14"},
+        )
+    finally:
+        await client.aclose()
+    assert resp.status_code == 200
+    body = resp.text
+    assert "githubusercontent" not in body
+    assert "github.com" not in body
+    match = re.search(r'^AGENT_SOURCE_B64="([A-Za-z0-9+/=]+)"', body, flags=re.MULTILINE)
+    assert match is not None
+    assert base64.b64decode(match.group(1)) == (REPO_ROOT / "inventory_agent.py").read_bytes()
+
+
+async def test_download_linux_does_not_mint_token_when_agent_marker_missing(
+    login_as, enrolled_admin, company, db_pool, tmp_path, monkeypatch
+):
+    """A template whose agent marker has drifted would ship an installer with
+    no agent in it; that has to fail before a token exists, not after."""
+    import shutil
+
+    import app.routers.admin as admin_module
+
+    shutil.copy(admin_module.REPO_ROOT / "inventory_agent.py", tmp_path / "inventory_agent.py")
+    template = (admin_module.REPO_ROOT / "AssetlyAgent_Linux.sh").read_text()
+    (tmp_path / "AssetlyAgent_Linux.sh").write_text(
+        re.sub(r"^AGENT_SOURCE_B64=.*$", "", template, flags=re.MULTILINE)
+    )
+    monkeypatch.setattr(admin_module, "REPO_ROOT", tmp_path)
+
+    from app.enrollment import list_tokens
+
+    company_id, _ = company
+    client = await _logged_in_client(login_as, enrolled_admin)
+    try:
+        csrf_token = await _get_csrf_token(client, company_id)
+        with pytest.raises(RuntimeError, match="AGENT_SOURCE_B64"):
+            await client.post(
+                f"/admin/companies/{company_id}/download/linux",
+                data={"csrf_token": csrf_token, "device_count": "5", "token_days": "14"},
+            )
+    finally:
+        await client.aclose()
+    assert await list_tokens(db_pool, str(company_id)) == []
+
+
 async def test_download_blocked_for_revoked_company(login_as, enrolled_admin, company, db_pool):
     company_id, _ = company
     client = await _logged_in_client(login_as, enrolled_admin)

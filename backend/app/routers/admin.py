@@ -1,3 +1,4 @@
+import base64
 import datetime
 import hashlib
 import io
@@ -1310,6 +1311,7 @@ async def _get_active_company_or_404(pool, company_id: uuid.UUID, admin: AdminCo
 
 _CHECKIN_API_URL_PATTERN = r'^CHECKIN_API_URL=".*?"(\s*#.*)?$'
 _ENROLLMENT_TOKEN_PATTERN = r'^ENROLLMENT_TOKEN=".*?"(\s*#.*)?$'
+_AGENT_SOURCE_B64_PATTERN = r'^AGENT_SOURCE_B64=".*?"(\s*#.*)?$'
 
 
 def _load_installer_template(filename: str) -> str:
@@ -1337,6 +1339,24 @@ def _render_installer_script(template_text: str, checkin_api_url: str, enrollmen
         text, count=1, flags=re.MULTILINE,
     )
     return text
+
+
+def _embed_agent_source(template_text: str, agent_source: bytes) -> str:
+    """Puts inventory_agent.py inside the Linux installer as base64.
+
+    The installer used to download the agent from raw.githubusercontent.com,
+    which ties every Linux install to the repository staying public. Carrying
+    it in the script, as the macOS .pkg already does, removes that dependency.
+    Raises if the marker is gone so the caller can fail before minting a token.
+    """
+    if not re.search(_AGENT_SOURCE_B64_PATTERN, template_text, flags=re.MULTILINE):
+        raise RuntimeError("AssetlyAgent_Linux.sh: AGENT_SOURCE_B64 substitution marker not found")
+    encoded = base64.b64encode(agent_source).decode("ascii")
+    return re.sub(
+        _AGENT_SOURCE_B64_PATTERN,
+        lambda _: f'AGENT_SOURCE_B64="{encoded}"',
+        template_text, count=1, flags=re.MULTILINE,
+    )
 
 
 @router.get("/diagnostics")
@@ -1523,7 +1543,10 @@ async def download_linux(
     _check_csrf(request, csrf_token)
     pool = await get_pool()
     await _get_active_company_or_404(pool, company_id, admin)
-    template_text = _load_installer_template("AssetlyAgent_Linux.sh")
+    template_text = _embed_agent_source(
+        _load_installer_template("AssetlyAgent_Linux.sh"),
+        (REPO_ROOT / "inventory_agent.py").read_bytes(),
+    )
     max_devices, expires_at = _installer_token_terms(device_count, token_days)
     # Minted here rather than left to the column DEFAULT so the id is known
     # before the audit row is written: enrollment_token.created and
